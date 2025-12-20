@@ -7,8 +7,20 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
 - [ ✅ ] 🔴 Compute coefficient of variation across repeats and mark stability - Implemented CV computation in JSON output
 - [ ✅ ] 🔴 Add suite-level gating command that fails on any critical regression - IMPLEMENTED: 'bench gate <baseline>' command
 - **✅ COMPLETED**: Fixed benchmark harness compilation and runtime errors
-- [ ] 🟠 Validate outputs against `bench/results.schema.json` before write/compare
-- [ ] 🟠 Implement `bench --list` to enumerate benchmarks and suites
+- **✅ COMPLETED**: Validate outputs against `bench/results.schema.json` before write/compare
+  - Comprehensive JSON schema validation implemented in `src/bench/validate.zig`
+  - Validation integrated before writing JSON files and before comparing baseline/candidate files
+  - Context-aware validation allows 0 values for appropriate benchmark types (read-only operations)
+  - Tests demonstrate validation working correctly for both valid and invalid scenarios
+  - All unit tests pass, committed with hash d820371
+- **✅ COMPLETED**: Implement `bench --list` to enumerate benchmarks and suites
+  - Added --list and list command options to CLI
+  - Groups benchmarks by suite type (micro, macro, hardening)
+  - Marks critical benchmarks with (CRITICAL) suffix
+  - Displays summary count of benchmarks by suite
+  - Updates usage help to include new option
+  - All functionality tested and working correctly
+  - Committed with hash c850370
 - [ ] 🟠 Add `--warmup-ops` and `--warmup-ns` honoring in runner
 - [ ] 🟠 Persist run metadata (CPU model/FS/RAM) robustly across OSes
 - [ ] 🟡 Baseline discovery: compare entire output dir vs baseline dir
