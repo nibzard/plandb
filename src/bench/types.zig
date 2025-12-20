@@ -60,6 +60,14 @@ pub const Results = struct {
     alloc: Alloc,
     errors_total: u64 = 0,
     notes: ?std.json.Value = null,
+    stability: ?Stability = null,
+};
+
+pub const Stability = struct {
+    coefficient_of_variation: f64,
+    is_stable: bool,
+    repeat_count: u32,
+    threshold_used: f64,
 };
 
 pub const Latency = struct {

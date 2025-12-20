@@ -128,7 +128,6 @@ pub const Runner = struct {
     }
 
     fn aggregateResults(self: *Runner, allocator: std.mem.Allocator, results: []const types.Results) !types.Results {
-        _ = self;
 
         var total_ops: u64 = 0;
         var total_duration: u64 = 0;
@@ -143,6 +142,10 @@ pub const Runner = struct {
         var latencies = std.ArrayListUnmanaged(u64){};
         defer latencies.deinit(allocator);
 
+        // Collect ops_per_sec values for CV calculation
+        var ops_per_sec_values = std.ArrayListUnmanaged(f64){};
+        defer ops_per_sec_values.deinit(allocator);
+
         for (results) |result| {
             total_ops += result.ops_total;
             total_duration += result.duration_ns;
@@ -154,6 +157,7 @@ pub const Runner = struct {
             total_errors += result.errors_total;
 
             try latencies.append(allocator, result.latency_ns.p99); // Use p99 for comparison
+            try ops_per_sec_values.append(allocator, result.ops_per_sec);
         }
 
         // Sort latencies for percentile calculation
@@ -162,6 +166,9 @@ pub const Runner = struct {
         const p50_idx = latencies.items.len / 2;
         const p95_idx = latencies.items.len * 95 / 100;
         const p99_idx = latencies.items.len * 99 / 100;
+
+        // Calculate coefficient of variation for throughput (ops_per_sec)
+        const stability = self.calculateStability(allocator, ops_per_sec_values.items);
 
         return types.Results{
             .ops_total = total_ops,
@@ -185,6 +192,44 @@ pub const Runner = struct {
                 .alloc_bytes = total_alloc_bytes,
             },
             .errors_total = total_errors,
+            .stability = stability,
+        };
+    }
+
+    fn calculateStability(self: *Runner, allocator: std.mem.Allocator, values: []const f64) ?types.Stability {
+        _ = allocator;
+        _ = self;
+
+        if (values.len < 2) return null;
+
+        // Calculate mean
+        var sum: f64 = 0.0;
+        for (values) |v| {
+            sum += v;
+        }
+        const mean = sum / @as(f64, @floatFromInt(values.len));
+
+        // Calculate standard deviation
+        var variance_sum: f64 = 0.0;
+        for (values) |v| {
+            const diff = v - mean;
+            variance_sum += diff * diff;
+        }
+        const variance = variance_sum / @as(f64, @floatFromInt(values.len));
+        const std_dev = @sqrt(variance);
+
+        // Coefficient of variation (CV = std_dev / mean)
+        const cv = if (mean > 0) std_dev / mean else 0.0;
+
+        // Stability threshold: CV < 0.05 (5%) is considered stable
+        const threshold = 0.05;
+        const is_stable = cv < threshold;
+
+        return types.Stability{
+            .coefficient_of_variation = cv,
+            .is_stable = is_stable,
+            .repeat_count = @intCast(values.len),
+            .threshold_used = threshold,
         };
     }
 
@@ -290,7 +335,14 @@ pub const Runner = struct {
     fn writeJson(self: *Runner, writer: anytype, result: types.BenchmarkResult) !void {
         _ = self;
         _ = writer;
-        _ = result; // TODO: implement JSON output
+
+        // For now, just print basic info to stdout to test stability
+        std.debug.print("JSON Output for {s}: ops_per_sec={d}, stability={s} (cv={d:.3})\n", .{
+            result.bench_name,
+            result.results.ops_per_sec,
+            if (result.results.stability.?.is_stable) "STABLE" else "UNSTABLE",
+            result.results.stability.?.coefficient_of_variation
+        });
     }
 
     fn compareWithBaseline(self: *Runner, result: types.BenchmarkResult, baseline_path: []const u8) ![]const u8 {
