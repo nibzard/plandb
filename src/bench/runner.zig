@@ -1,6 +1,13 @@
 const std = @import("std");
 const types = @import("types.zig");
 
+pub const GateResult = struct {
+    passed: bool,
+    total_critical: usize,
+    failed_critical: usize,
+    failure_notes: []const u8,
+};
+
 pub const Benchmark = struct {
     name: []const u8,
     run_fn: RunFn,
@@ -91,6 +98,146 @@ pub const Runner = struct {
                 std.debug.print("{s}\n", .{fbs.getWritten()});
             }
         }
+    }
+
+    pub fn runGated(self: *Runner, args: RunArgs) !GateResult {
+        if (args.baseline_dir == null) {
+            return error.BaselineRequired;
+        }
+
+        // Create output directory if needed
+        if (args.output_dir) |dir| {
+            try std.fs.cwd().makePath(dir);
+        }
+
+        // Filter benchmarks
+        const filtered = try self.filterBenchmarks(args.filter, args.suite);
+        defer self.allocator.free(filtered);
+
+        if (filtered.len == 0) {
+            std.debug.print("No benchmarks match criteria\n", .{});
+            return GateResult{
+                .passed = true,
+                .total_critical = 0,
+                .failed_critical = 0,
+                .failure_notes = "",
+            };
+        }
+
+        var total_critical: usize = 0;
+        var failed_critical: usize = 0;
+        var failure_notes = std.ArrayListUnmanaged(u8){};
+        defer failure_notes.deinit(self.allocator);
+
+        // Count critical benchmarks
+        for (filtered) |bench| {
+            if (bench.critical) {
+                total_critical += 1;
+            }
+        }
+
+        // Initialize comparator with CI thresholds
+        var comparator = @import("compare.zig").Comparator.init(self.allocator, .{
+            .max_throughput_regression_pct = 5.0,
+            .max_p99_latency_regression_pct = 10.0,
+            .max_alloc_regression_pct = 5.0,
+            .max_fsync_increase_pct = 0.0,
+        });
+
+        // Run benchmarks and check critical ones
+        for (filtered) |bench| {
+            const critical_suffix = if (bench.critical) " (CRITICAL)" else "";
+            std.debug.print("Running {s}{s}\n", .{ bench.name, critical_suffix });
+
+            const result = try self.runSingle(bench, args);
+
+            // Output JSON if requested
+            if (args.output_dir) |dir| {
+                const filename = try std.fmt.allocPrint(self.allocator, "{s}.json", .{bench.name});
+                defer self.allocator.free(filename);
+                const path = try std.fs.path.join(self.allocator, &.{ dir, filename });
+                defer self.allocator.free(path);
+
+                if (std.fs.path.dirname(path)) |parent| {
+                    try std.fs.cwd().makePath(parent);
+                }
+
+                const file = try std.fs.cwd().createFile(path, .{});
+                defer file.close();
+
+                const buf = try self.allocator.alloc(u8, 4096);
+                defer self.allocator.free(buf);
+                try self.writeJson(file.writer(buf), result);
+            }
+
+            // Compare with baseline for critical benchmarks
+            if (bench.critical) {
+                const baseline_filename = try std.fmt.allocPrint(self.allocator, "{s}.json", .{bench.name});
+                defer self.allocator.free(baseline_filename);
+                const baseline_path = try std.fs.path.join(self.allocator, &.{ args.baseline_dir.?, baseline_filename });
+                defer self.allocator.free(baseline_path);
+
+                // Check if baseline exists
+                if (std.fs.cwd().openFile(baseline_path, .{})) |baseline_file| {
+                    baseline_file.close();
+
+                    // Write candidate to temp file for comparison
+                    const tmp_buf = try self.allocator.alloc(u8, 4096);
+                    defer self.allocator.free(tmp_buf);
+                    var fbs = std.io.fixedBufferStream(tmp_buf);
+                    try self.writeJson(fbs.writer(), result);
+
+                    const tmp_path = try std.fs.path.join(self.allocator, &.{ "candidate.tmp.json" });
+                    defer self.allocator.free(tmp_path);
+                    {
+                        const tmp_file = try std.fs.cwd().createFile(tmp_path, .{});
+                        defer tmp_file.close();
+                        try tmp_file.writeAll(fbs.getWritten());
+                    }
+
+                    const comparison = try comparator.compare(baseline_path, tmp_path);
+                    _ = std.fs.cwd().deleteFile(tmp_path) catch {};
+
+                    if (!comparison.passed) {
+                        failed_critical += 1;
+                        const writer = failure_notes.writer(self.allocator);
+                        try writer.print("- {s}: FAILED (throughput {d}%, p99 {d}%, fsync/op {d}%)\n", .{
+                            bench.name,
+                            comparison.throughput_change_pct,
+                            comparison.p99_latency_change_pct,
+                            comparison.fsync_change_pct,
+                        });
+                        if (comparison.notes.len > 0) {
+                            try writer.print("  {s}\n", .{comparison.notes});
+                        }
+                    } else {
+                        std.debug.print("  ✅ PASSED (throughput {d}%, p99 {d}%)\n", .{
+                            comparison.throughput_change_pct,
+                            comparison.p99_latency_change_pct,
+                        });
+                    }
+                } else |err| switch (err) {
+                    error.FileNotFound => {
+                        failed_critical += 1;
+                        const writer = failure_notes.writer(self.allocator);
+                        try writer.print("- {s}: FAILED (baseline file not found)\n", .{bench.name});
+                    },
+                    else => {
+                        failed_critical += 1;
+                        const writer = failure_notes.writer(self.allocator);
+                        try writer.print("- {s}: FAILED (baseline error: {})\n", .{ bench.name, err });
+                    },
+                }
+            }
+        }
+
+        const passed = failed_critical == 0;
+        return GateResult{
+            .passed = passed,
+            .total_critical = total_critical,
+            .failed_critical = failed_critical,
+            .failure_notes = try failure_notes.toOwnedSlice(self.allocator),
+        };
     }
 
     fn runSingle(self: *Runner, bench: Benchmark, args: RunArgs) !types.BenchmarkResult {
