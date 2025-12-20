@@ -25,6 +25,8 @@ pub fn main() !void {
         try compareBaselines(allocator, args[2..]);
     } else if (std.mem.eql(u8, command, "gate")) {
         try gateSuite(allocator, args[2..]);
+    } else if (std.mem.eql(u8, command, "--list") or std.mem.eql(u8, command, "list")) {
+        try listBenchmarks(allocator);
     } else {
         try printUsage();
     }
@@ -38,6 +40,7 @@ fn printUsage() !void {
         \\  bench run [options]          Run benchmarks
         \\  bench compare <baseline> <candidate>  Compare results
         \\  bench gate <baseline> [options]        Gate suite - fail on critical regressions
+        \\  bench --list                   List all available benchmarks and suites
         \\
         \\Run options:
         \\  --repeats <n>         Number of repeats (default: 5)
@@ -178,4 +181,65 @@ fn gateSuite(allocator: std.mem.Allocator, args: []const []const u8) !void {
         // Exit with error code to fail the gate
         std.process.exit(1);
     }
+}
+
+fn listBenchmarks(allocator: std.mem.Allocator) !void {
+    var bench_runner = bench.Runner.init(allocator);
+    defer bench_runner.deinit();
+
+    try suite.registerBenchmarks(&bench_runner);
+
+    // Group benchmarks by suite
+    const micro_suite = bench.Suite.micro;
+    const macro_suite = bench.Suite.macro;
+    const hardening_suite = bench.Suite.hardening;
+
+    var micro_count: usize = 0;
+    var macro_count: usize = 0;
+    var hardening_count: usize = 0;
+
+    std.debug.print("Available Benchmarks:\n\n", .{});
+
+    // List micro benchmarks
+    std.debug.print("Micro Benchmarks:\n", .{});
+    for (bench_runner.benchmarks.items) |benchmark| {
+        if (benchmark.suite == micro_suite) {
+            const critical_marker = if (benchmark.critical) " (CRITICAL)" else "";
+            std.debug.print("  {s}{s}\n", .{ benchmark.name, critical_marker });
+            micro_count += 1;
+        }
+    }
+    if (micro_count == 0) {
+        std.debug.print("  (none)\n", .{});
+    }
+
+    // List macro benchmarks
+    std.debug.print("\nMacro Benchmarks:\n", .{});
+    for (bench_runner.benchmarks.items) |benchmark| {
+        if (benchmark.suite == macro_suite) {
+            const critical_marker = if (benchmark.critical) " (CRITICAL)" else "";
+            std.debug.print("  {s}{s}\n", .{ benchmark.name, critical_marker });
+            macro_count += 1;
+        }
+    }
+    if (macro_count == 0) {
+        std.debug.print("  (none)\n", .{});
+    }
+
+    // List hardening benchmarks
+    std.debug.print("\nHardening Benchmarks:\n", .{});
+    for (bench_runner.benchmarks.items) |benchmark| {
+        if (benchmark.suite == hardening_suite) {
+            const critical_marker = if (benchmark.critical) " (CRITICAL)" else "";
+            std.debug.print("  {s}{s}\n", .{ benchmark.name, critical_marker });
+            hardening_count += 1;
+        }
+    }
+    if (hardening_count == 0) {
+        std.debug.print("  (none)\n", .{});
+    }
+
+    // Summary
+    const total = micro_count + macro_count + hardening_count;
+    std.debug.print("\nSummary: {d} benchmarks ({d} micro, {d} macro, {d} hardening)\n", .{ total, micro_count, macro_count, hardening_count });
 }
