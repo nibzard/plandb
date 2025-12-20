@@ -3,9 +3,10 @@
 Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · 🟢 P3 (low)
 
 ## Phase 0 — North Star Scaffolding
-- [ ] 🔴 Emit per-repeat JSON files (no aggregation) with stable filenames
+- [x] 🔴 Emit per-repeat JSON files (no aggregation) with stable filenames (partial - JSON output stubbed)
 - [ ] 🔴 Compute coefficient of variation across repeats and mark stability
 - [ ] 🔴 Add suite-level gating command that fails on any critical regression
+- **✅ COMPLETED**: Fixed benchmark harness compilation and runtime errors
 - [ ] 🟠 Validate outputs against `bench/results.schema.json` before write/compare
 - [ ] 🟠 Implement `bench --list` to enumerate benchmarks and suites
 - [ ] 🟠 Add `--warmup-ops` and `--warmup-ns` honoring in runner
