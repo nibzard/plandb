@@ -27,9 +27,25 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
 - [ ] 🟡 Document harness usage, filters, baselines, and JSON layout
 
 ## Phase 1 — Pager (V0)
-- [ ] 🔴 Define page header and meta structs per `spec/file_format_v0.md`
-- [ ] 🔴 Implement CRC32C and page checksum verify API
-- [ ] 🔴 Implement Meta A/B encode/decode, checksum, and atomic toggle
+- [✅] 🔴 Define page header and meta structs per `spec/file_format_v0.md`
+  - **COMPLETED**: Implemented PageHeader, MetaPayload, and BtreeNodeHeader structs
+  - **COMPLETED**: Added CRC32C checksum with lookup table implementation
+  - **COMPLETED**: Implemented encode/decode functions for all structs
+  - **COMPLETED**: Added page validation functions with checksum verification
+  - **COMPLETED**: Comprehensive unit tests covering all format validation
+  - Committed with hash 45774ac
+- [✅] 🔴 Implement CRC32C and page checksum verify API
+  - **COMPLETED**: CRC32C implementation with lookup table in src/pager.zig
+  - **COMPLETED**: Page validation functions with checksum verification
+  - All tests passing, integrated with build system
+- [✅] 🔴 Implement Meta A/B encode/decode, checksum, and atomic toggle
+  - **COMPLETED**: MetaState struct for meta page representation
+  - **COMPLETED**: encodeMetaPage and decodeMetaPage functions with validation
+  - **COMPLETED**: chooseBestMeta function to select highest valid txn_id
+  - **COMPLETED**: getOppositeMetaId function for atomic toggle support
+  - **COMPLETED**: Comprehensive test suite covering all functionality
+  - **COMPLETED**: All tests passing, implements V0 spec requirements
+  - Committed with hash f478323
 - [ ] 🔴 Implement `open()` recovery: choose highest valid meta, else Corrupt
 - [ ] 🟠 Implement page allocator (rebuild-on-open freelist policy)
 - [ ] 🟠 Implement page read/write with checksums and bounds checks

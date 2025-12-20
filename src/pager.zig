@@ -365,6 +365,114 @@ pub fn getOppositeMetaId(page_id: u64) !u64 {
     return error.InvalidMetaId;
 }
 
+// Pager represents the storage layer with file handles and state
+pub const Pager = struct {
+    file: std.fs.File,
+    page_size: u16,
+    current_meta: MetaState,
+    allocator: std.mem.Allocator,
+
+    const Self = @This();
+
+    // Open database file with recovery: choose highest valid meta, else Corrupt
+    pub fn open(path: []const u8, allocator: std.mem.Allocator) !Self {
+        const file = try std.fs.cwd().openFile(path, .{ .mode = .read_write });
+        defer file.close();
+
+        // Read the first page to determine page size (should be DEFAULT_PAGE_SIZE for V0)
+        var first_page_buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+        const bytes_read = try file.preadAll(&first_page_buffer, 0);
+        if (bytes_read < DEFAULT_PAGE_SIZE) {
+            return error.FileTooSmall; // Database file must have at least one full page
+        }
+
+        // Try to decode both meta pages
+        const meta_a_result = decodeMetaPage(first_page_buffer[0..DEFAULT_PAGE_SIZE], META_A_PAGE_ID);
+        const meta_a = meta_a_result catch |err| switch (err) {
+            error.InvalidHeaderChecksum, error.InvalidMetaChecksum, error.InvalidMagic, error.InvalidMetaMagic, error.InvalidPageType, error.UnexpectedPageId => null,
+            else => return err,
+        };
+
+        // Read second page for meta B
+        var second_page_buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+        const bytes_read_b = try file.preadAll(&second_page_buffer, DEFAULT_PAGE_SIZE);
+        const meta_b: ?MetaState = if (bytes_read_b < DEFAULT_PAGE_SIZE)
+            null
+        else
+            decodeMetaPage(second_page_buffer[0..DEFAULT_PAGE_SIZE], META_B_PAGE_ID) catch |err| switch (err) {
+                error.InvalidHeaderChecksum, error.InvalidMetaChecksum, error.InvalidMagic, error.InvalidMetaMagic, error.InvalidPageType, error.UnexpectedPageId => null,
+                else => return err,
+            };
+
+        // Choose the best meta (highest valid txn_id)
+        const best_meta = chooseBestMeta(meta_a, meta_b) orelse return error.Corrupt;
+
+        // Validate page size from meta
+        if (best_meta.meta.page_size != DEFAULT_PAGE_SIZE) {
+            return error.UnsupportedPageSize;
+        }
+
+        // Re-open file to keep it open for the pager lifetime
+        const persistent_file = try std.fs.cwd().openFile(path, .{ .mode = .read_write });
+
+        return Self{
+            .file = persistent_file,
+            .page_size = best_meta.meta.page_size,
+            .current_meta = best_meta,
+            .allocator = allocator,
+        };
+    }
+
+    // Close the pager and release file handle
+    pub fn close(self: *Self) void {
+        self.file.close();
+    }
+
+    // Read a page from the file
+    pub fn readPage(self: *Self, page_id: u64, buffer: []u8) !void {
+        if (buffer.len < self.page_size) return error.BufferTooSmall;
+
+        const offset = page_id * self.page_size;
+        const bytes_read = try self.file.preadAll(buffer, offset);
+        if (bytes_read < self.page_size) {
+            return error.UnexpectedEOF;
+        }
+
+        // Validate the page before returning
+        _ = try validatePage(buffer[0..self.page_size]);
+    }
+
+    // Write a page to the file
+    pub fn writePage(self: *Self, page_id: u64, buffer: []const u8) !void {
+        if (buffer.len < self.page_size) return error.BufferTooSmall;
+
+        const offset = page_id * self.page_size;
+        _ = try self.file.pwriteAll(buffer, offset);
+    }
+
+    // Sync file to ensure durability
+    pub fn sync(self: *Self) !void {
+        try self.file.sync();
+    }
+
+    // Get current database state from meta
+    pub fn getRootPageId(self: *const Self) u64 {
+        return self.current_meta.meta.root_page_id;
+    }
+
+    pub fn getCommittedTxnId(self: *const Self) u64 {
+        return self.current_meta.meta.committed_txn_id;
+    }
+
+    pub fn getFreelistHeadPageId(self: *const Self) u64 {
+        return self.current_meta.meta.freelist_head_page_id;
+    }
+
+    pub fn getLogTailLsn(self: *const Self) u64 {
+        return self.current_meta.meta.log_tail_lsn;
+    }
+};
+
 // ==================== Unit Tests ====================
 
 const testing = std.testing;
@@ -805,4 +913,169 @@ test "format_meta_roundtrip_encode_decode" {
     try testing.expectEqual(original_meta.freelist_head_page_id, decoded_state.meta.freelist_head_page_id);
     try testing.expectEqual(original_meta.log_tail_lsn, decoded_state.meta.log_tail_lsn);
     try testing.expect(decoded_state.isValid());
+}
+
+test "Pager.open_recovery_selects_highest_valid_meta" {
+    const test_filename = "test_pager_recovery.db";
+    defer {
+        std.fs.cwd().deleteFile(test_filename) catch {};
+    }
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    // Create test database file with two meta pages
+    const file = try std.fs.cwd().createFile(test_filename, .{ .read = true });
+    defer file.close();
+
+    // Create two different meta pages
+    var buffer_a: [DEFAULT_PAGE_SIZE]u8 = undefined;
+    var buffer_b: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    const meta_a = MetaPayload{
+        .committed_txn_id = 100,
+        .root_page_id = 5,
+        .freelist_head_page_id = 0,
+        .log_tail_lsn = 42,
+        .meta_crc32c = 0,
+    };
+
+    const meta_b = MetaPayload{
+        .committed_txn_id = 200, // Higher txn_id should win
+        .root_page_id = 10,
+        .freelist_head_page_id = 0,
+        .log_tail_lsn = 84,
+        .meta_crc32c = 0,
+    };
+
+    try encodeMetaPage(META_A_PAGE_ID, meta_a, &buffer_a);
+    try encodeMetaPage(META_B_PAGE_ID, meta_b, &buffer_b);
+
+    // Write both pages to file
+    _ = try file.pwriteAll(&buffer_a, 0);
+    _ = try file.pwriteAll(&buffer_b, DEFAULT_PAGE_SIZE);
+
+    // Test recovery
+    var pager = try Pager.open(test_filename, arena.allocator());
+    defer pager.close();
+
+    // Should select meta B (higher txn_id)
+    try testing.expectEqual(@as(u64, 200), pager.getCommittedTxnId());
+    try testing.expectEqual(@as(u64, 10), pager.getRootPageId());
+    try testing.expectEqual(@as(u64, 0), pager.getFreelistHeadPageId());
+    try testing.expectEqual(@as(u64, 84), pager.getLogTailLsn());
+}
+
+test "Pager.open_recovery_handles_corrupt_meta_pages" {
+    const test_filename = "test_pager_corrupt.db";
+    defer {
+        std.fs.cwd().deleteFile(test_filename) catch {};
+    }
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    // Create file with one valid meta and one corrupt
+    const file = try std.fs.cwd().createFile(test_filename, .{ .read = true });
+    defer file.close();
+
+    var buffer_a: [DEFAULT_PAGE_SIZE]u8 = undefined;
+    var buffer_b: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    const meta_a = MetaPayload{
+        .committed_txn_id = 100,
+        .root_page_id = 5,
+        .freelist_head_page_id = 0,
+        .log_tail_lsn = 42,
+        .meta_crc32c = 0,
+    };
+
+    try encodeMetaPage(META_A_PAGE_ID, meta_a, &buffer_a);
+    try encodeMetaPage(META_B_PAGE_ID, meta_a, &buffer_b);
+
+    // Corrupt meta B
+    buffer_b[@offsetOf(PageHeader, "header_crc32c")] += 1;
+
+    _ = try file.pwriteAll(&buffer_a, 0);
+    _ = try file.pwriteAll(&buffer_b, DEFAULT_PAGE_SIZE);
+
+    // Should recover with meta A only
+    var pager = try Pager.open(test_filename, arena.allocator());
+    defer pager.close();
+
+    try testing.expectEqual(@as(u64, 100), pager.getCommittedTxnId());
+    try testing.expectEqual(@as(u64, 5), pager.getRootPageId());
+}
+
+test "Pager.open_recovery_fails_when_both_metas_corrupt" {
+    const test_filename = "test_pager_both_corrupt.db";
+    defer {
+        std.fs.cwd().deleteFile(test_filename) catch {};
+    }
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    // Create file with both metas corrupt
+    const file = try std.fs.cwd().createFile(test_filename, .{ .read = true });
+    defer file.close();
+
+    var buffer: [DEFAULT_PAGE_SIZE]u8 = std.mem.zeroes([DEFAULT_PAGE_SIZE]u8);
+
+    // Write two empty/corrupt pages
+    _ = try file.pwriteAll(&buffer, 0);
+    _ = try file.pwriteAll(&buffer, DEFAULT_PAGE_SIZE);
+
+    // Should fail to open
+    try testing.expectError(error.Corrupt, Pager.open(test_filename, arena.allocator()));
+}
+
+test "Pager.open_recovery_fails_on_file_too_small" {
+    const test_filename = "test_pager_too_small.db";
+    defer {
+        std.fs.cwd().deleteFile(test_filename) catch {};
+    }
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    // Create file smaller than a page
+    const file = try std.fs.cwd().createFile(test_filename, .{ .read = true });
+    defer file.close();
+
+    var small_buffer: [100]u8 = undefined;
+    _ = try file.pwriteAll(&small_buffer, 0);
+
+    // Should fail with FileTooSmall
+    try testing.expectError(error.FileTooSmall, Pager.open(test_filename, arena.allocator()));
+}
+
+test "Pager.open_recovery_fails_on_unsupported_page_size" {
+    const test_filename = "test_pager_unsupported_size.db";
+    defer {
+        std.fs.cwd().deleteFile(test_filename) catch {};
+    }
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const file = try std.fs.cwd().createFile(test_filename, .{ .read = true });
+    defer file.close();
+
+    var buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    // Create meta with unsupported page size
+    const meta = MetaPayload{
+        .page_size = 8192, // Different from DEFAULT_PAGE_SIZE
+        .committed_txn_id = 100,
+        .root_page_id = 5,
+        .freelist_head_page_id = 0,
+        .log_tail_lsn = 42,
+        .meta_crc32c = 0,
+    };
+
+    try encodeMetaPage(META_A_PAGE_ID, meta, &buffer);
+    _ = try file.pwriteAll(&buffer, 0);
+
+    try testing.expectError(error.UnsupportedPageSize, Pager.open(test_filename, arena.allocator()));
 }
