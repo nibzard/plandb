@@ -257,6 +257,114 @@ pub fn validatePage(page_bytes: []const u8) !PageHeader {
 pub const META_A_PAGE_ID: u64 = 0;
 pub const META_B_PAGE_ID: u64 = 1;
 
+// Meta page state - represents which meta page is active
+pub const MetaState = struct {
+    page_id: u64,
+    header: PageHeader,
+    meta: MetaPayload,
+
+    pub fn isValid(self: MetaState) bool {
+        return self.header.validateHeaderChecksum() and
+               self.meta.validateChecksum() and
+               self.header.page_type == .meta and
+               self.header.page_id == self.page_id;
+    }
+};
+
+// Encode a complete meta page (header + meta payload)
+pub fn encodeMetaPage(page_id: u64, meta: MetaPayload, dest: []u8) !void {
+    if (dest.len < DEFAULT_PAGE_SIZE) return error.BufferTooSmall;
+
+    // Prepare the header
+    var header = PageHeader{
+        .page_type = .meta,
+        .page_id = page_id,
+        .txn_id = meta.committed_txn_id,
+        .payload_len = @intCast(MetaPayload.SIZE),
+        .header_crc32c = 0, // Will be calculated
+        .page_crc32c = 0, // Will be calculated
+    };
+
+    // Calculate and set header checksum
+    header.header_crc32c = header.calculateHeaderChecksum();
+
+    // Encode header to destination
+    try header.encode(dest[0..PageHeader.SIZE]);
+
+    // Calculate and set meta checksum
+    const meta_with_checksum = MetaPayload{
+        .meta_magic = meta.meta_magic,
+        .format_version = meta.format_version,
+        .page_size = meta.page_size,
+        .committed_txn_id = meta.committed_txn_id,
+        .root_page_id = meta.root_page_id,
+        .freelist_head_page_id = meta.freelist_head_page_id,
+        .log_tail_lsn = meta.log_tail_lsn,
+        .meta_crc32c = meta.calculateChecksum(),
+    };
+
+    // Encode meta payload after header
+    try meta_with_checksum.encode(dest[PageHeader.SIZE .. PageHeader.SIZE + MetaPayload.SIZE]);
+
+    // Calculate page checksum (with page_crc32c field still 0)
+    const page_data = dest[0 .. PageHeader.SIZE + header.payload_len];
+    header.page_crc32c = calculatePageChecksum(page_data);
+
+    // Re-encode header with page checksum
+    try header.encode(dest[0..PageHeader.SIZE]);
+}
+
+// Decode and validate a complete meta page
+pub fn decodeMetaPage(page_bytes: []const u8, expected_page_id: u64) !MetaState {
+    if (page_bytes.len < PageHeader.SIZE + MetaPayload.SIZE) return error.InvalidMetaPage;
+
+    // Decode and validate header
+    var header = try PageHeader.decode(page_bytes);
+    if (header.page_id != expected_page_id) return error.UnexpectedPageId;
+    if (header.page_type != .meta) return error.InvalidPageType;
+    if (!header.validateHeaderChecksum()) return error.InvalidHeaderChecksum;
+
+    // Decode and validate meta payload
+    const meta_bytes = page_bytes[PageHeader.SIZE .. PageHeader.SIZE + MetaPayload.SIZE];
+    var meta = try MetaPayload.decode(meta_bytes);
+    if (!meta.validateChecksum()) return error.InvalidMetaChecksum;
+
+    return MetaState{
+        .page_id = expected_page_id,
+        .header = header,
+        .meta = meta,
+    };
+}
+
+// Choose the valid meta with the highest committed_txn_id
+pub fn chooseBestMeta(meta_a: ?MetaState, meta_b: ?MetaState) ?MetaState {
+    // Filter to only valid metas
+    const valid_a = meta_a orelse null;
+    const valid_b = meta_b orelse null;
+
+    // If neither is valid, return null (corrupt database)
+    if (valid_a == null and valid_b == null) return null;
+
+    // If only one is valid, return it
+    if (valid_a != null and valid_b == null) return valid_a.?;
+    if (valid_b != null and valid_a == null) return valid_b.?;
+
+    // Both are valid, choose the one with higher txn_id
+    std.debug.assert(valid_a != null and valid_b != null);
+    if (valid_a.?.meta.committed_txn_id >= valid_b.?.meta.committed_txn_id) {
+        return valid_a.?;
+    } else {
+        return valid_b.?;
+    }
+}
+
+// Get the opposite meta page ID (used for toggling)
+pub fn getOppositeMetaId(page_id: u64) !u64 {
+    if (page_id == META_A_PAGE_ID) return META_B_PAGE_ID;
+    if (page_id == META_B_PAGE_ID) return META_A_PAGE_ID;
+    return error.InvalidMetaId;
+}
+
 // ==================== Unit Tests ====================
 
 const testing = std.testing;
@@ -496,4 +604,205 @@ test "format_constants_match_specification" {
     try testing.expectEqual(@as(u32, 0x42545245), BTREE_MAGIC); // "BTRE"
     try testing.expectEqual(@as(u16, 0), FORMAT_VERSION);
     try testing.expectEqual(@as(u16, 16384), DEFAULT_PAGE_SIZE);
+}
+
+test "encodeMetaPage produces_valid_page" {
+    var buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    const meta = MetaPayload{
+        .committed_txn_id = 100,
+        .root_page_id = 5,
+        .freelist_head_page_id = 0,
+        .log_tail_lsn = 42,
+        .meta_crc32c = 0, // Will be calculated
+    };
+
+    try encodeMetaPage(META_A_PAGE_ID, meta, &buffer);
+
+    // Decode and validate the page
+    const header = try PageHeader.decode(buffer[0..PageHeader.SIZE]);
+    try testing.expectEqual(.meta, header.page_type);
+    try testing.expectEqual(META_A_PAGE_ID, header.page_id);
+    try testing.expectEqual(meta.committed_txn_id, header.txn_id);
+    try testing.expectEqual(@as(u32, MetaPayload.SIZE), header.payload_len);
+    try testing.expect(header.validateHeaderChecksum());
+
+    // Validate page checksum
+    const calculated_checksum = calculatePageChecksum(buffer[0..PageHeader.SIZE + header.payload_len]);
+    try testing.expectEqual(header.page_crc32c, calculated_checksum);
+
+    // Decode and validate meta payload
+    const decoded_meta = try MetaPayload.decode(buffer[PageHeader.SIZE .. PageHeader.SIZE + MetaPayload.SIZE]);
+    try testing.expectEqual(meta.committed_txn_id, decoded_meta.committed_txn_id);
+    try testing.expectEqual(meta.root_page_id, decoded_meta.root_page_id);
+    try testing.expectEqual(meta.freelist_head_page_id, decoded_meta.freelist_head_page_id);
+    try testing.expectEqual(meta.log_tail_lsn, decoded_meta.log_tail_lsn);
+    try testing.expect(decoded_meta.validateChecksum());
+}
+
+test "decodeMetaPage rejects_corrupted_page" {
+    var buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    const meta = MetaPayload{
+        .committed_txn_id = 100,
+        .root_page_id = 5,
+        .freelist_head_page_id = 0,
+        .log_tail_lsn = 42,
+        .meta_crc32c = 0,
+    };
+
+    try encodeMetaPage(META_A_PAGE_ID, meta, &buffer);
+
+    // Corrupt the header checksum
+    buffer[@offsetOf(PageHeader, "header_crc32c")] += 1;
+
+    try testing.expectError(error.InvalidHeaderChecksum, decodeMetaPage(&buffer, META_A_PAGE_ID));
+}
+
+test "decodeMetaPage rejects_wrong_page_type" {
+    var buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    const meta = MetaPayload{
+        .committed_txn_id = 100,
+        .root_page_id = 5,
+        .freelist_head_page_id = 0,
+        .log_tail_lsn = 42,
+        .meta_crc32c = 0,
+    };
+
+    try encodeMetaPage(META_A_PAGE_ID, meta, &buffer);
+
+    // Change page type to btree_leaf
+    buffer[@offsetOf(PageHeader, "page_type")] = @intFromEnum(PageType.btree_leaf);
+
+    try testing.expectError(error.InvalidPageType, decodeMetaPage(&buffer, META_A_PAGE_ID));
+}
+
+test "decodeMetaPage rejects_wrong_page_id" {
+    var buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    const meta = MetaPayload{
+        .committed_txn_id = 100,
+        .root_page_id = 5,
+        .freelist_head_page_id = 0,
+        .log_tail_lsn = 42,
+        .meta_crc32c = 0,
+    };
+
+    try encodeMetaPage(META_A_PAGE_ID, meta, &buffer);
+
+    // Try to decode with wrong page ID
+    try testing.expectError(error.UnexpectedPageId, decodeMetaPage(&buffer, META_B_PAGE_ID));
+}
+
+test "MetaState.isValid_checks_all_fields" {
+    var buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    const meta = MetaPayload{
+        .committed_txn_id = 100,
+        .root_page_id = 5,
+        .freelist_head_page_id = 0,
+        .log_tail_lsn = 42,
+        .meta_crc32c = 0,
+    };
+
+    try encodeMetaPage(META_A_PAGE_ID, meta, &buffer);
+    const meta_state = try decodeMetaPage(&buffer, META_A_PAGE_ID);
+
+    try testing.expect(meta_state.isValid());
+
+    // Test with corrupted checksum - should fail to decode
+    buffer[@offsetOf(PageHeader, "header_crc32c")] += 1;
+    try testing.expectError(error.InvalidHeaderChecksum, decodeMetaPage(&buffer, META_A_PAGE_ID));
+}
+
+test "chooseBestMeta selects_highest_valid_txn_id" {
+    var buffer_a: [DEFAULT_PAGE_SIZE]u8 = undefined;
+    var buffer_b: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    const meta_a = MetaPayload{
+        .committed_txn_id = 100,
+        .root_page_id = 5,
+        .freelist_head_page_id = 0,
+        .log_tail_lsn = 42,
+        .meta_crc32c = 0,
+    };
+
+    const meta_b = MetaPayload{
+        .committed_txn_id = 200, // Higher txn_id
+        .root_page_id = 10,
+        .freelist_head_page_id = 0,
+        .log_tail_lsn = 84,
+        .meta_crc32c = 0,
+    };
+
+    try encodeMetaPage(META_A_PAGE_ID, meta_a, &buffer_a);
+    try encodeMetaPage(META_B_PAGE_ID, meta_b, &buffer_b);
+
+    const state_a = try decodeMetaPage(&buffer_a, META_A_PAGE_ID);
+    const state_b = try decodeMetaPage(&buffer_b, META_B_PAGE_ID);
+
+    // Should choose meta B (higher txn_id)
+    const best = chooseBestMeta(state_a, state_b).?;
+    try testing.expectEqual(META_B_PAGE_ID, best.page_id);
+    try testing.expectEqual(@as(u64, 200), best.meta.committed_txn_id);
+}
+
+test "chooseBestMeta_handles_invalid_metas" {
+    var buffer_a: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    const meta_a = MetaPayload{
+        .committed_txn_id = 100,
+        .root_page_id = 5,
+        .freelist_head_page_id = 0,
+        .log_tail_lsn = 42,
+        .meta_crc32c = 0,
+    };
+
+    try encodeMetaPage(META_A_PAGE_ID, meta_a, &buffer_a);
+    const state_a = try decodeMetaPage(&buffer_a, META_A_PAGE_ID);
+
+    // Only meta A is valid
+    const best = chooseBestMeta(state_a, null).?;
+    try testing.expectEqual(META_A_PAGE_ID, best.page_id);
+
+    // Neither is valid
+    try testing.expect(chooseBestMeta(null, null) == null);
+
+    // Corrupt meta A - should fail to decode
+    buffer_a[@offsetOf(PageHeader, "header_crc32c")] += 1;
+    const corrupted_result = decodeMetaPage(&buffer_a, META_A_PAGE_ID);
+    try testing.expectError(error.InvalidHeaderChecksum, corrupted_result);
+}
+
+test "getOppositeMetaId" {
+    try testing.expectEqual(META_B_PAGE_ID, try getOppositeMetaId(META_A_PAGE_ID));
+    try testing.expectEqual(META_A_PAGE_ID, try getOppositeMetaId(META_B_PAGE_ID));
+    try testing.expectError(error.InvalidMetaId, getOppositeMetaId(42));
+}
+
+test "format_meta_roundtrip_encode_decode" {
+    var buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    const original_meta = MetaPayload{
+        .committed_txn_id = 42,
+        .root_page_id = 123,
+        .freelist_head_page_id = 456,
+        .log_tail_lsn = 789,
+        .meta_crc32c = 0,
+    };
+
+    // Encode meta A
+    try encodeMetaPage(META_A_PAGE_ID, original_meta, &buffer);
+
+    // Decode it back
+    const decoded_state = try decodeMetaPage(&buffer, META_A_PAGE_ID);
+
+    // Verify all fields match
+    try testing.expectEqual(META_A_PAGE_ID, decoded_state.page_id);
+    try testing.expectEqual(original_meta.committed_txn_id, decoded_state.meta.committed_txn_id);
+    try testing.expectEqual(original_meta.root_page_id, decoded_state.meta.root_page_id);
+    try testing.expectEqual(original_meta.freelist_head_page_id, decoded_state.meta.freelist_head_page_id);
+    try testing.expectEqual(original_meta.log_tail_lsn, decoded_state.meta.log_tail_lsn);
+    try testing.expect(decoded_state.isValid());
 }
