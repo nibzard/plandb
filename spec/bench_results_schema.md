@@ -1,0 +1,194 @@
+## Benchmark JSON Output Schema (V0)
+
+The benchmark runner emits one JSON document per benchmark run.
+This schema is meant to be stable and machine-readable.
+
+### Required top-level fields
+
+- `bench_name` (string)
+- `profile` (object)
+- `build` (object)
+- `config` (object)
+- `results` (object)
+- `repeat_index` (int) and `repeat_count` (int)
+- `timestamp_utc` (string, ISO 8601)
+- `git` (object)
+
+---
+
+## JSON Schema (Draft)
+
+Save as: `bench/results.schema.json`
+
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NorthstarDB Benchmark Result",
+  "type": "object",
+  "required": [
+    "bench_name",
+    "profile",
+    "build",
+    "config",
+    "results",
+    "repeat_index",
+    "repeat_count",
+    "timestamp_utc",
+    "git"
+  ],
+  "properties": {
+    "bench_name": { "type": "string", "minLength": 1 },
+
+    "timestamp_utc": { "type": "string", "minLength": 10 },
+
+    "repeat_index": { "type": "integer", "minimum": 0 },
+    "repeat_count": { "type": "integer", "minimum": 1 },
+
+    "profile": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "enum": ["ci", "dev_nvme", "custom"] },
+        "cpu_model": { "type": "string" },
+        "core_count": { "type": "integer", "minimum": 1 },
+        "ram_gb": { "type": "number", "minimum": 0.5 },
+        "os": { "type": "string" },
+        "fs": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+
+    "build": {
+      "type": "object",
+      "required": ["zig_version", "mode"],
+      "properties": {
+        "zig_version": { "type": "string" },
+        "mode": { "type": "string", "enum": ["Debug", "ReleaseSafe", "ReleaseFast", "ReleaseSmall"] },
+        "target": { "type": "string" },
+        "lto": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+
+    "git": {
+      "type": "object",
+      "required": ["sha"],
+      "properties": {
+        "sha": { "type": "string", "minLength": 7 },
+        "branch": { "type": "string" },
+        "dirty": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+
+    "config": {
+      "type": "object",
+      "required": ["db"],
+      "properties": {
+        "seed": { "type": "integer" },
+        "warmup_ops": { "type": "integer", "minimum": 0 },
+        "warmup_ns": { "type": "integer", "minimum": 0 },
+        "measure_ops": { "type": "integer", "minimum": 1 },
+        "threads": { "type": "integer", "minimum": 1 },
+
+        "db": {
+          "type": "object",
+          "required": ["page_size"],
+          "properties": {
+            "page_size": { "type": "integer", "enum": [4096, 8192, 16384, 32768] },
+            "checksum": { "type": "string", "enum": ["crc32c", "xxh3", "none"] },
+            "sync_mode": { "type": "string", "enum": ["fsync_per_commit", "group_commit", "nosync"] },
+            "mmap": { "type": "boolean" }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+
+    "results": {
+      "type": "object",
+      "required": [
+        "ops_total",
+        "duration_ns",
+        "ops_per_sec",
+        "latency_ns",
+        "bytes",
+        "io",
+        "alloc",
+        "errors_total"
+      ],
+      "properties": {
+        "ops_total": { "type": "integer", "minimum": 0 },
+        "duration_ns": { "type": "integer", "minimum": 1 },
+        "ops_per_sec": { "type": "number", "minimum": 0 },
+
+        "latency_ns": {
+          "type": "object",
+          "required": ["p50", "p95", "p99", "max"],
+          "properties": {
+            "p50": { "type": "integer", "minimum": 0 },
+            "p95": { "type": "integer", "minimum": 0 },
+            "p99": { "type": "integer", "minimum": 0 },
+            "max": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        },
+
+        "bytes": {
+          "type": "object",
+          "required": ["read_total", "write_total"],
+          "properties": {
+            "read_total": { "type": "integer", "minimum": 0 },
+            "write_total": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": true
+        },
+
+        "io": {
+          "type": "object",
+          "required": ["fsync_count"],
+          "properties": {
+            "fsync_count": { "type": "integer", "minimum": 0 },
+            "fdatasync_count": { "type": "integer", "minimum": 0 },
+            "open_count": { "type": "integer", "minimum": 0 },
+            "close_count": { "type": "integer", "minimum": 0 },
+            "mmap_faults": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": true
+        },
+
+        "alloc": {
+          "type": "object",
+          "required": ["alloc_count", "alloc_bytes"],
+          "properties": {
+            "alloc_count": { "type": "integer", "minimum": 0 },
+            "alloc_bytes": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": true
+        },
+
+        "errors_total": { "type": "integer", "minimum": 0 },
+
+        "notes": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
+
+### Baseline comparison rules (V0)
+A comparison tool consumes two JSON docs: `baseline` and `candidate`.
+
+For each benchmark marked `critical`:
+- Fail if `ops_per_sec` decreases by > 5%
+- Fail if `latency_ns.p99` increases by > 10%
+- Fail if `alloc.alloc_count` increases by > 5% (when meaningful)
+- Fail if `io.fsync_count / ops_total` increases unexpectedly
+
+The compare tool should also compute:
+- coefficient of variation across repeats
+- a stability flag: unstable benches should not gate until fixed
