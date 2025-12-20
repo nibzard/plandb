@@ -40,6 +40,10 @@ pub const Comparator = struct {
         const baseline_parsed = try std.json.parseFromSliceLeaky(types.BenchmarkResult, self.allocator, baseline, .{});
         const candidate_parsed = try std.json.parseFromSliceLeaky(types.BenchmarkResult, self.allocator, candidate, .{});
 
+        // Validate both baseline and candidate results
+        try self.validateParsedResult(baseline_parsed);
+        try self.validateParsedResult(candidate_parsed);
+
         return self.compareResults(baseline_parsed, candidate_parsed);
     }
 
@@ -133,6 +137,61 @@ pub const Comparator = struct {
         // TODO: Implement stability check based on repeat_count
         // For now, assume stable
         return true;
+    }
+
+    fn validateParsedResult(self: *Comparator, result: types.BenchmarkResult) !void {
+        _ = self;
+
+        // Check required string fields are not empty
+        if (result.bench_name.len == 0) return error.EmptyBenchName;
+        if (result.timestamp_utc.len == 0) return error.EmptyTimestamp;
+        if (result.git.sha.len < 7) return error.InvalidGitSha;
+
+        // Check required numeric ranges
+        if (result.repeat_index >= result.repeat_count) return error.InvalidRepeatIndex;
+        if (result.results.ops_total == 0) return error.ZeroOpsTotal;
+        if (result.results.duration_ns == 0) return error.ZeroDuration;
+        if (result.results.ops_per_sec <= 0) return error.InvalidOpsPerSec;
+
+        // Profile validation
+        if (result.profile.core_count == 0) return error.InvalidCoreCount;
+        if (result.profile.ram_gb < 0.5) return error.InvalidRamGb;
+
+        // Config validation
+        if (result.config.measure_ops == 0) return error.InvalidMeasureOps;
+        if (result.config.threads == 0) return error.InvalidThreadCount;
+
+        // Db config validation
+        const valid_page_sizes = [_]u32{4096, 8192, 16384, 32768};
+        var valid_page_size = false;
+        for (valid_page_sizes) |size| {
+            if (result.config.db.page_size == size) {
+                valid_page_size = true;
+                break;
+            }
+        }
+        if (!valid_page_size) return error.InvalidPageSize;
+
+        // Results validation
+        const latency = result.results.latency_ns;
+        if (latency.p50 == 0 or latency.p95 == 0 or latency.p99 == 0 or latency.max == 0) {
+            return error.InvalidLatencyValues;
+        }
+
+        // Check monotonicity of latency values
+        if (latency.p50 > latency.p95 or latency.p95 > latency.p99 or latency.p99 > latency.max) {
+            return error.InvalidLatencyOrdering;
+        }
+
+        // IO validation - fsync_count can be 0 for read-only or open/close benchmarks
+        // fsync_count validation is context-dependent - some benchmarks legitimately have 0 fsyncs
+
+        // Alloc validation
+        const alloc = result.results.alloc;
+        if (alloc.alloc_count == 0 or alloc.alloc_bytes == 0) return error.InvalidAllocValues;
+
+        // Bytes validation - can be 0 for open/close or metadata-only benchmarks
+        // Byte activity validation is context-dependent - some benchmarks legitimately have 0 I/O
     }
 
     pub fn generateReport(self: *Comparator, comparisons: []ComparisonResult, writer: anytype) !void {
