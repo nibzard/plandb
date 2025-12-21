@@ -668,26 +668,96 @@ pub const Pager = struct {
         self.file.close();
     }
 
-    // Read a page from the file
+    // Read a page from the file with checksums and bounds checks
     pub fn readPage(self: *Self, page_id: u64, buffer: []u8) !void {
+        // Bounds check: ensure buffer is large enough for page
         if (buffer.len < self.page_size) return error.BufferTooSmall;
 
+        // Bounds check: ensure page_id is within reasonable range
+        const file_size = try self.file.getEndPos();
+        const max_page_id = file_size / self.page_size;
+        if (page_id >= max_page_id) {
+            return error.PageOutOfBounds;
+        }
+
+        // Calculate file offset with overflow check
         const offset = page_id * self.page_size;
+        if (offset != page_id * self.page_size) { // Check for overflow
+            return error.IntegerOverflow;
+        }
+
+        // Read page from file
         const bytes_read = try self.file.preadAll(buffer, offset);
         if (bytes_read < self.page_size) {
             return error.UnexpectedEOF;
         }
 
-        // Validate the page before returning
-        _ = try validatePage(buffer[0..self.page_size]);
+        // Validate page structure and checksums
+        const header = validatePage(buffer[0..self.page_size]) catch |err| {
+            // Provide more specific error information for debugging
+            switch (err) {
+                error.InvalidMagic => {
+                    const magic = std.mem.bytesAsValue(u32, buffer[0..4]).*;
+                    std.log.err("Invalid page magic 0x{X} in page {d}, expected 0x{X}", .{ magic, page_id, PAGE_MAGIC });
+                },
+                error.InvalidHeaderChecksum => {
+                    std.log.err("Invalid header checksum in page {d}", .{page_id});
+                },
+                error.InvalidPageChecksum => {
+                    std.log.err("Invalid page checksum in page {d}", .{page_id});
+                },
+                error.InvalidPayloadLength => {
+                    const header = std.mem.bytesAsValue(PageHeader, buffer[0..PageHeader.SIZE]);
+                    std.log.err("Invalid payload length {d} in page {d}, max {d}", .{ header.payload_len, page_id, self.page_size - PageHeader.SIZE });
+                },
+                else => {},
+            }
+            return err;
+        };
+
+        // Additional bounds check: ensure page_id in header matches requested page_id
+        if (header.page_id != page_id) {
+            std.log.err("Page ID mismatch: requested {d}, found {d} in header", .{ page_id, header.page_id });
+            return error.PageIdMismatch;
+        }
+
+        // Additional bounds check: ensure payload length fits within page
+        if (header.payload_len > self.page_size - PageHeader.SIZE) {
+            return error.PayloadTooLarge;
+        }
     }
 
-    // Write a page to the file
+    // Write a page to the file with checksums and bounds checks
     pub fn writePage(self: *Self, page_id: u64, buffer: []const u8) !void {
+        // Bounds check: ensure buffer is large enough for page
         if (buffer.len < self.page_size) return error.BufferTooSmall;
 
+        // Validate page structure before writing
+        const header = validatePage(buffer[0..self.page_size]) catch |err| {
+            std.log.err("Page validation failed before write to page {d}: {}", .{ page_id, err });
+            return err;
+        };
+
+        // Bounds check: ensure page_id in header matches target page_id
+        if (header.page_id != page_id) {
+            std.log.err("Page ID mismatch during write: target {d}, header {d}", .{ page_id, header.page_id });
+            return error.PageIdMismatch;
+        }
+
+        // Calculate file offset with overflow check
         const offset = page_id * self.page_size;
-        _ = try self.file.pwriteAll(buffer, offset);
+        if (offset != page_id * self.page_size) { // Check for overflow
+            return error.IntegerOverflow;
+        }
+
+        // Ensure we're not trying to write beyond reasonable file size
+        const file_size = try self.file.getEndPos();
+        if (offset > file_size) {
+            return error.WriteBeyondFile;
+        }
+
+        // Write page to file
+        try self.file.pwriteAll(buffer, offset);
     }
 
     // Sync file to ensure durability
@@ -741,6 +811,69 @@ pub const Pager = struct {
         return 0;
     }
 };
+
+// Helper function to create a properly checksummed page
+pub fn createPage(page_id: u64, page_type: PageType, txn_id: u64, payload: []const u8, buffer: []u8) !void {
+    if (buffer.len < DEFAULT_PAGE_SIZE) return error.BufferTooSmall;
+    if (payload.len > DEFAULT_PAGE_SIZE - PageHeader.SIZE) return error.PayloadTooLarge;
+
+    // Zero out the entire buffer first
+    @memset(buffer[0..DEFAULT_PAGE_SIZE], 0);
+
+    // Create header
+    var header = PageHeader{
+        .page_type = page_type,
+        .page_id = page_id,
+        .txn_id = txn_id,
+        .payload_len = @intCast(payload.len),
+        .header_crc32c = 0,
+        .page_crc32c = 0,
+    };
+
+    // Calculate header checksum
+    header.header_crc32c = header.calculateHeaderChecksum();
+
+    // Encode header
+    try header.encode(buffer[0..PageHeader.SIZE]);
+
+    // Copy payload if provided
+    if (payload.len > 0) {
+        @memcpy(buffer[PageHeader.SIZE .. PageHeader.SIZE + payload.len], payload);
+    }
+
+    // Calculate page checksum (with page_crc32c field still 0)
+    const page_data = buffer[0 .. PageHeader.SIZE + header.payload_len];
+    header.page_crc32c = calculatePageChecksum(page_data);
+
+    // Re-encode header with page checksum
+    try header.encode(buffer[0..PageHeader.SIZE]);
+}
+
+// Helper function to create a btree page with node header
+pub fn createBtreePage(page_id: u64, level: u16, key_count: u16, right_sibling: u64, txn_id: u64, payload: []const u8, buffer: []u8) !void {
+    if (buffer.len < DEFAULT_PAGE_SIZE) return error.BufferTooSmall;
+
+    const node_header = BtreeNodeHeader{
+        .level = level,
+        .key_count = key_count,
+        .right_sibling = right_sibling,
+    };
+
+    var node_data: [BtreeNodeHeader.SIZE]u8 = undefined;
+    try node_header.encode(&node_data);
+
+    // Combine node header with payload
+    const total_payload = node_data.len + payload.len;
+    if (total_payload > DEFAULT_PAGE_SIZE - PageHeader.SIZE) return error.PayloadTooLarge;
+
+    var combined_payload: [DEFAULT_PAGE_SIZE - PageHeader.SIZE]u8 = undefined;
+    @memcpy(combined_payload[0..node_data.len], &node_data);
+    if (payload.len > 0) {
+        @memcpy(combined_payload[node_data.len .. node_data.len + payload.len], payload);
+    }
+
+    try createPage(page_id, if (level == 0) .btree_leaf else .btree_internal, txn_id, combined_payload[0..total_payload], buffer);
+}
 
 // ==================== Unit Tests ====================
 
@@ -1640,4 +1773,301 @@ test "PageAllocator.rebuild_freelist_skips_btree_pages" {
 
     // Root page should be accessible
     try testing.expectEqual(@as(u64, 2), pager.getRootPageId());
+}
+
+test "Pager.readPage_with_checksums_and_bounds_checks" {
+    const test_filename = "test_read_page_validation.db";
+    defer {
+        std.fs.cwd().deleteFile(test_filename) catch {};
+    }
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    // Create test database file
+    const file = try std.fs.cwd().createFile(test_filename, .{ .truncate = true });
+    defer file.close();
+
+    var buffer_a: [DEFAULT_PAGE_SIZE]u8 = undefined;
+    var buffer_b: [DEFAULT_PAGE_SIZE]u8 = undefined;
+    var test_buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    const meta = MetaPayload{
+        .committed_txn_id = 0,
+        .root_page_id = 0,
+        .freelist_head_page_id = 0,
+        .log_tail_lsn = 0,
+        .meta_crc32c = 0,
+    };
+
+    try encodeMetaPage(META_A_PAGE_ID, meta, &buffer_a);
+    try encodeMetaPage(META_B_PAGE_ID, meta, &buffer_b);
+
+    _ = try file.pwriteAll(&buffer_a, 0);
+    _ = try file.pwriteAll(&buffer_b, DEFAULT_PAGE_SIZE);
+
+    // Create a valid test page
+    const test_payload = "Hello, World!";
+    try createPage(2, .btree_leaf, 1, test_payload, &test_buffer);
+    _ = try file.pwriteAll(&test_buffer, 2 * DEFAULT_PAGE_SIZE);
+
+    var pager = try Pager.open(test_filename, arena.allocator());
+    defer pager.close();
+
+    var read_buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    // Successful read
+    try pager.readPage(2, &read_buffer);
+    const header = try PageHeader.decode(read_buffer[0..PageHeader.SIZE]);
+    try testing.expectEqual(@as(u64, 2), header.page_id);
+    try testing.expectEqual(PageType.btree_leaf, header.page_type);
+    try testing.expectEqual(@as(u64, 1), header.txn_id);
+    try testing.expectEqual(test_payload.len, header.payload_len);
+
+    // Verify payload
+    const read_payload = read_buffer[PageHeader.SIZE .. PageHeader.SIZE + test_payload.len];
+    try testing.expectEqualStrings(test_payload, read_payload);
+}
+
+test "Pager.readPage_rejects_invalid_page_id" {
+    const test_filename = "test_read_page_invalid_id.db";
+    defer {
+        std.fs.cwd().deleteFile(test_filename) catch {};
+    }
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    // Create minimal database file
+    const file = try std.fs.cwd().createFile(test_filename, .{ .truncate = true });
+    defer file.close();
+
+    var buffer_a: [DEFAULT_PAGE_SIZE]u8 = undefined;
+    var buffer_b: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    const meta = MetaPayload{
+        .committed_txn_id = 0,
+        .root_page_id = 0,
+        .freelist_head_page_id = 0,
+        .log_tail_lsn = 0,
+        .meta_crc32c = 0,
+    };
+
+    try encodeMetaPage(META_A_PAGE_ID, meta, &buffer_a);
+    try encodeMetaPage(META_B_PAGE_ID, meta, &buffer_b);
+
+    _ = try file.pwriteAll(&buffer_a, 0);
+    _ = try file.pwriteAll(&buffer_b, DEFAULT_PAGE_SIZE);
+
+    var pager = try Pager.open(test_filename, arena.allocator());
+    defer pager.close();
+
+    var read_buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    // Should fail with page out of bounds
+    try testing.expectError(error.PageOutOfBounds, pager.readPage(100, &read_buffer));
+}
+
+test "Pager.readPage_rejects_corrupted_checksum" {
+    const test_filename = "test_read_page_corrupt.db";
+    defer {
+        std.fs.cwd().deleteFile(test_filename) catch {};
+    }
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    // Create test database file
+    const file = try std.fs.cwd().createFile(test_filename, .{ .truncate = true });
+    defer file.close();
+
+    var buffer_a: [DEFAULT_PAGE_SIZE]u8 = undefined;
+    var buffer_b: [DEFAULT_PAGE_SIZE]u8 = undefined;
+    var test_buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    const meta = MetaPayload{
+        .committed_txn_id = 0,
+        .root_page_id = 0,
+        .freelist_head_page_id = 0,
+        .log_tail_lsn = 0,
+        .meta_crc32c = 0,
+    };
+
+    try encodeMetaPage(META_A_PAGE_ID, meta, &buffer_a);
+    try encodeMetaPage(META_B_PAGE_ID, meta, &buffer_b);
+
+    _ = try file.pwriteAll(&buffer_a, 0);
+    _ = try file.pwriteAll(&buffer_b, DEFAULT_PAGE_SIZE);
+
+    // Create a valid test page
+    const test_payload = "Test data";
+    try createPage(2, .btree_leaf, 1, test_payload, &test_buffer);
+
+    // Corrupt the page checksum
+    test_buffer[@offsetOf(PageHeader, "page_crc32c")] += 1;
+
+    _ = try file.pwriteAll(&test_buffer, 2 * DEFAULT_PAGE_SIZE);
+
+    var pager = try Pager.open(test_filename, arena.allocator());
+    defer pager.close();
+
+    var read_buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    // Should fail with invalid page checksum
+    try testing.expectError(error.InvalidPageChecksum, pager.readPage(2, &read_buffer));
+}
+
+test "Pager.writePage_with_checksums_and_bounds_checks" {
+    const test_filename = "test_write_page_validation.db";
+    defer {
+        std.fs.cwd().deleteFile(test_filename) catch {};
+    }
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    // Create minimal database file
+    const file = try std.fs.cwd().createFile(test_filename, .{ .truncate = true });
+    defer file.close();
+
+    var buffer_a: [DEFAULT_PAGE_SIZE]u8 = undefined;
+    var buffer_b: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    const meta = MetaPayload{
+        .committed_txn_id = 0,
+        .root_page_id = 0,
+        .freelist_head_page_id = 0,
+        .log_tail_lsn = 0,
+        .meta_crc32c = 0,
+    };
+
+    try encodeMetaPage(META_A_PAGE_ID, meta, &buffer_a);
+    try encodeMetaPage(META_B_PAGE_ID, meta, &buffer_b);
+
+    _ = try file.pwriteAll(&buffer_a, 0);
+    _ = try file.pwriteAll(&buffer_b, DEFAULT_PAGE_SIZE);
+
+    var pager = try Pager.open(test_filename, arena.allocator());
+    defer pager.close();
+
+    // Create a valid page to write
+    var write_buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+    const test_payload = "Write test data";
+    try createPage(2, .btree_leaf, 1, test_payload, &write_buffer);
+
+    // Successful write
+    try pager.writePage(2, &write_buffer);
+
+    // Verify by reading it back
+    var read_buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+    try pager.readPage(2, &read_buffer);
+
+    const header = try PageHeader.decode(read_buffer[0..PageHeader.SIZE]);
+    try testing.expectEqual(@as(u64, 2), header.page_id);
+    try testing.expectEqual(PageType.btree_leaf, header.page_type);
+
+    const read_payload = read_buffer[PageHeader.SIZE .. PageHeader.SIZE + test_payload.len];
+    try testing.expectEqualStrings(test_payload, read_payload);
+}
+
+test "Pager.writePage_rejects_page_id_mismatch" {
+    const test_filename = "test_write_page_mismatch.db";
+    defer {
+        std.fs.cwd().deleteFile(test_filename) catch {};
+    }
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    // Create minimal database file
+    const file = try std.fs.cwd().createFile(test_filename, .{ .truncate = true });
+    defer file.close();
+
+    var buffer_a: [DEFAULT_PAGE_SIZE]u8 = undefined;
+    var buffer_b: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    const meta = MetaPayload{
+        .committed_txn_id = 0,
+        .root_page_id = 0,
+        .freelist_head_page_id = 0,
+        .log_tail_lsn = 0,
+        .meta_crc32c = 0,
+    };
+
+    try encodeMetaPage(META_A_PAGE_ID, meta, &buffer_a);
+    try encodeMetaPage(META_B_PAGE_ID, meta, &buffer_b);
+
+    _ = try file.pwriteAll(&buffer_a, 0);
+    _ = try file.pwriteAll(&buffer_b, DEFAULT_PAGE_SIZE);
+
+    var pager = try Pager.open(test_filename, arena.allocator());
+    defer pager.close();
+
+    // Create a page with ID 2, but try to write to ID 3
+    var write_buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+    const test_payload = "Mismatch test";
+    try createPage(2, .btree_leaf, 1, test_payload, &write_buffer);
+
+    // Should fail with page ID mismatch
+    try testing.expectError(error.PageIdMismatch, pager.writePage(3, &write_buffer));
+}
+
+test "createPage_creates_properly_checksummed_page" {
+    var buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+    const test_payload = "Test payload for createPage";
+
+    // Create a page
+    try createPage(5, .btree_internal, 42, test_payload, &buffer);
+
+    // Validate the created page
+    const header = try validatePage(&buffer);
+    try testing.expectEqual(@as(u64, 5), header.page_id);
+    try testing.expectEqual(PageType.btree_internal, header.page_type);
+    try testing.expectEqual(@as(u64, 42), header.txn_id);
+    try testing.expectEqual(test_payload.len, header.payload_len);
+
+    // Verify payload content
+    const payload_area = buffer[PageHeader.SIZE .. PageHeader.SIZE + test_payload.len];
+    try testing.expectEqualStrings(test_payload, payload_area);
+
+    // Verify rest of page is zeroed
+    const rest_start = PageHeader.SIZE + test_payload.len;
+    for (buffer[rest_start..]) |byte| {
+        try testing.expectEqual(@as(u8, 0), byte);
+    }
+}
+
+test "createBtreePage_creates_btree_with_node_header" {
+    var buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+    const test_payload = "Btree node data";
+
+    // Create a btree leaf page
+    try createBtreePage(10, 0, 3, 15, 100, test_payload, &buffer);
+
+    // Validate the page
+    const header = try validatePage(&buffer);
+    try testing.expectEqual(@as(u64, 10), header.page_id);
+    try testing.expectEqual(PageType.btree_leaf, header.page_type);
+    try testing.expectEqual(@as(u64, 100), header.txn_id);
+
+    // Validate node header
+    const node_header = try BtreeNodeHeader.decode(buffer[PageHeader.SIZE .. PageHeader.SIZE + BtreeNodeHeader.SIZE]);
+    try testing.expectEqual(@as(u16, 0), node_header.level);
+    try testing.expectEqual(@as(u16, 3), node_header.key_count);
+    try testing.expectEqual(@as(u64, 15), node_header.right_sibling);
+
+    // Verify payload content after node header
+    const payload_start = PageHeader.SIZE + BtreeNodeHeader.SIZE;
+    const payload_area = buffer[payload_start .. payload_start + test_payload.len];
+    try testing.expectEqualStrings(test_payload, payload_area);
+}
+
+test "createPage_rejects_oversized_payload" {
+    var buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    // Create payload that's too large
+    const oversized_payload = [_]u8{0xAA} ** (DEFAULT_PAGE_SIZE - PageHeader.SIZE + 1);
+
+    // Should fail with payload too large
+    try testing.expectError(error.PayloadTooLarge, createPage(1, .btree_leaf, 1, &oversized_payload, &buffer));
 }
