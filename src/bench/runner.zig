@@ -6,6 +6,161 @@
 const std = @import("std");
 const types = @import("types.zig");
 
+test "schema validation rejects invalid benchmark results" {
+    const allocator = std.testing.allocator;
+    var runner = Runner.init(allocator);
+    defer runner.deinit();
+
+    // Create invalid result with empty bench_name
+    const invalid_result = types.BenchmarkResult{
+        .bench_name = "", // Invalid: empty string
+        .profile = .{
+            .name = .ci,
+            .cpu_model = null,
+            .core_count = 4,
+            .ram_gb = 4.0,
+            .os = "linux",
+            .fs = "ext4",
+        },
+        .build = .{
+            .zig_version = "0.15.2",
+            .mode = .Debug,
+            .target = null,
+            .lto = null,
+        },
+        .config = .{
+            .seed = null,
+            .warmup_ops = 0,
+            .warmup_ns = 0,
+            .measure_ops = 1,
+            .threads = 1,
+            .db = .{
+                .page_size = 16384,
+                .checksum = .crc32c,
+                .sync_mode = .fsync_per_commit,
+                .mmap = false,
+            },
+        },
+        .results = .{
+            .ops_total = 100,
+            .duration_ns = 1000000,
+            .ops_per_sec = 100000.0,
+            .latency_ns = .{
+                .p50 = 10000,
+                .p95 = 15000,
+                .p99 = 20000,
+                .max = 25000,
+            },
+            .bytes = .{
+                .read_total = 1024,
+                .write_total = 1024,
+            },
+            .io = .{
+                .fsync_count = 1,
+            },
+            .alloc = .{
+                .alloc_count = 10,
+                .alloc_bytes = 1024,
+            },
+            .errors_total = 0,
+        },
+        .repeat_index = 0,
+        .repeat_count = 5,
+        .timestamp_utc = "1234567890",
+        .git = .{
+            .sha = "abc1234",
+            .branch = "main",
+            .dirty = null,
+        },
+    };
+
+    // Try to write invalid result - should fail validation
+    var buf: [1024]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+
+    const validation_error = runner.writeJson(fbs.writer(), invalid_result);
+    try std.testing.expectError(error.EmptyBenchName, validation_error);
+}
+
+test "schema validation accepts valid benchmark results" {
+    const allocator = std.testing.allocator;
+    var runner = Runner.init(allocator);
+    defer runner.deinit();
+
+    // Create valid result
+    const valid_result = types.BenchmarkResult{
+        .bench_name = "test/benchmark",
+        .profile = .{
+            .name = .ci,
+            .cpu_model = null,
+            .core_count = 4,
+            .ram_gb = 4.0,
+            .os = "linux",
+            .fs = "ext4",
+        },
+        .build = .{
+            .zig_version = "0.15.2",
+            .mode = .Debug,
+            .target = null,
+            .lto = null,
+        },
+        .config = .{
+            .seed = null,
+            .warmup_ops = 0,
+            .warmup_ns = 0,
+            .measure_ops = 1,
+            .threads = 1,
+            .db = .{
+                .page_size = 16384,
+                .checksum = .crc32c,
+                .sync_mode = .fsync_per_commit,
+                .mmap = false,
+            },
+        },
+        .results = .{
+            .ops_total = 100,
+            .duration_ns = 1000000,
+            .ops_per_sec = 100000.0,
+            .latency_ns = .{
+                .p50 = 10000,
+                .p95 = 15000,
+                .p99 = 20000,
+                .max = 25000,
+            },
+            .bytes = .{
+                .read_total = 1024,
+                .write_total = 1024,
+            },
+            .io = .{
+                .fsync_count = 1,
+            },
+            .alloc = .{
+                .alloc_count = 10,
+                .alloc_bytes = 1024,
+            },
+            .errors_total = 0,
+        },
+        .repeat_index = 0,
+        .repeat_count = 5,
+        .timestamp_utc = "1234567890",
+        .git = .{
+            .sha = "abc1234",
+            .branch = "main",
+            .dirty = null,
+        },
+    };
+
+    // Try to write valid result - should pass validation
+    var buf: [2048]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+
+    try runner.writeJson(fbs.writer(), valid_result);
+
+    // Verify we can parse it back
+    const json_str = fbs.getWritten();
+    _ = try std.json.parseFromSliceLeaky(types.BenchmarkResult, allocator, json_str, .{});
+}
+
 pub const GateResult = struct {
     passed: bool,
     total_critical: usize,
@@ -62,44 +217,85 @@ pub const Runner = struct {
         for (filtered) |bench| {
             std.debug.print("Running {s}...\n", .{bench.name});
 
-            const result = try self.runSingle(bench, args);
+            const results = try self.runSinglePerRepeat(bench, args);
+            defer self.allocator.free(results);
 
-            // Output JSON
+            // Output per-repeat JSON files
             if (args.output_dir) |dir| {
-                const filename = try std.fmt.allocPrint(self.allocator, "{s}.json", .{bench.name});
-                defer self.allocator.free(filename);
-                const path = try std.fs.path.join(self.allocator, &.{ dir, filename });
-                defer self.allocator.free(path);
+                for (results) |result| {
+                    const filename = try std.fmt.allocPrint(self.allocator, "{s}_r{d:0>3}.json", .{ bench.name, result.repeat_index });
+                    defer self.allocator.free(filename);
+                    const path = try std.fs.path.join(self.allocator, &.{ dir, filename });
+                    defer self.allocator.free(path);
 
-                if (std.fs.path.dirname(path)) |parent| {
-                    try std.fs.cwd().makePath(parent);
+                    if (std.fs.path.dirname(path)) |parent| {
+                        try std.fs.cwd().makePath(parent);
+                    }
+
+                    const file = try std.fs.cwd().createFile(path, .{});
+                    defer file.close();
+
+                    const buf = try self.allocator.alloc(u8, 4096);
+                    defer self.allocator.free(buf);
+                    try self.writeJson(file.writer(buf), result);
                 }
 
-                const file = try std.fs.cwd().createFile(path, .{});
-                defer file.close();
-
-                const buf = try self.allocator.alloc(u8, 4096);
-                defer self.allocator.free(buf);
-                try self.writeJson(file.writer(buf), result);
-
-                // Compare with baseline if provided
+                // Compare aggregated baseline if provided
                 if (args.baseline_dir) |baseline_dir| {
                     const baseline_filename = try std.fmt.allocPrint(self.allocator, "{s}.json", .{bench.name});
-                defer self.allocator.free(baseline_filename);
-                const baseline_path = try std.fs.path.join(self.allocator, &.{ baseline_dir, baseline_filename });
+                    defer self.allocator.free(baseline_filename);
+                    const baseline_path = try std.fs.path.join(self.allocator, &.{ baseline_dir, baseline_filename });
                     defer self.allocator.free(baseline_path);
 
-                    if (self.compareWithBaseline(result, baseline_path)) |comparison| {
+                    // Aggregate results for comparison
+                    var results_data = std.ArrayListUnmanaged(types.Results){};
+                    defer results_data.deinit(self.allocator);
+                    for (results) |result| {
+                        try results_data.append(self.allocator, result.results);
+                    }
+                    const aggregated = try self.aggregateResults(self.allocator, results_data.items);
+                    const aggregated_result = types.BenchmarkResult{
+                        .bench_name = bench.name,
+                        .profile = try self.detectProfile(),
+                        .build = try self.detectBuild(),
+                        .config = args.config,
+                        .results = aggregated,
+                        .repeat_index = 0,
+                        .repeat_count = args.repeats,
+                        .timestamp_utc = try self.getTimestamp(),
+                        .git = try self.detectGit(),
+                    };
+
+                    if (self.compareWithBaseline(aggregated_result, baseline_path)) |comparison| {
                         std.debug.print("  Comparison: {s}\n", .{comparison});
                     } else |err| {
                         std.debug.print("  Baseline comparison failed: {}\n", .{err});
                     }
                 }
             } else {
+                // Console output: show aggregated results only
+                var results_data = std.ArrayListUnmanaged(types.Results){};
+                defer results_data.deinit(self.allocator);
+                for (results) |result| {
+                    try results_data.append(self.allocator, result.results);
+                }
+                const aggregated = try self.aggregateResults(self.allocator, results_data.items);
+                const aggregated_result = types.BenchmarkResult{
+                    .bench_name = bench.name,
+                    .profile = try self.detectProfile(),
+                    .build = try self.detectBuild(),
+                    .config = args.config,
+                    .results = aggregated,
+                    .repeat_index = 0,
+                    .repeat_count = args.repeats,
+                    .timestamp_utc = try self.getTimestamp(),
+                    .git = try self.detectGit(),
+                };
+
                 const buf = try self.allocator.alloc(u8, 4096);
                 defer self.allocator.free(buf);
                 var fbs = std.io.fixedBufferStream(buf);
-                try self.writeJson(fbs.writer(), result);
+                try self.writeJson(fbs.writer(), aggregated_result);
                 std.debug.print("{s}\n", .{fbs.getWritten()});
             }
         }
@@ -154,25 +350,28 @@ pub const Runner = struct {
             const critical_suffix = if (bench.critical) " (CRITICAL)" else "";
             std.debug.print("Running {s}{s}\n", .{ bench.name, critical_suffix });
 
-            const result = try self.runSingle(bench, args);
+            const results = try self.runSinglePerRepeat(bench, args);
+            defer self.allocator.free(results);
 
-            // Output JSON if requested
+            // Output per-repeat JSON files if requested
             if (args.output_dir) |dir| {
-                const filename = try std.fmt.allocPrint(self.allocator, "{s}.json", .{bench.name});
-                defer self.allocator.free(filename);
-                const path = try std.fs.path.join(self.allocator, &.{ dir, filename });
-                defer self.allocator.free(path);
+                for (results) |result| {
+                    const filename = try std.fmt.allocPrint(self.allocator, "{s}_r{d:0>3}.json", .{ result.bench_name, result.repeat_index });
+                    defer self.allocator.free(filename);
+                    const path = try std.fs.path.join(self.allocator, &.{ dir, filename });
+                    defer self.allocator.free(path);
 
-                if (std.fs.path.dirname(path)) |parent| {
-                    try std.fs.cwd().makePath(parent);
+                    if (std.fs.path.dirname(path)) |parent| {
+                        try std.fs.cwd().makePath(parent);
+                    }
+
+                    const file = try std.fs.cwd().createFile(path, .{});
+                    defer file.close();
+
+                    const buf = try self.allocator.alloc(u8, 4096);
+                    defer self.allocator.free(buf);
+                    try self.writeJson(file.writer(buf), result);
                 }
-
-                const file = try std.fs.cwd().createFile(path, .{});
-                defer file.close();
-
-                const buf = try self.allocator.alloc(u8, 4096);
-                defer self.allocator.free(buf);
-                try self.writeJson(file.writer(buf), result);
             }
 
             // Compare with baseline for critical benchmarks
@@ -186,11 +385,30 @@ pub const Runner = struct {
                 if (std.fs.cwd().openFile(baseline_path, .{})) |baseline_file| {
                     baseline_file.close();
 
+                    // Aggregate results for comparison
+                    var results_data = std.ArrayListUnmanaged(types.Results){};
+                    defer results_data.deinit(self.allocator);
+                    for (results) |result| {
+                        try results_data.append(self.allocator, result.results);
+                    }
+                    const aggregated_results = try self.aggregateResults(self.allocator, results_data.items);
+                    const aggregated_result = types.BenchmarkResult{
+                        .bench_name = bench.name,
+                        .profile = try self.detectProfile(),
+                        .build = try self.detectBuild(),
+                        .config = args.config,
+                        .results = aggregated_results,
+                        .repeat_index = 0,
+                        .repeat_count = args.repeats,
+                        .timestamp_utc = try self.getTimestamp(),
+                        .git = try self.detectGit(),
+                    };
+
                     // Write candidate to temp file for comparison
                     const tmp_buf = try self.allocator.alloc(u8, 4096);
                     defer self.allocator.free(tmp_buf);
                     var fbs = std.io.fixedBufferStream(tmp_buf);
-                    try self.writeJson(fbs.writer(), result);
+                    try self.writeJson(fbs.writer(), aggregated_result);
 
                     const tmp_path = try std.fs.path.join(self.allocator, &.{ "candidate.tmp.json" });
                     defer self.allocator.free(tmp_path);
@@ -243,6 +461,40 @@ pub const Runner = struct {
             .failed_critical = failed_critical,
             .failure_notes = try failure_notes.toOwnedSlice(self.allocator),
         };
+    }
+
+    fn runSinglePerRepeat(self: *Runner, bench: Benchmark, args: RunArgs) ![]types.BenchmarkResult {
+        var results = std.ArrayListUnmanaged(types.BenchmarkResult){};
+        defer results.deinit(self.allocator);
+
+        // Prepare config
+        var config = args.config;
+        if (args.seed) |seed| config.seed = seed;
+
+        // Run repeats
+        for (0..args.repeats) |i| {
+            const result = try bench.run_fn(self.allocator, config);
+
+            const bench_result = types.BenchmarkResult{
+                .bench_name = bench.name,
+                .profile = try self.detectProfile(),
+                .build = try self.detectBuild(),
+                .config = config,
+                .results = result,
+                .repeat_index = @intCast(i),
+                .repeat_count = args.repeats,
+                .timestamp_utc = try self.getTimestamp(),
+                .git = try self.detectGit(),
+            };
+
+            try results.append(self.allocator, bench_result);
+
+            if (i < args.repeats - 1) {
+                std.Thread.sleep(100 * std.time.ns_per_ms); // Brief pause
+            }
+        }
+
+        return try results.toOwnedSlice(self.allocator);
     }
 
     fn runSingle(self: *Runner, bench: Benchmark, args: RunArgs) !types.BenchmarkResult {
@@ -455,17 +707,20 @@ pub const Runner = struct {
         var branch_buf: [128]u8 = undefined;
 
         const sha = self.runCmd(&sha_buf, &.{ "git", "rev-parse", "--short", "HEAD" }) orelse "unknown";
-        const branch = self.runCmd(&branch_buf, &.{ "git", "rev-parse", "--abbrev-ref", "HEAD" });
+        const branch = self.runCmd(&branch_buf, &.{ "git", "rev-parse", "--abbrev-ref", "HEAD" }) orelse "unknown";
+
+        // Make copies of the strings that will outlive the buffer
+        const sha_copy = try self.allocator.dupeZ(u8, sha);
+        const branch_copy = try self.allocator.dupeZ(u8, branch);
 
         return .{
-            .sha = sha,
-            .branch = branch,
+            .sha = sha_copy,
+            .branch = branch_copy,
             .dirty = null,
         };
     }
 
     fn runCmd(self: *Runner, buf: []u8, argv: []const []const u8) ?[]const u8 {
-        _ = buf;
         const result = std.process.Child.run(.{
             .allocator = self.allocator,
             .argv = argv,
@@ -474,14 +729,23 @@ pub const Runner = struct {
         defer self.allocator.free(result.stderr);
 
         const trimmed = std.mem.trimRight(u8, result.stdout, "\n\r ");
-        return if (trimmed.len == 0) null else trimmed;
+        if (trimmed.len == 0) return null;
+
+        // Copy to the provided buffer to ensure null-termination
+        if (trimmed.len < buf.len) {
+            @memcpy(buf[0..trimmed.len], trimmed);
+            buf[trimmed.len] = 0;
+            return buf[0..trimmed.len];
+        }
+
+        return null;
     }
 
     fn getTimestamp(self: *Runner) ![]const u8 {
         const ts = std.time.timestamp();
-        const iso_buf = try self.allocator.alloc(u8, 32);
-        const len = try std.fmt.bufPrint(iso_buf, "{d}", .{ts});
-        return iso_buf[0..len.len];
+        const timestamp_str = try self.allocator.alloc(u8, 32);
+        const len = try std.fmt.bufPrint(timestamp_str, "{d}", .{ts});
+        return timestamp_str[0..len.len];
     }
 
     fn writeJson(self: *Runner, writer: anytype, result: types.BenchmarkResult) !void {
@@ -507,14 +771,88 @@ pub const Runner = struct {
         const json_str = try std.json.Stringify.valueAlloc(self.allocator, result, .{});
         defer self.allocator.free(json_str);
 
-        // Parse back to validate
+        // Parse back to validate structure matches types
         const parsed = try std.json.parseFromSliceLeaky(types.BenchmarkResult, self.allocator, json_str, .{});
 
         // Additional explicit validation checks
         try self.validateRequiredFields(result);
         try self.validateValueRanges(result);
 
+        // Schema-aware validation using the JSON schema file
+        try self.validateAgainstSchema(json_str);
+
         _ = parsed; // Suppress unused variable warning
+    }
+
+    fn validateAgainstSchema(self: *Runner, json_str: []const u8) !void {
+        // For now, we implement basic schema validation manually
+        // In a full implementation, we would parse and validate against bench/results.schema.json
+
+        const parsed = try std.json.parseFromSliceLeaky(std.json.Value, self.allocator, json_str, .{});
+        const obj = parsed.object;
+
+        // Check required top-level fields
+        const required_fields = [_][]const u8{
+            "bench_name", "profile", "build", "config", "results",
+            "repeat_index", "repeat_count", "timestamp_utc", "git"
+        };
+
+        for (required_fields) |field| {
+            if (!obj.contains(field)) {
+                return error.MissingRequiredField;
+            }
+        }
+
+        // Validate bench_name is non-empty string
+        if (obj.get("bench_name").?.string.len == 0) {
+            return error.EmptyBenchName;
+        }
+
+        // Validate repeat_index and repeat_count
+        const repeat_index = obj.get("repeat_index").?.integer;
+        const repeat_count = obj.get("repeat_count").?.integer;
+        if (repeat_index < 0 or repeat_count <= 0 or repeat_index >= repeat_count) {
+            return error.InvalidRepeatRange;
+        }
+
+        // Validate results object structure
+        const results_obj = obj.get("results").?.object;
+        const required_result_fields = [_][]const u8{
+            "ops_total", "duration_ns", "ops_per_sec", "latency_ns",
+            "bytes", "io", "alloc", "errors_total"
+        };
+
+        for (required_result_fields) |field| {
+            if (!results_obj.contains(field)) {
+                return error.MissingRequiredResultField;
+            }
+        }
+
+        // Validate numeric ranges
+        const ops_total = results_obj.get("ops_total").?.integer;
+        const duration_ns = results_obj.get("duration_ns").?.integer;
+        const ops_per_sec_val = results_obj.get("ops_per_sec").?;
+        const ops_per_sec = switch (ops_per_sec_val) {
+            .float => |f| f,
+            .integer => |i| @as(f64, @floatFromInt(i)),
+            else => return error.InvalidOpsPerSec,
+        };
+
+        if (ops_total <= 0) return error.InvalidOpsTotal;
+        if (duration_ns <= 0) return error.InvalidDuration;
+        if (ops_per_sec <= 0) return error.InvalidOpsPerSec;
+
+        // Validate latency structure
+        const latency_obj = results_obj.get("latency_ns").?.object;
+        const latency_fields = [_][]const u8{"p50", "p95", "p99", "max"};
+        for (latency_fields) |field| {
+            if (!latency_obj.contains(field)) {
+                return error.MissingLatencyField;
+            }
+            if (latency_obj.get(field).?.integer <= 0) {
+                return error.InvalidLatencyValue;
+            }
+        }
     }
 
     fn validateRequiredFields(self: *Runner, result: types.BenchmarkResult) !void {
