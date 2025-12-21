@@ -410,7 +410,7 @@ pub const ReplayEngine = struct {
             }
         }
         self.allocator.free(record.mutations);
-        self.allocator.destroy(record);
+        // Note: record itself is returned by value, not allocated, so don't destroy it
     }
 };
 
