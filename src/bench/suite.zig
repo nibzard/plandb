@@ -647,27 +647,62 @@ fn benchMvccSnapshotOpen(allocator: std.mem.Allocator, config: types.Config) !ty
 }
 
 fn benchMvccManyReaders(allocator: std.mem.Allocator, config: types.Config) !types.Results {
-    _ = config;
-    const readers: usize = 16;
-    const ops_per: u64 = 1_000;
+    const readers: usize = 256; // Parameterized N readers as specified in task name
+    const ops_per: u64 = 1_000; // Operations per reader
+    const key_count: u64 = 100; // Number of distinct keys to read from (hot cache)
+
     var database = try db.Db.open(allocator);
     defer database.close();
+
+    // Pre-populate database with test data for hot cache reads
     var w = try database.beginWrite();
-    try w.put("seed", "v");
+    for (0..key_count) |i| {
+        var buf: [16]u8 = undefined;
+        const key = try std.fmt.bufPrint(&buf, "k{d}", .{i});
+        try w.put(key, "v");
+    }
     _ = try w.commit();
 
+    var prng = std.Random.DefaultPrng.init(config.seed orelse 42);
+    const rand = prng.random();
+
+    var total_reads: u64 = 0;
+    var total_alloc_bytes: u64 = 0;
+    var alloc_count: u64 = 0;
+
     const start_time = std.time.nanoTimestamp();
+
+    // Create N concurrent readers (simulated by sequential operations)
+    // This tests MVCC snapshot registry performance with many readers
     for (0..readers) |_| {
         var r = try database.beginReadLatest();
+        defer r.close();
+
+        // Each reader performs random point gets on hot cache keys
         for (0..ops_per) |_| {
-            _ = r.get("seed");
+            const key_idx = rand.intRangeLessThan(u64, 0, key_count);
+            var buf: [16]u8 = undefined;
+            const key = try std.fmt.bufPrint(&buf, "k{d}", .{key_idx});
+            _ = r.get(key); // Perform point get (hot cache)
+            total_reads += 1;
         }
-        r.close();
+
+        alloc_count += 1; // One allocation per reader for snapshot
+        total_alloc_bytes += 1024; // Estimated allocation per reader
     }
+
     const duration_ns = @as(u64, @intCast(std.time.nanoTimestamp() - start_time));
     const total_ops = ops_per * readers;
 
-    return basicResult(total_ops, duration_ns, .{ .read_total = total_ops * 32, .write_total = 0 }, .{ .fsync_count = 0 }, .{ .alloc_count = readers, .alloc_bytes = readers * 1024 });
+    return basicResult(total_ops, duration_ns, .{
+        .read_total = total_reads * 32, // Estimate 32 bytes per key read
+        .write_total = 0
+    }, .{
+        .fsync_count = 0
+    }, .{
+        .alloc_count = alloc_count,
+        .alloc_bytes = total_alloc_bytes
+    });
 }
 
 fn benchLogAppendCommit(allocator: std.mem.Allocator, config: types.Config) !types.Results {
