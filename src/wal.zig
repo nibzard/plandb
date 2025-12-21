@@ -408,8 +408,8 @@ pub const WriteAheadLog = struct {
         return record_count;
     }
 
-    /// Private: Serialize commit record payload per spec/commit_record_v0.md
-    fn serializeCommitRecord(self: *Self, record: *const txn.CommitRecord) ![]u8 {
+    /// Serialize commit record payload per spec/commit_record_v0.md
+    pub fn serializeCommitRecord(self: *Self, record: *const txn.CommitRecord) ![]u8 {
         var buffer = std.ArrayList(u8).initCapacity(self.allocator, 0) catch unreachable;
         errdefer buffer.deinit(self.allocator);
 

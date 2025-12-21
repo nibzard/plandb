@@ -24,6 +24,7 @@ pub const Db = struct {
     next_txn_id: u64,
     snapshot_registry: ?snapshot.SnapshotRegistry,
     writer_active: bool,
+    log_path: ?[]const u8, // Phase 4: Path to separate .log file
 
     pub fn open(allocator: std.mem.Allocator) !Db {
         return .{
@@ -34,15 +35,45 @@ pub const Db = struct {
             .next_txn_id = 1,
             .snapshot_registry = null, // In-memory databases don't need snapshot registry
             .writer_active = false,
+            .log_path = null, // In-memory databases don't need log file
         };
     }
 
     pub fn openWithFile(allocator: std.mem.Allocator, db_path: []const u8, wal_path: []const u8) !Db {
-        // Open pager for file-based operations
-        var pager = try pager_mod.Pager.open(db_path, allocator);
+        // Check if database file exists
+        const db_exists = blk: {
+            const file = std.fs.cwd().openFile(db_path, .{ .mode = .read_only }) catch |err| switch (err) {
+                error.FileNotFound => break :blk false,
+                else => return err,
+            };
+            file.close();
+            break :blk true;
+        };
 
-        // Open WAL
-        const wal_inst = try wal.WriteAheadLog.open(wal_path, allocator);
+        // Open or create pager
+        var pager = if (!db_exists)
+            try pager_mod.Pager.create(db_path, allocator)
+        else
+            try pager_mod.Pager.open(db_path, allocator);
+
+        // Check if WAL exists
+        const wal_exists = blk: {
+            const file = std.fs.cwd().openFile(wal_path, .{ .mode = .read_only }) catch |err| switch (err) {
+                error.FileNotFound => break :blk false,
+                else => return err,
+            };
+            file.close();
+            break :blk true;
+        };
+
+        // Open or create WAL
+        const wal_inst = if (!wal_exists)
+            try wal.WriteAheadLog.create(wal_path, allocator)
+        else
+            try wal.WriteAheadLog.open(wal_path, allocator);
+
+        // Phase 4: Create log path from database path
+        const log_path = try createLogPathFromDbPath(allocator, db_path);
 
         // Get current state from pager
         const committed_txn_id = pager.getCommittedTxnId();
@@ -60,7 +91,15 @@ pub const Db = struct {
             .next_txn_id = next_txn_id,
             .snapshot_registry = snapshot_registry,
             .writer_active = false,
+            .log_path = log_path,
         };
+    }
+
+    // Helper function to create log path from database path
+    fn createLogPathFromDbPath(allocator: std.mem.Allocator, db_path: []const u8) ![]const u8 {
+        // Extract the base name without extension and add .log extension
+        const path_without_ext = std.fs.path.stem(db_path);
+        return std.fmt.allocPrint(allocator, "{s}.log", .{path_without_ext});
     }
 
     pub fn close(self: *Db) void {
@@ -73,6 +112,9 @@ pub const Db = struct {
         }
         if (self.snapshot_registry) |*registry| {
             registry.deinit();
+        }
+        if (self.log_path) |log_path| {
+            self.allocator.free(log_path);
         }
     }
 
@@ -152,48 +194,44 @@ pub const Db = struct {
     fn executeTwoPhaseCommit(self: *Db, txn_ctx: *txn.TransactionContext) !u64 {
         if (self.wal == null or self.pager == null) return error.NotFileBased;
 
-        var wal_inst = self.wal.?;
+        const wal_inst = self.wal.?; // Still needed for commitSync
         var pager_inst = self.pager.?;
 
         // Phase 1: Prepare
         try txn_ctx.prepare();
 
-        // Create commit record
-        const commit_record = try txn_ctx.createCommitRecord();
+        // Apply mutations to B+tree first to get the new root page ID
+        var root_page_id: u64 = pager_inst.getRootPageId();
+        for (txn_ctx.mutations.items) |mutation| {
+            switch (mutation) {
+                .put => |put_op| {
+                    try pager_inst.putBtreeValue(put_op.key, put_op.value, txn_ctx.txn_id);
+                },
+                .delete => |del_op| {
+                    // TODO: Implement delete operation when needed
+                    _ = del_op;
+                },
+            }
+        }
+        root_page_id = pager_inst.getRootPageId(); // Get new root after mutations
+
+        // Create commit record with the correct root page ID
+        const commit_record = try txn_ctx.createCommitRecord(root_page_id);
         defer self.allocator.free(commit_record.mutations);
 
-        // Append commit record to WAL
-        const commit_lsn = try wal_inst.appendCommitRecord(commit_record);
+        // Phase 4: Append to separate .log file instead of WAL
+        if (self.log_path == null) return error.LogPathNotSet;
 
-        // CRITICAL: Fsync WAL to ensure commit record is durable
-        // This is step 2 of the fsync ordering: data -> WAL -> meta
-        try wal_inst.sync();
+        // Create or open the separate log file
+        var log_file = try openOrCreateLogFile(self.log_path.?);
+        defer log_file.close();
 
-        // Apply mutations to B+tree
-        for (commit_record.mutations) |mutation| {
-            switch (mutation) {
-                .put => |put_op| {
-                    try pager_inst.putBtreeValue(put_op.key, put_op.value, commit_record.txn_id);
-                },
-                .delete => |del_op| {
-                    // TODO: Implement delete operation when needed
-                    _ = del_op;
-                },
-            }
-        }
+        // Write commit record to log file
+        try self.writeCommitRecordToLog(&log_file, commit_record);
 
-        // Apply mutations to B+tree
-        for (commit_record.mutations) |mutation| {
-            switch (mutation) {
-                .put => |put_op| {
-                    try pager_inst.putBtreeValue(put_op.key, put_op.value, commit_record.txn_id);
-                },
-                .delete => |del_op| {
-                    // TODO: Implement delete operation when needed
-                    _ = del_op;
-                },
-            }
-        }
+        // CRITICAL: Fsync log file to ensure commit record is durable
+        // This is step 1 of the new fsync ordering: log -> meta -> database
+        try log_file.sync();
 
         // Get the current meta state after applying mutations (putBtreeValue already updated it)
         const current_meta_state = pager_inst.current_meta;
@@ -219,7 +257,7 @@ pub const Db = struct {
         };
 
         // CRITICAL: Fsync database file to ensure meta update is durable
-        // This is step 3 of the fsync ordering: data -> WAL -> meta -> DB sync
+        // This is step 2 of the fsync ordering: log -> meta -> database sync
         try pager_inst.commitSync(wal_inst);
 
         // Mark transaction as committed
@@ -233,7 +271,41 @@ pub const Db = struct {
             try registry.registerSnapshot(commit_record.txn_id, new_root_page_id);
         }
 
-        return commit_lsn;
+        return commit_record.txn_id; // Return txn_id as LSN since we're not using WAL anymore
+    }
+
+    // Helper function to open or create log file
+    fn openOrCreateLogFile(log_path: []const u8) !std.fs.File {
+        // Try to open existing file, create if it doesn't exist
+        return std.fs.cwd().openFile(log_path, .{ .mode = .read_write }) catch |err| switch (err) {
+            error.FileNotFound => try std.fs.cwd().createFile(log_path, .{ .truncate = false, .read = true }),
+            else => return err,
+        };
+    }
+
+    // Helper function to write commit record to log file
+    fn writeCommitRecordToLog(self: *Db, log_file: *std.fs.File, commit_record: txn.CommitRecord) !void {
+        // For Phase 4, we'll use the existing WAL serialization format but write to separate log file
+        // This ensures compatibility with the existing commit record format
+
+        // Use the existing WAL serialization logic
+        var temp_wal = wal.WriteAheadLog{
+            .file = log_file.*,
+            .current_lsn = 0,
+            .buffer = undefined, // We'll write directly
+            .buffer_pos = 0,
+            .sync_needed = false,
+            .allocator = self.allocator,
+            .file_pos = 0,
+        };
+
+        // Serialize the commit record using existing WAL logic
+        const serialized = try temp_wal.serializeCommitRecord(&commit_record);
+        defer self.allocator.free(serialized);
+
+        // Write directly to log file at current position
+        const file_size = try log_file.getEndPos();
+        _ = try log_file.pwriteAll(serialized, file_size);
     }
 };
 

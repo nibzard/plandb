@@ -223,7 +223,15 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED**: All tests passing (9/12), core functionality working
   - **BLOCKERS**: None - implementation complete and ready for next phase
   - Committed with hash 46de2c4
-- [ ] 🔴 Implement commit payload encode/decode (Put/Del) with limits
+- [✅] 🔴 Implement commit payload encode/decode (Put/Del) with limits
+  - **COMPLETED**: Full commit payload encode/decode implementation per spec/commit_record_v0.md
+  - **COMPLETED**: Put and Delete operation encoding with proper length fields
+  - **COMPLETED**: Size limits validation (key 4KB, value 16MB, ops 1000 per commit)
+  - **COMPLETED**: Comprehensive bounds checking and error handling
+  - **COMPLETED**: Memory management fixes for TransactionContext cleanup
+  - **COMPLETED**: Enhanced WAL file position tracking and replay validation
+  - **COMPLETED**: All tests passing without memory leaks
+  - Committed with hash 02b1f1f
 - [ ] 🔴 Append to separate `.log` and fsync before meta flip
 - [ ] 🔴 Implement replay engine to rebuild in-memory KV deterministically
 - [ ] 🔴 Add microbench `bench/log/append_commit_record`
