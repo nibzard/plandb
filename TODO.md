@@ -72,7 +72,17 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED**: Comprehensive test suite with 9 new tests covering all validation scenarios
   - **COMPLETED**: All new tests passing, robust protection against page corruption
   - Committed with hash fdd9c1f
-- [ ] 🟠 Implement embedded commit protocol and fsync ordering
+- [✅] 🟠 Implement embedded commit protocol and fsync ordering
+  - **COMPLETED**: TransactionContext structure for transaction state management
+  - **COMPLETED**: WriteAheadLog (WAL) for durable commit record storage
+  - **COMPLETED**: Two-phase commit protocol with prepare/commit states
+  - **COMPLETED**: Fsync ordering guarantees (WAL -> DB sync sequence)
+  - **COMPLETED**: Crash recovery logic with consistency checking
+  - **COMPLETED**: Comprehensive tests covering commit protocol and state transitions
+  - **COMPLETED**: Enhanced benchmarks measuring fsync performance and commit latency
+  - **COMPLETED**: Month 1 requirement satisfied: 2 fsyncs per commit (WAL + DB)
+  - **COMPLETED**: All tests passing, robust implementation ready for B+tree phase
+  - Committed with hash e1b2c73
 - [✅] 🔴 Add microbench `bench/pager/open_close_empty`
   - **COMPLETED**: Successfully implemented and tested the pager open/close microbenchmark
   - **COMPLETED**: Measures pager open/close performance on empty databases with proper metrics
