@@ -11,6 +11,7 @@ const pager = @import("../pager.zig");
 const replay = @import("../replay.zig");
 const wal = @import("../wal.zig");
 const txn = @import("../txn.zig");
+const hardening = @import("../hardening.zig");
 
 // Stub benchmark functions for testing the harness
 
@@ -101,6 +102,49 @@ pub fn registerBenchmarks(bench_runner: *runner.Runner) !void {
         .run_fn = benchLogReplayMemtable,
         .critical = true,
         .suite = .micro,
+    });
+
+    // Hardening benchmarks
+    try bench_runner.addBenchmark(.{
+        .name = "bench/hardening/torn_write_header_detection",
+        .run_fn = benchHardeningTornWriteHeader,
+        .critical = true,
+        .suite = .hardening,
+    });
+
+    try bench_runner.addBenchmark(.{
+        .name = "bench/hardening/torn_write_payload_detection",
+        .run_fn = benchHardeningTornWritePayload,
+        .critical = true,
+        .suite = .hardening,
+    });
+
+    try bench_runner.addBenchmark(.{
+        .name = "bench/hardening/short_write_missing_trailer",
+        .run_fn = benchHardeningShortWriteMissingTrailer,
+        .critical = true,
+        .suite = .hardening,
+    });
+
+    try bench_runner.addBenchmark(.{
+        .name = "bench/hardening/mixed_valid_corrupt_records",
+        .run_fn = benchHardeningMixedValidCorrupt,
+        .critical = true,
+        .suite = .hardening,
+    });
+
+    try bench_runner.addBenchmark(.{
+        .name = "bench/hardening/invalid_magic_number",
+        .run_fn = benchHardeningInvalidMagicNumber,
+        .critical = true,
+        .suite = .hardening,
+    });
+
+    try bench_runner.addBenchmark(.{
+        .name = "bench/hardening/clean_recovery_to_txn_id",
+        .run_fn = benchHardeningCleanRecovery,
+        .critical = true,
+        .suite = .hardening,
     });
 }
 
@@ -1057,5 +1101,253 @@ fn basicResult(ops: u64, duration_ns: u64, bytes: types.Bytes, io: types.IO, all
         .io = io,
         .alloc = alloc,
         .errors_total = 0,
+    };
+}
+
+// ==================== Hardening Benchmark Functions ====================
+
+/// Benchmark torn write header detection
+fn benchHardeningTornWriteHeader(allocator: std.mem.Allocator, config: types.Config) !types.Results {
+    _ = config; // Unused parameter
+    const iterations = 1; // Hardening tests are expensive, run once
+    const test_log = "bench_hardening_torn_header.log";
+    defer std.fs.cwd().deleteFile(test_log) catch {};
+
+    const start_time = std.time.nanoTimestamp();
+
+    var total_errors: u64 = 0;
+    var total_alloc_bytes: u64 = 0;
+
+    for (0..iterations) |_| {
+        var result = try hardening.hardeningTornWriteHeader(test_log, allocator);
+        defer result.deinit();
+
+        if (!result.passed) {
+            total_errors += 1;
+        }
+        total_alloc_bytes += 1024; // Estimate
+    }
+
+    const duration_ns = @as(u64, @intCast(std.time.nanoTimestamp() - start_time));
+
+    return types.Results{
+        .ops_total = iterations,
+        .duration_ns = duration_ns,
+        .ops_per_sec = @as(f64, @floatFromInt(iterations)) / @as(f64, @floatFromInt(duration_ns)) * std.time.ns_per_s,
+        .latency_ns = .{
+            .p50 = duration_ns / iterations,
+            .p95 = duration_ns / iterations,
+            .p99 = duration_ns / iterations,
+            .max = duration_ns / iterations,
+        },
+        .bytes = .{ .read_total = 4096, .write_total = 4096 },
+        .io = .{ .fsync_count = iterations },
+        .alloc = .{ .alloc_count = iterations, .alloc_bytes = total_alloc_bytes },
+        .errors_total = total_errors,
+    };
+}
+
+/// Benchmark torn write payload detection
+fn benchHardeningTornWritePayload(allocator: std.mem.Allocator, config: types.Config) !types.Results {
+    _ = config; // Unused parameter
+    const iterations = 1;
+    const test_log = "bench_hardening_torn_payload.log";
+    defer std.fs.cwd().deleteFile(test_log) catch {};
+
+    const start_time = std.time.nanoTimestamp();
+
+    var total_errors: u64 = 0;
+    var total_alloc_bytes: u64 = 0;
+
+    for (0..iterations) |_| {
+        var result = try hardening.hardeningTornWritePayload(test_log, allocator);
+        defer result.deinit();
+
+        if (!result.passed) {
+            total_errors += 1;
+        }
+        total_alloc_bytes += 1024;
+    }
+
+    const duration_ns = @as(u64, @intCast(std.time.nanoTimestamp() - start_time));
+
+    return types.Results{
+        .ops_total = iterations,
+        .duration_ns = duration_ns,
+        .ops_per_sec = @as(f64, @floatFromInt(iterations)) / @as(f64, @floatFromInt(duration_ns)) * std.time.ns_per_s,
+        .latency_ns = .{
+            .p50 = duration_ns / iterations,
+            .p95 = duration_ns / iterations,
+            .p99 = duration_ns / iterations,
+            .max = duration_ns / iterations,
+        },
+        .bytes = .{ .read_total = 8192, .write_total = 8192 },
+        .io = .{ .fsync_count = iterations },
+        .alloc = .{ .alloc_count = iterations, .alloc_bytes = total_alloc_bytes },
+        .errors_total = total_errors,
+    };
+}
+
+/// Benchmark short write missing trailer detection
+fn benchHardeningShortWriteMissingTrailer(allocator: std.mem.Allocator, config: types.Config) !types.Results {
+    _ = config; // Unused parameter
+    const iterations = 1;
+    const test_log = "bench_hardening_missing_trailer.log";
+    defer std.fs.cwd().deleteFile(test_log) catch {};
+
+    const start_time = std.time.nanoTimestamp();
+
+    var total_errors: u64 = 0;
+    var total_alloc_bytes: u64 = 0;
+
+    for (0..iterations) |_| {
+        var result = try hardening.hardeningShortWriteMissingTrailer(test_log, allocator);
+        defer result.deinit();
+
+        if (!result.passed) {
+            total_errors += 1;
+        }
+        total_alloc_bytes += 1024;
+    }
+
+    const duration_ns = @as(u64, @intCast(std.time.nanoTimestamp() - start_time));
+
+    return types.Results{
+        .ops_total = iterations,
+        .duration_ns = duration_ns,
+        .ops_per_sec = @as(f64, @floatFromInt(iterations)) / @as(f64, @floatFromInt(duration_ns)) * std.time.ns_per_s,
+        .latency_ns = .{
+            .p50 = duration_ns / iterations,
+            .p95 = duration_ns / iterations,
+            .p99 = duration_ns / iterations,
+            .max = duration_ns / iterations,
+        },
+        .bytes = .{ .read_total = 4096, .write_total = 4096 },
+        .io = .{ .fsync_count = iterations },
+        .alloc = .{ .alloc_count = iterations, .alloc_bytes = total_alloc_bytes },
+        .errors_total = total_errors,
+    };
+}
+
+/// Benchmark mixed valid and corrupt records handling
+fn benchHardeningMixedValidCorrupt(allocator: std.mem.Allocator, config: types.Config) !types.Results {
+    _ = config; // Unused parameter
+    const iterations = 1;
+    const test_log = "bench_hardening_mixed_records.log";
+    defer std.fs.cwd().deleteFile(test_log) catch {};
+
+    const start_time = std.time.nanoTimestamp();
+
+    var total_errors: u64 = 0;
+    var total_alloc_bytes: u64 = 0;
+
+    for (0..iterations) |_| {
+        var result = try hardening.hardeningMixedValidCorruptRecords(test_log, allocator);
+        defer result.deinit();
+
+        if (!result.passed) {
+            total_errors += 1;
+        }
+        total_alloc_bytes += 2048;
+    }
+
+    const duration_ns = @as(u64, @intCast(std.time.nanoTimestamp() - start_time));
+
+    return types.Results{
+        .ops_total = iterations,
+        .duration_ns = duration_ns,
+        .ops_per_sec = @as(f64, @floatFromInt(iterations)) / @as(f64, @floatFromInt(duration_ns)) * std.time.ns_per_s,
+        .latency_ns = .{
+            .p50 = duration_ns / iterations,
+            .p95 = duration_ns / iterations,
+            .p99 = duration_ns / iterations,
+            .max = duration_ns / iterations,
+        },
+        .bytes = .{ .read_total = 16384, .write_total = 8192 },
+        .io = .{ .fsync_count = iterations },
+        .alloc = .{ .alloc_count = iterations, .alloc_bytes = total_alloc_bytes },
+        .errors_total = total_errors,
+    };
+}
+
+/// Benchmark invalid magic number detection
+fn benchHardeningInvalidMagicNumber(allocator: std.mem.Allocator, config: types.Config) !types.Results {
+    _ = config; // Unused parameter
+    const iterations = 1;
+    const test_log = "bench_hardening_invalid_magic.log";
+    defer std.fs.cwd().deleteFile(test_log) catch {};
+
+    const start_time = std.time.nanoTimestamp();
+
+    var total_errors: u64 = 0;
+    var total_alloc_bytes: u64 = 0;
+
+    for (0..iterations) |_| {
+        var result = try hardening.hardeningInvalidMagicNumber(test_log, allocator);
+        defer result.deinit();
+
+        if (!result.passed) {
+            total_errors += 1;
+        }
+        total_alloc_bytes += 512;
+    }
+
+    const duration_ns = @as(u64, @intCast(std.time.nanoTimestamp() - start_time));
+
+    return types.Results{
+        .ops_total = iterations,
+        .duration_ns = duration_ns,
+        .ops_per_sec = @as(f64, @floatFromInt(iterations)) / @as(f64, @floatFromInt(duration_ns)) * std.time.ns_per_s,
+        .latency_ns = .{
+            .p50 = duration_ns / iterations,
+            .p95 = duration_ns / iterations,
+            .p99 = duration_ns / iterations,
+            .max = duration_ns / iterations,
+        },
+        .bytes = .{ .read_total = 512, .write_total = 512 },
+        .io = .{ .fsync_count = 0 },
+        .alloc = .{ .alloc_count = iterations, .alloc_bytes = total_alloc_bytes },
+        .errors_total = total_errors,
+    };
+}
+
+/// Benchmark clean recovery to specific transaction ID
+fn benchHardeningCleanRecovery(allocator: std.mem.Allocator, config: types.Config) !types.Results {
+    _ = config; // Unused parameter
+    const iterations = 1;
+    const test_log = "bench_hardening_clean_recovery.log";
+    defer std.fs.cwd().deleteFile(test_log) catch {};
+
+    const start_time = std.time.nanoTimestamp();
+
+    var total_errors: u64 = 0;
+    var total_alloc_bytes: u64 = 0;
+
+    for (0..iterations) |_| {
+        var result = try hardening.hardeningCleanRecoveryToTxnId(test_log, allocator);
+        defer result.deinit();
+
+        if (!result.passed) {
+            total_errors += 1;
+        }
+        total_alloc_bytes += 3072;
+    }
+
+    const duration_ns = @as(u64, @intCast(std.time.nanoTimestamp() - start_time));
+
+    return types.Results{
+        .ops_total = iterations,
+        .duration_ns = duration_ns,
+        .ops_per_sec = @as(f64, @floatFromInt(iterations)) / @as(f64, @floatFromInt(duration_ns)) * std.time.ns_per_s,
+        .latency_ns = .{
+            .p50 = duration_ns / iterations,
+            .p95 = duration_ns / iterations,
+            .p99 = duration_ns / iterations,
+            .max = duration_ns / iterations,
+        },
+        .bytes = .{ .read_total = 12288, .write_total = 12288 },
+        .io = .{ .fsync_count = iterations },
+        .alloc = .{ .alloc_count = iterations, .alloc_bytes = total_alloc_bytes },
+        .errors_total = total_errors,
     };
 }
