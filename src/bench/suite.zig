@@ -547,20 +547,103 @@ fn benchBtreeBuildSequential(allocator: std.mem.Allocator, config: types.Config)
 fn benchMvccSnapshotOpen(allocator: std.mem.Allocator, config: types.Config) !types.Results {
     _ = config;
     const ops: u64 = 5_000;
-    var database = try db.Db.open(allocator);
+
+    // Use file-based database to test MVCC snapshot registry
+    const test_db = "bench_mvcc_snapshot.db";
+    const test_wal = "bench_mvcc_snapshot.wal";
+    defer {
+        std.fs.cwd().deleteFile(test_db) catch {};
+        std.fs.cwd().deleteFile(test_wal) catch {};
+    }
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    // Create empty database and WAL files with proper initialization
+    {
+        const db_file = try std.fs.cwd().createFile(test_db, .{ .truncate = true });
+        defer db_file.close();
+
+        // Create meta pages for empty database
+        var buffer_a: [pager.DEFAULT_PAGE_SIZE]u8 = undefined;
+        var buffer_b: [pager.DEFAULT_PAGE_SIZE]u8 = undefined;
+
+        const meta = pager.MetaPayload{
+            .committed_txn_id = 0,
+            .root_page_id = 0, // Empty tree
+            .freelist_head_page_id = 0,
+            .log_tail_lsn = 0,
+            .meta_crc32c = 0,
+        };
+
+        try pager.encodeMetaPage(pager.META_A_PAGE_ID, meta, &buffer_a);
+        try pager.encodeMetaPage(pager.META_B_PAGE_ID, meta, &buffer_b);
+
+        _ = try db_file.pwriteAll(&buffer_a, 0);
+        _ = try db_file.pwriteAll(&buffer_b, pager.DEFAULT_PAGE_SIZE);
+    }
+
+    var database = try db.Db.openWithFile(arena.allocator(), test_db, test_wal);
     defer database.close();
+
+    // Create some committed data to ensure snapshots have meaningful state
     var w = try database.beginWrite();
     try w.put("seed", "1");
     _ = try w.commit();
 
-    const start_time = std.time.nanoTimestamp();
-    for (0..ops) |_| {
+    // Measure individual operation latencies to calculate p50/p95/p99
+    var latencies = try allocator.alloc(u64, ops);
+    defer allocator.free(latencies);
+
+    // Benchmark snapshot open and close repeatedly
+    for (0..ops) |i| {
+        const op_start = std.time.nanoTimestamp();
+
         var r = try database.beginReadLatest();
         r.close();
-    }
-    const duration_ns = @as(u64, @intCast(std.time.nanoTimestamp() - start_time));
 
-    return basicResult(ops, duration_ns, .{ .read_total = 0, .write_total = 0 }, .{ .fsync_count = 0 }, .{ .alloc_count = ops, .alloc_bytes = ops * 16 });
+        const op_end = std.time.nanoTimestamp();
+        latencies[i] = @as(u64, @intCast(op_end - op_start));
+    }
+
+    // Calculate statistics from individual latencies
+    std.mem.sort(u64, latencies, {}, comptime std.sort.asc(u64));
+
+    // Calculate total duration by summing all latencies
+    var total_duration_ns: u64 = 0;
+    for (latencies) |latency| {
+        total_duration_ns += latency;
+    }
+
+    // Calculate percentiles for latency reporting
+    const p50 = latencies[@divTrunc(ops, 2)];
+    const p95 = latencies[@divTrunc(ops * 95, 100)];
+    const p99 = latencies[@divTrunc(ops * 99, 100)];
+    const max = latencies[ops - 1];
+
+    return types.Results{
+        .ops_total = ops,
+        .duration_ns = total_duration_ns,
+        .ops_per_sec = @as(f64, @floatFromInt(ops)) / @as(f64, @floatFromInt(total_duration_ns)) * std.time.ns_per_s,
+        .latency_ns = .{
+            .p50 = p50,
+            .p95 = p95,
+            .p99 = p99,
+            .max = max,
+        },
+        .bytes = .{
+            .read_total = 0,
+            .write_total = 0,
+        },
+        .io = .{
+            .fsync_count = 0,
+        },
+        .alloc = .{
+            .alloc_count = ops,
+            .alloc_bytes = ops * 16,
+        },
+        .errors_total = 0,
+    };
 }
 
 fn benchMvccManyReaders(allocator: std.mem.Allocator, config: types.Config) !types.Results {

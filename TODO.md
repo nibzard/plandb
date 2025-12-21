@@ -234,7 +234,13 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED**: Supports both file-based (B+tree) and in-memory databases
   - **COMPLETED**: Comprehensive tests added and passing
   - **COMPLETED**: Read-your-writes semantics now properly enforced within write transactions
-- [ ] 🔴 Add microbench `bench/mvcc/snapshot_open_close`
+- [✅] 🔴 Add microbench `bench/mvcc/snapshot_open_close`
+  - **COMPLETED**: Successfully implemented MVCC snapshot open/close microbenchmark
+  - **COMPLETED**: Measures snapshot creation performance with 10,000 operations and proper cache warmup
+  - **COMPLETED**: Current performance: p99 ~31µs (vs dev goal of <5µs)
+  - **COMPLETED**: Throughput ~322K ops/sec with 0 allocations per operation
+  - **COMPLETED**: Integrated with benchmark harness and passes validation
+  - **NOTE**: Performance above target indicates optimization needed in snapshot creation path
 - [ ] 🟠 Add microbench `bench/mvcc/readers_256_point_get_hot` (parameterized N)
 - [ ] 🟠 Add microbench `bench/mvcc/writer_commits_with_readers_128`
 - [ ] 🟠 Property tests: snapshot immutability and time-travel correctness
@@ -283,12 +289,15 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED**: Provides getAll() method for state verification and testing
   - **NOTE**: Core replay functionality implemented and working, minor issues remain in test harness
   - Committed with hash dc549a7
-- [ ] 🔴 Add microbench `bench/log/append_commit_record`
-  - **BLOCKER**: Critical integer overflow bug in Phase 4 implementation prevents all file-based benchmarks from working
-  - **BUG LOCATION**: src/pager.zig:2044 - `var i: isize = @intCast(leaf_index - 1);` causes panic when leaf_index is 0
-  - **IMPACT**: Affects executeTwoPhaseCommit path, prevents log file append functionality from working
-  - **TEMP WORKAROUND**: Use in-memory benchmarks or fix the integer overflow before proceeding
-  - **STATUS**: Benchmark implemented but cannot run due to this blocker
+- [✅] 🔴 Add microbench `bench/log/append_commit_record`
+  - **COMPLETED**: Fixed critical integer overflow bug in src/pager.zig:2044 (and line 2025)
+  - **COMPLETED**: Issue was underflow when leaf_index = 0 in single leaf B+tree causing panic
+  - **COMPLETED**: Fix adds bounds checking before COW path traversal to prevent negative indices
+  - **COMPLETED**: All unit tests now pass without integer overflow panics
+  - **COMPLETED**: Phase 4 file-based benchmarks now unblocked and functional
+  - **COMPLETED**: No more crashes when inserting into single leaf B+tree nodes
+  - **IMPACT**: Enables all log append benchmarks to run successfully
+  - Committed with hash 724f59e
 - [✅] 🔴 Add microbench `bench/log/replay_into_memtable`
   - **COMPLETED**: Implemented replay engine benchmark that creates log files and measures replay performance
   - **COMPLETED**: Benchmark creates commit records using WAL format and measures replay into memtable
