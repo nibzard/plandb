@@ -145,7 +145,11 @@ pub const ReadTxn = struct {
         if (self.db.pager) |*pager| {
             // Use a temporary buffer for the value (would be allocated in real implementation)
             var value_buffer: [1024]u8 = undefined;
-            if (pager.getBtreeValue(key, &value_buffer)) |value| {
+            if (pager.getBtreeValue(key, &value_buffer) catch |err| switch (err) {
+                error.CorruptBtree => return null,
+                error.BufferTooSmall => return null,
+                else => return null,
+            }) |value| {
                 // In a real implementation, we'd need to manage the value lifetime
                 // For now, return null and rely on the in-memory model
                 _ = value;

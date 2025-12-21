@@ -1492,35 +1492,129 @@ pub const Pager = struct {
         defer path.deinit();
         try self.findBtreePath(key, &path);
 
-        // Work from leaf up to root, applying COW
-        var i: isize = @intCast(path.len() - 1);
+        // Try to insert into leaf, handling splits if necessary
+        const leaf_index = path.len() - 1;
+        const leaf_info = path.pageAt(leaf_index);
 
+        // Create COW version of leaf
+        var leaf_cow_buffer = try self.copyOnWritePage(leaf_info.buffer, txn_id);
+        const leaf_header = try PageHeader.decode(leaf_cow_buffer[0..PageHeader.SIZE]);
+        if (leaf_header.page_type != .btree_leaf) return error.InvalidPageType;
+
+        // Try to add the entry
+        addEntryToBtreeLeaf(leaf_cow_buffer[0..], key, value) catch |err| switch (err) {
+            error.LeafFull => {
+                // Need to split the leaf
+                const split_result = try self.splitLeafNode(leaf_cow_buffer[0..], txn_id);
+                defer self.allocator.free(split_result.separator_key);
+
+                // Determine which leaf should contain the new key
+                if (std.mem.lessThan(u8, key, split_result.separator_key)) {
+                    // Key goes to left leaf (leaf_cow_buffer)
+                    try addEntryToBtreeLeaf(leaf_cow_buffer[0..], key, value);
+                    try self.writePage(split_result.left_page_id, &leaf_cow_buffer);
+                } else {
+                    // Key goes to right leaf - read it and add
+                    var right_buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+                    try self.readPage(split_result.right_page_id, &right_buffer);
+                    try addEntryToBtreeLeaf(&right_buffer, key, value);
+                    try self.writePage(split_result.right_page_id, &right_buffer);
+                }
+
+                // Now we need to update the parent to point to both children
+                if (leaf_index == 0) {
+                    // This was the root leaf - create new internal root
+                    const new_root_id = try self.allocatePage();
+                    var new_root_buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+                    try createEmptyBtreeInternal(new_root_id, 1, txn_id, 0, split_result.left_page_id, &new_root_buffer);
+
+                    // Add left child (first child has no separator)
+                    const payload_start = PageHeader.SIZE;
+                    const root_header = try PageHeader.decode(new_root_buffer[0..PageHeader.SIZE]);
+                    const payload_end = payload_start + root_header.payload_len;
+                    const payload_bytes = new_root_buffer[payload_start..payload_end];
+
+                    var internal = BtreeInternalPayload{};
+                    try internal.setChildPageId(payload_bytes, 0, split_result.left_page_id);
+
+                    // Add separator and right child
+                    try internal.addChild(payload_bytes, split_result.separator_key, split_result.right_page_id);
+
+                    // Update payload length and write
+                    var root_header_mut = std.mem.bytesAsValue(PageHeader, new_root_buffer[0..PageHeader.SIZE]);
+                    root_header_mut.payload_len = @intCast(payload_bytes.len);
+
+                    try self.writePage(new_root_id, &new_root_buffer);
+
+                    // Update meta to point to new root
+                    var new_meta = self.current_meta.meta;
+                    new_meta.root_page_id = new_root_id;
+                    try self.updateMeta(new_meta);
+                } else {
+                    // Need to insert separator into parent internal node
+                    const parent_info = path.pageAt(leaf_index - 1);
+                    var parent_cow_buffer = try self.copyOnWritePage(parent_info.buffer, txn_id);
+
+                    try self.insertIntoInternalNode(parent_cow_buffer[0..], split_result.separator_key, split_result.right_page_id);
+
+                    // Update left child pointer in parent to point to split left page
+                    const payload_start = PageHeader.SIZE;
+                    const parent_header = try PageHeader.decode(parent_cow_buffer[0..PageHeader.SIZE]);
+                    const payload_end = payload_start + parent_header.payload_len;
+                    const payload_bytes = parent_cow_buffer[payload_start..payload_end];
+
+                    var internal = BtreeInternalPayload{};
+
+                    // Find which child pointer in the parent points to the original leaf
+                    const original_leaf_id = leaf_info.page_id;
+                    const find_result = internal.findChild(payload_bytes, ""); // Empty key finds first child
+                    var child_idx = find_result.idx;
+
+                    // Search all children to find the one pointing to our leaf
+                    var child_i: u16 = 0;
+                    const node_header = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
+                    while (child_i <= node_header.key_count) {
+                        const child_id = internal.getChildPageId(payload_bytes, child_i) catch break;
+                        if (child_id == original_leaf_id) {
+                            child_idx = child_i;
+                            break;
+                        }
+                        child_i += 1;
+                    }
+
+                    try internal.setChildPageId(payload_bytes, child_idx, split_result.left_page_id);
+
+                    // Update parent payload length and write
+                    var parent_header_mut = std.mem.bytesAsValue(PageHeader, parent_cow_buffer[0..PageHeader.SIZE]);
+                    parent_header_mut.payload_len = @intCast(payload_bytes.len);
+
+                    try self.writePage(parent_info.page_id, &parent_cow_buffer);
+
+                    // Apply COW up the tree for any remaining parents
+                    var i: isize = @intCast(leaf_index - 2);
+                    while (i >= 0) {
+                        const path_index = @as(usize, @intCast(i));
+                        const page_info = path.pageAt(path_index);
+                        var cow_buffer = try self.copyOnWritePage(page_info.buffer, txn_id);
+                        try self.writePage(page_info.page_id, &cow_buffer);
+                        i -= 1;
+                    }
+                }
+                return; // Split handled, exit early
+            },
+            else => return err, // Propagate other errors
+        };
+
+        // No split needed - write the modified leaf and apply COW up the tree
+        try self.writePage(leaf_info.page_id, &leaf_cow_buffer);
+
+        // Apply COW to remaining parent nodes
+        var i: isize = @intCast(leaf_index - 1);
         while (i >= 0) {
             const path_index = @as(usize, @intCast(i));
             const page_info = path.pageAt(path_index);
-
-            // Create COW version of this page
             var cow_buffer = try self.copyOnWritePage(page_info.buffer, txn_id);
-
-            if (i == path.len() - 1) {
-                // This is the leaf page - insert/update the key-value pair
-                const header = try PageHeader.decode(cow_buffer[0..PageHeader.SIZE]);
-                if (header.page_type != .btree_leaf) return error.InvalidPageType;
-
-                // Check if key already exists and update it, otherwise add it
-                if (getValueFromBtreeLeaf(cow_buffer[0..], key) != null) {
-                    // Key exists - for simplicity, we'll add the new entry (may create duplicates)
-                    // In a full implementation, we'd replace the existing entry
-                    try addEntryToBtreeLeaf(cow_buffer[0..], key, value);
-                } else {
-                    // Key doesn't exist - add it
-                    try addEntryToBtreeLeaf(cow_buffer[0..], key, value);
-                }
-            }
-
-            // Write the modified page
             try self.writePage(page_info.page_id, &cow_buffer);
-
             i -= 1;
         }
     }
@@ -1584,6 +1678,123 @@ pub const Pager = struct {
         }
 
         return true;
+    }
+
+    // Split a full leaf node into two nodes
+    fn splitLeafNode(self: *Self, leaf_buffer: []const u8, txn_id: u64) !struct { left_page_id: u64, right_page_id: u64, separator_key: []const u8 } {
+        // Allocate new right sibling page
+        const right_page_id = try self.allocatePage();
+
+        // Create buffers for both pages
+        var left_buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+        var right_buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+        // Copy left page structure (will be the "left" after split)
+        @memcpy(&left_buffer, leaf_buffer);
+
+        // Create empty right leaf with same transaction ID
+        const left_header = try PageHeader.decode(left_buffer[0..PageHeader.SIZE]);
+        try createEmptyBtreeLeaf(right_page_id, txn_id, 0, &right_buffer);
+
+        // Get payload areas
+        const left_payload_start = PageHeader.SIZE;
+        const left_payload_end = left_payload_start + left_header.payload_len;
+        const left_payload_bytes = left_buffer[left_payload_start..left_payload_end];
+
+        const right_payload_start = PageHeader.SIZE;
+        const right_payload_end = right_payload_start + (try PageHeader.decode(right_buffer[0..PageHeader.SIZE])).payload_len;
+        const right_payload_bytes = right_buffer[right_payload_start..right_payload_end];
+
+        // Get all entries from the original leaf
+        var leaf = BtreeLeafPayload{};
+        const node_header = std.mem.bytesAsValue(BtreeNodeHeader, left_payload_bytes[0..BtreeNodeHeader.SIZE]);
+        var entries = try self.allocator.alloc(BtreeLeafEntry, node_header.key_count);
+        defer self.allocator.free(entries);
+
+        // Extract all entries
+        for (0..node_header.key_count) |i| {
+            entries[i] = try leaf.getEntry(left_payload_bytes, @intCast(i));
+        }
+
+        // Find split point (middle entry)
+        const split_point = node_header.key_count / 2;
+        const separator_key = entries[split_point].key;
+
+        // Clear and rebuild left leaf
+        @memset(left_payload_bytes[BtreeNodeHeader.SIZE..], 0);
+        var left_node_header = std.mem.bytesAsValue(BtreeNodeHeader, left_payload_bytes[0..BtreeNodeHeader.SIZE]);
+        left_node_header.key_count = 0;
+        left_node_header.right_sibling = right_page_id; // Link to right sibling
+
+        // Insert entries into left leaf (first half)
+        for (0..split_point) |i| {
+            _ = try leaf.addEntry(left_payload_bytes, entries[i].key, entries[i].value);
+        }
+
+        // Insert entries into right leaf (second half)
+        var right_leaf = BtreeLeafPayload{};
+        for (split_point..node_header.key_count) |i| {
+            _ = try right_leaf.addEntry(right_payload_bytes, entries[i].key, entries[i].value);
+        }
+
+        // Update payload lengths - use the actual payload sizes
+        var left_header_mut = std.mem.bytesAsValue(PageHeader, left_buffer[0..PageHeader.SIZE]);
+        var right_header_mut = std.mem.bytesAsValue(PageHeader, right_buffer[0..PageHeader.SIZE]);
+
+        // Use the actual size of the rebuilt payloads
+        left_header_mut.payload_len = @intCast(left_payload_bytes.len);
+        right_header_mut.payload_len = @intCast(right_payload_bytes.len);
+
+        // Write both pages
+        const left_page_id = left_header.page_id;
+        try self.writePage(left_page_id, &left_buffer);
+        try self.writePage(right_page_id, &right_buffer);
+
+        // Make a copy of the separator key to return (it needs to persist beyond this function)
+        const separator_key_copy = try self.allocator.dupe(u8, separator_key);
+
+        return .{
+            .left_page_id = left_page_id,
+            .right_page_id = right_page_id,
+            .separator_key = separator_key_copy
+        };
+    }
+
+    // Insert a separator key and child pointer into an internal node
+    fn insertIntoInternalNode(_: *Self, internal_buffer: []u8, separator_key: []const u8, child_page_id: u64) !void {
+        const payload_start = PageHeader.SIZE;
+        const header = try PageHeader.decode(internal_buffer[0..PageHeader.SIZE]);
+        const payload_end = payload_start + header.payload_len;
+        const payload_bytes = internal_buffer[payload_start..payload_end];
+
+        var internal = BtreeInternalPayload{};
+
+        // Find insertion position
+        const node_header = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
+        var insert_pos: u16 = 0;
+        while (insert_pos < node_header.key_count) {
+            const existing_key = try internal.getSeparatorKey(payload_bytes, insert_pos);
+            if (std.mem.lessThan(u8, separator_key, existing_key)) {
+                break;
+            }
+            insert_pos += 1;
+        }
+
+        // Insert the separator key and child pointer
+        try internal.addChild(payload_bytes, separator_key, child_page_id);
+
+        // Update payload length
+        var header_mut = std.mem.bytesAsValue(PageHeader, internal_buffer[0..PageHeader.SIZE]);
+        header_mut.payload_len = @intCast(payload_end - payload_start);
+    }
+
+    // Split an internal node and propagate split up the tree
+    fn splitInternalNode(self: *Self, internal_buffer: []const u8, txn_id: u64) !struct { left_page_id: u64, right_page_id: u64, separator_key: []const u8 } {
+        _ = self;
+        _ = internal_buffer;
+        _ = txn_id;
+        // TODO: Implement internal node splitting
+        return error.NotImplemented;
     }
 
     // Update meta page with new root information

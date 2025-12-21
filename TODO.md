@@ -135,7 +135,16 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - Supports root promotion and proper tree navigation from root to leaves
   - All unit tests passing, enables complete B+tree operations
   - Committed with hash 3b28835
-- [ ] 🔴 Implement get/put/del with COW up the path
+- [✅] 🔴 Implement get/put/del with COW up the path
+  - **COMPLETED**: Implemented B+tree get/put/del operations with copy-on-write support
+  - Added BtreePath structure for traversal path tracking
+  - Implemented findBtreePath(), getBtreeValue(), putBtreeValue(), deleteBtreeValue()
+  - Added copyOnWritePage() for COW page management
+  - Integrated with main DB API (ReadTxn/WriteTxn)
+  - Added comprehensive test suite with 9 new tests
+  - Updated to use ArrayListUnmanaged for Zig 0.15.2 compatibility
+  - All tests passing, core functionality working
+  - Committed with hash a15c3f6
 - [ ] 🟠 Implement split/merge + right-sibling pointer
 - [ ] 🟠 Implement iterator and range scan API
 - [ ] 🔴 Add microbench `bench/btree/build_sequential_insert_1m`
