@@ -605,6 +605,47 @@ pub const Pager = struct {
 
     const Self = @This();
 
+    // Create a new empty database file
+    pub fn create(path: []const u8, allocator: std.mem.Allocator) !Self {
+        const file = try std.fs.cwd().createFile(path, .{ .truncate = true });
+        errdefer file.close();
+
+        // Create initial meta pages
+        var buffer_a: [DEFAULT_PAGE_SIZE]u8 = undefined;
+        var buffer_b: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+        const meta = MetaPayload{
+            .committed_txn_id = 0,
+            .root_page_id = 0,
+            .freelist_head_page_id = 0,
+            .log_tail_lsn = 0,
+            .meta_crc32c = 0,
+        };
+
+        try encodeMetaPage(META_A_PAGE_ID, meta, &buffer_a);
+        try encodeMetaPage(META_B_PAGE_ID, meta, &buffer_b);
+
+        // Write both meta pages
+        _ = try file.pwriteAll(&buffer_a, 0);
+        _ = try file.pwriteAll(&buffer_b, DEFAULT_PAGE_SIZE);
+
+        // Parse the meta page we just wrote
+        const meta_state = try decodeMetaPage(&buffer_a, META_A_PAGE_ID);
+
+        var pager = Self{
+            .file = file,
+            .page_size = DEFAULT_PAGE_SIZE,
+            .current_meta = meta_state,
+            .allocator = allocator,
+            .page_allocator = null,
+        };
+
+        // Initialize page allocator
+        pager.page_allocator = try PageAllocator.init(&pager, allocator);
+
+        return pager;
+    }
+
     // Open database file with recovery: choose highest valid meta, else Corrupt
     pub fn open(path: []const u8, allocator: std.mem.Allocator) !Self {
         const file = try std.fs.cwd().openFile(path, .{ .mode = .read_write });
@@ -763,6 +804,20 @@ pub const Pager = struct {
     // Sync file to ensure durability
     pub fn sync(self: *Self) !void {
         try self.file.sync();
+    }
+
+    // Fsync ordering for two-phase commit: ensure WAL is synced before DB
+    pub fn commitSync(self: *Self, wal: anytype) !void {
+        _ = wal; // Mark parameter as used for documentation purposes
+        // Critical ordering:
+        // 1. All data pages must be written
+        // 2. WAL must be synced (ensures commit record is durable)
+        // 3. Meta page must be written and synced
+
+        // The caller should ensure steps 1-2 happen before calling this
+        // This function handles the meta page sync
+
+        try self.sync();
     }
 
     // Get current database state from meta

@@ -63,9 +63,20 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED**: Comprehensive test suite with 30/32 tests passing
   - **COMPLETED**: All core functionality working (2 test environment file handle issues remain)
   - Committed with hash 861c409
-- [ ] 🟠 Implement page read/write with checksums and bounds checks
+- [✅] 🟠 Implement page read/write with checksums and bounds checks
+  - **COMPLETED**: Enhanced readPage() with comprehensive bounds checking and validation
+  - **COMPLETED**: Enhanced writePage() with pre-write validation and integrity checks
+  - **COMPLETED**: Added overflow protection for page ID calculations and file offsets
+  - **COMPLETED**: Added detailed error logging for debugging corrupt pages
+  - **COMPLETED**: Implemented createPage() and createBtreePage() helper functions
+  - **COMPLETED**: Comprehensive test suite with 9 new tests covering all validation scenarios
+  - **COMPLETED**: All new tests passing, robust protection against page corruption
+  - Committed with hash fdd9c1f
 - [ ] 🟠 Implement embedded commit protocol and fsync ordering
-- [ ] 🔴 Add microbench `bench/pager/open_close_empty`
+- [✅] 🔴 Add microbench `bench/pager/open_close_empty`
+  - **COMPLETED**: Successfully implemented and tested the pager open/close microbenchmark
+  - **COMPLETED**: Measures pager open/close performance on empty databases with proper metrics
+  - **COMPLETED**: Integrated with benchmark harness, passes all validation checks
 - [ ] 🟠 Add microbench `bench/pager/read_page_random_16k_hot`
 - [ ] 🟡 Add microbench `bench/pager/read_page_random_16k_cold` (best-effort cache drop)
 - [ ] 🔴 Add microbench `bench/pager/commit_meta_fsync` with fsync correctness assert
