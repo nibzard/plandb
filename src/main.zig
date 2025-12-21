@@ -54,6 +54,8 @@ fn printUsage() !void {
         \\  --output <dir>        Output directory for JSON results
         \\  --baseline <dir>      Baseline directory for comparison
         \\  --seed <n>            Random seed
+        \\  --warmup-ops <n>      Number of warmup operations before measurement
+        \\  --warmup-ns <n>       Warmup time in nanoseconds before measurement
         \\
         \\Gate options:
         \\  --repeats <n>         Number of repeats (default: 5)
@@ -61,6 +63,8 @@ fn printUsage() !void {
         \\  --suite <type>        Filter by suite (micro|macro|hardening)
         \\  --output <dir>        Output directory for JSON results
         \\  --seed <n>            Random seed
+        \\  --warmup-ops <n>      Number of warmup operations before measurement
+        \\  --warmup-ns <n>       Warmup time in nanoseconds before measurement
         \\
     , .{});
 }
@@ -87,6 +91,12 @@ fn runBenchmarks(allocator: std.mem.Allocator, args: []const []const u8) !void {
             i += 1;
         } else if (std.mem.eql(u8, args[i], "--seed") and i + 1 < args.len) {
             runner_args.seed = try std.fmt.parseInt(u32, args[i + 1], 10);
+            i += 1;
+        } else if (std.mem.eql(u8, args[i], "--warmup-ops") and i + 1 < args.len) {
+            runner_args.config.warmup_ops = try std.fmt.parseInt(u32, args[i + 1], 10);
+            i += 1;
+        } else if (std.mem.eql(u8, args[i], "--warmup-ns") and i + 1 < args.len) {
+            runner_args.config.warmup_ns = try std.fmt.parseInt(u64, args[i + 1], 10);
             i += 1;
         } else {
             std.debug.print("Unknown option: {s}\n", .{args[i]});
@@ -159,6 +169,12 @@ fn gateSuite(allocator: std.mem.Allocator, args: []const []const u8) !void {
             i += 1;
         } else if (std.mem.eql(u8, args[i], "--seed") and i + 1 < args.len) {
             runner_args.seed = try std.fmt.parseInt(u32, args[i + 1], 10);
+            i += 1;
+        } else if (std.mem.eql(u8, args[i], "--warmup-ops") and i + 1 < args.len) {
+            runner_args.config.warmup_ops = try std.fmt.parseInt(u32, args[i + 1], 10);
+            i += 1;
+        } else if (std.mem.eql(u8, args[i], "--warmup-ns") and i + 1 < args.len) {
+            runner_args.config.warmup_ns = try std.fmt.parseInt(u64, args[i + 1], 10);
             i += 1;
         } else {
             std.debug.print("Unknown option: {s}\n", .{args[i]});

@@ -473,6 +473,24 @@ pub const Runner = struct {
 
         // Run repeats
         for (0..args.repeats) |i| {
+            // Perform warmup if specified
+            if (config.warmup_ops > 0) {
+                _ = bench.run_fn(self.allocator, config) catch |err| {
+                    std.log.warn("Warmup failed for benchmark {s}: {}", .{ bench.name, err });
+                    // Continue with measurement even if warmup fails
+                };
+            } else if (config.warmup_ns > 0) {
+                // Time-based warmup: run until specified time elapsed
+                const warmup_start = std.time.nanoTimestamp();
+                while (std.time.nanoTimestamp() - warmup_start < @as(i64, @intCast(config.warmup_ns))) {
+                    _ = bench.run_fn(self.allocator, config) catch |err| {
+                        std.log.warn("Time-based warmup iteration failed for benchmark {s}: {}", .{ bench.name, err });
+                        break; // Exit warmup loop on failure
+                    };
+                }
+            }
+
+            // Actual measurement
             const result = try bench.run_fn(self.allocator, config);
 
             const bench_result = types.BenchmarkResult{

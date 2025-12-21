@@ -26,7 +26,14 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - Updates usage help to include new option
   - All functionality tested and working correctly
   - Committed with hash c850370
-- [ ] 🟠 Add `--warmup-ops` and `--warmup-ns` honoring in runner
+- [ ✅ ] 🟠 Add `--warmup-ops` and `--warmup-ns` honoring in runner
+  - **COMPLETED**: Implemented warmup functionality in benchmark runner
+  - **COMPLETED**: Added CLI argument parsing for --warmup-ops and --warmup-ns in both run and gate commands
+  - **COMPLETED**: Warmup logic runs before each measurement repeat and discards warmup results
+  - **COMPLETED**: Supports both operation-count warmup (--warmup-ops) and time-based warmup (--warmup-ns)
+  - **COMPLETED**: Warmup failures are logged but don't prevent measurement from proceeding
+  - **COMPLETED**: All tests pass and warmup functionality verified with multiple benchmarks
+  - Committed with hash [current]
 - [ ] 🟠 Persist run metadata (CPU model/FS/RAM) robustly across OSes
 - [ ] 🟡 Baseline discovery: compare entire output dir vs baseline dir
 - [ ] 🟡 Document harness usage, filters, baselines, and JSON layout
