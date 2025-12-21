@@ -300,7 +300,7 @@ pub const Db = struct {
         try temp_wal.flush();
 
         // Read the framed record from temp WAL and write to log file
-        var temp_file = try std.fs.cwd().openFile(temp_path, .{ .mode = .read_only }) catch |err| switch (err) {
+        var temp_file = std.fs.cwd().openFile(temp_path, .{ .mode = .read_only }) catch |err| switch (err) {
             error.FileNotFound => return error.InternalError,
             else => return err,
         };

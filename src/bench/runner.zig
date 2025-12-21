@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const types = @import("types.zig");
+const system_info = @import("system_info.zig");
 
 test "schema validation rejects invalid benchmark results" {
     const allocator = std.testing.allocator;
@@ -182,6 +183,8 @@ pub const RunFn = *const fn (allocator: std.mem.Allocator, config: types.Config)
 pub const Runner = struct {
     allocator: std.mem.Allocator,
     benchmarks: std.ArrayListUnmanaged(Benchmark),
+    cached_profile: ?types.Profile = null,
+    profile_cleanup: ?system_info.SystemInfo = null,
 
     pub fn init(allocator: std.mem.Allocator) Runner {
         return .{
@@ -192,6 +195,9 @@ pub const Runner = struct {
 
     pub fn deinit(self: *Runner) void {
         self.benchmarks.deinit(self.allocator);
+        if (self.profile_cleanup) |cleanup| {
+            system_info.freeSystemInfo(self.allocator, cleanup);
+        }
     }
 
     pub fn addBenchmark(self: *Runner, bench: Benchmark) !void {
@@ -677,36 +683,29 @@ pub const Runner = struct {
     }
 
     fn detectProfile(self: *Runner) !types.Profile {
-        _ = self;
-        const cpu_count = @as(u32, @intCast(try std.Thread.getCpuCount()));
-        const os_name = @tagName(@import("builtin").os.tag);
-        const fs_name: []const u8 = "unknown";
+        // Use cached profile if available
+        if (self.cached_profile) |profile| {
+            return profile;
+        }
 
-        var ram_gb: f64 = 4.0; // Reasonable default if detection fails
-        // Best-effort /proc/meminfo parse
-        if (std.fs.cwd().openFile("/proc/meminfo", .{})) |file| {
-            defer file.close();
-            var buf: [4096]u8 = undefined;
-            const n = try file.readAll(&buf);
-            if (std.mem.indexOf(u8, buf[0..n], "MemTotal:")) |idx| {
-                var it = std.mem.tokenizeAny(u8, buf[idx..n], " \\t");
-                _ = it.next();
-                if (it.next()) |val_str| {
-                    if (std.fmt.parseInt(u64, val_str, 10)) |kb| {
-                        ram_gb = @as(f64, @floatFromInt(kb)) / (1024.0 * 1024.0);
-                    } else |_| {}
-                }
-            }
-        } else |_| {}
+        // Detect system info and cache the result
+        const sys_info = try system_info.detectSystemInfo(self.allocator);
 
-        return .{
+        // Store cleanup info
+        self.profile_cleanup = sys_info;
+
+        // Create and cache the profile
+        const profile = types.Profile{
             .name = .ci,
-            .cpu_model = null,
-            .core_count = cpu_count,
-            .ram_gb = ram_gb,
-            .os = os_name,
-            .fs = fs_name,
+            .cpu_model = sys_info.cpu_model,
+            .core_count = sys_info.core_count,
+            .ram_gb = sys_info.ram_gb,
+            .os = sys_info.os_name,
+            .fs = sys_info.fs_type,
         };
+
+        self.cached_profile = profile;
+        return profile;
     }
 
     fn detectBuild(self: *Runner) !types.Build {
