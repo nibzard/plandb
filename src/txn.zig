@@ -32,48 +32,110 @@ pub const Mutation = union(enum) {
     }
 };
 
+/// Commit payload header per spec/commit_record_v0.md
+pub const CommitPayloadHeader = struct {
+    commit_magic: u32 = 0x434D4954, // "CMIT"
+    txn_id: u64, // repeated for payload sanity
+    root_page_id: u64, // new committed root for this txn (may be 0)
+    op_count: u32, // number of operations
+    reserved: u32, // must be 0 in V0
+
+    pub const SIZE: usize = @sizeOf(@This());
+
+    pub fn serialize(self: @This(), writer: anytype) !void {
+        try writer.writeInt(u32, self.commit_magic, .little);
+        try writer.writeInt(u64, self.txn_id, .little);
+        try writer.writeInt(u64, self.root_page_id, .little);
+        try writer.writeInt(u32, self.op_count, .little);
+        try writer.writeInt(u32, self.reserved, .little);
+    }
+
+    pub fn deserialize(reader: anytype) !@This() {
+        const commit_magic = try reader.readInt(u32, .little);
+        if (commit_magic != 0x434D4954) return error.InvalidCommitMagic;
+
+        return CommitPayloadHeader{
+            .commit_magic = commit_magic,
+            .txn_id = try reader.readInt(u64, .little),
+            .root_page_id = try reader.readInt(u64, .little),
+            .op_count = try reader.readInt(u32, .little),
+            .reserved = try reader.readInt(u32, .little),
+        };
+    }
+};
+
+/// Operation encoding per spec/commit_record_v0.md
+pub const EncodedOperation = struct {
+    op_type: u8, // 0 = Put, 1 = Del
+    op_flags: u8, // V0 must be 0
+    key_len: u16,
+    val_len: u32, // only for Put; for Del must be 0
+    key_bytes: []const u8,
+    val_bytes: []const u8, // only for Put
+
+    pub fn serialize(self: @This(), writer: anytype) !void {
+        try writer.writeByte(self.op_type);
+        try writer.writeByte(self.op_flags);
+        try writer.writeInt(u16, self.key_len, .little);
+        try writer.writeInt(u32, self.val_len, .little);
+        try writer.writeAll(self.key_bytes);
+        if (self.op_type == 0) { // Put
+            try writer.writeAll(self.val_bytes);
+        }
+    }
+
+    pub fn calculateSerializedSize(self: @This()) usize {
+        var size = 1 + 1 + 2 + 4 + self.key_len; // op_type + op_flags + key_len + val_len + key_bytes
+        if (self.op_type == 0) { // Put
+            size += self.val_len;
+        }
+        return size;
+    }
+};
+
 /// Commit record written to WAL for durability
 pub const CommitRecord = struct {
     txn_id: u64,
-    parent_txn_id: u64,
-    timestamp_ns: u64,
+    root_page_id: u64,
     mutations: []const Mutation,
     checksum: u32,
 
-    pub const SIZE: usize = @sizeOf(u64) * 3 + @sizeOf(u32) + @sizeOf(u32); // txn_id, parent, timestamp, mutation_count, checksum
+    pub fn calculatePayloadChecksum(self: @This()) u32 {
+        var hasher = std.hash.Crc32.init();
 
-    pub fn calculateChecksum(self: @This()) u32 {
-        // Create temporary record with checksum zeroed for calculation
-        const temp = CommitRecord{
+        // Start with payload header
+        const header = CommitPayloadHeader{
+            .commit_magic = 0x434D4954,
             .txn_id = self.txn_id,
-            .parent_txn_id = self.parent_txn_id,
-            .timestamp_ns = self.timestamp_ns,
-            .mutations = self.mutations,
-            .checksum = 0,
+            .root_page_id = self.root_page_id,
+            .op_count = @intCast(self.mutations.len),
+            .reserved = 0,
         };
 
-        // Calculate checksum of all mutations
-        var hasher = std.hash.Crc32.init();
-        hasher.update(std.mem.asBytes(&temp.txn_id));
-        hasher.update(std.mem.asBytes(&temp.parent_txn_id));
-        hasher.update(std.mem.asBytes(&temp.timestamp_ns));
+        var buffer: [CommitPayloadHeader.SIZE]u8 = undefined;
+        var fbs = std.io.fixedBufferStream(&buffer);
+        header.serialize(fbs.writer()) catch unreachable;
+        hasher.update(buffer[0..]);
 
-        const mutation_count: u32 = @intCast(self.mutations.len);
-        hasher.update(std.mem.asBytes(&mutation_count));
-
+        // Hash operations
         for (self.mutations) |mutation| {
             switch (mutation) {
                 .put => |p| {
-                    const key_len: u32 = @intCast(p.key.len);
+                    const key_len: u16 = @intCast(p.key.len);
                     const val_len: u32 = @intCast(p.value.len);
+                    hasher.update(std.mem.asBytes(&@as(u8, 0))); // op_type = Put
+                    hasher.update(std.mem.asBytes(&@as(u8, 0))); // op_flags = 0
                     hasher.update(std.mem.asBytes(&key_len));
-                    hasher.update(p.key);
                     hasher.update(std.mem.asBytes(&val_len));
+                    hasher.update(p.key);
                     hasher.update(p.value);
                 },
                 .delete => |d| {
-                    const key_len: u32 = @intCast(d.key.len);
+                    const key_len: u16 = @intCast(d.key.len);
+                    hasher.update(std.mem.asBytes(&@as(u8, 1))); // op_type = Del
+                    hasher.update(std.mem.asBytes(&@as(u8, 0))); // op_flags = 0
                     hasher.update(std.mem.asBytes(&key_len));
+                    hasher.update(std.mem.asBytes(&@as(u32, 0))); // val_len = 0
                     hasher.update(d.key);
                 },
             }
@@ -83,7 +145,7 @@ pub const CommitRecord = struct {
     }
 
     pub fn validateChecksum(self: @This()) bool {
-        return self.checksum == self.calculateChecksum();
+        return self.checksum == self.calculatePayloadChecksum();
     }
 };
 
@@ -187,22 +249,20 @@ pub const TransactionContext = struct {
     }
 
     /// Generate commit record for WAL
-    pub fn createCommitRecord(self: *Self) !CommitRecord {
+    pub fn createCommitRecord(self: *Self, root_page_id: u64) !CommitRecord {
         const mutations_slice = try self.allocator.dupe(Mutation, self.mutations.items);
         const record = CommitRecord{
             .txn_id = self.txn_id,
-            .parent_txn_id = self.parent_txn_id,
-            .timestamp_ns = self.timestamp_ns,
+            .root_page_id = root_page_id,
             .mutations = mutations_slice,
             .checksum = 0, // Will be calculated
         };
 
         return CommitRecord{
             .txn_id = record.txn_id,
-            .parent_txn_id = record.parent_txn_id,
-            .timestamp_ns = record.timestamp_ns,
+            .root_page_id = record.root_page_id,
             .mutations = record.mutations,
-            .checksum = record.calculateChecksum(),
+            .checksum = record.calculatePayloadChecksum(),
         };
     }
 
@@ -341,13 +401,12 @@ test "CommitRecord_checksum_validation" {
 
     var record = CommitRecord{
         .txn_id = 42,
-        .parent_txn_id = 1,
-        .timestamp_ns = 1234567890,
+        .root_page_id = 5,
         .mutations = &mutations,
         .checksum = 0,
     };
 
-    record.checksum = record.calculateChecksum();
+    record.checksum = record.calculatePayloadChecksum();
     try testing.expect(record.validateChecksum());
 
     // Corrupt checksum

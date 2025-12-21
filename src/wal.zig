@@ -18,38 +18,72 @@ pub const WriteAheadLog = struct {
 
     const Self = @This();
 
-    /// WAL record header
+    /// WAL record header per spec/commit_record_v0.md
     const RecordHeader = struct {
-        magic: u32 = 0x57414C00, // "WAL\0"
-        lsn: u64,
-        record_type: RecordType,
-        length: u32,
-        checksum: u32,
+        magic: u32 = 0x4C4F4752, // "LOGR"
+        record_version: u16 = 0,
+        record_type: u16,
+        header_len: u16 = 40, // bytes of header in V0
+        flags: u16,
+        txn_id: u64,
+        prev_lsn: u64,
+        payload_len: u32,
+        header_crc32c: u32,
+        payload_crc32c: u32,
 
         pub const SIZE: usize = @sizeOf(@This());
 
-        pub fn calculateChecksum(self: @This()) u32 {
+        pub fn calculateHeaderChecksum(self: @This()) u32 {
             var hasher = std.hash.Crc32.init();
             const temp = RecordHeader{
                 .magic = self.magic,
-                .lsn = self.lsn,
+                .record_version = self.record_version,
                 .record_type = self.record_type,
-                .length = self.length,
-                .checksum = 0,
+                .header_len = self.header_len,
+                .flags = self.flags,
+                .txn_id = self.txn_id,
+                .prev_lsn = self.prev_lsn,
+                .payload_len = self.payload_len,
+                .header_crc32c = 0,
+                .payload_crc32c = self.payload_crc32c,
             };
             hasher.update(std.mem.asBytes(&temp));
             return hasher.final();
         }
 
-        pub fn validateChecksum(self: @This()) bool {
-            return self.checksum == self.calculateChecksum();
+        pub fn validateHeaderChecksum(self: @This()) bool {
+            return self.header_crc32c == self.calculateHeaderChecksum();
         }
     };
 
-    pub const RecordType = enum(u8) {
-        commit = 1,
-        checkpoint = 2,
-        truncate = 3,
+    pub const RecordType = enum(u16) {
+        commit = 0,
+        checkpoint = 1,
+        cartridge_meta = 2,
+    };
+
+    /// WAL record trailer per spec/commit_record_v0.md
+    const RecordTrailer = struct {
+        magic2: u32 = 0x52474F4C, // "RGOL" (LOGR reversed)
+        total_len: u32, // header_len + payload_len + trailer_len
+        trailer_crc32c: u32,
+
+        pub const SIZE: usize = @sizeOf(@This());
+
+        pub fn calculateTrailerChecksum(self: @This()) u32 {
+            var hasher = std.hash.Crc32.init();
+            const temp = RecordTrailer{
+                .magic2 = self.magic2,
+                .total_len = self.total_len,
+                .trailer_crc32c = 0,
+            };
+            hasher.update(std.mem.asBytes(&temp));
+            return hasher.final();
+        }
+
+        pub fn validateTrailerChecksum(self: @This()) bool {
+            return self.trailer_crc32c == self.calculateTrailerChecksum();
+        }
     };
 
     /// Initialize or open a WAL file
@@ -111,14 +145,22 @@ pub const WriteAheadLog = struct {
         const serialized = try self.serializeCommitRecord(&record);
         defer self.allocator.free(serialized);
 
+        const payload_crc32c = record.calculatePayloadChecksum();
+
         const header = RecordHeader{
-            .lsn = self.current_lsn + 1,
-            .record_type = .commit,
-            .length = @intCast(serialized.len),
-            .checksum = 0,
+            .magic = 0x4C4F4752, // "LOGR"
+            .record_version = 0,
+            .record_type = @intFromEnum(WriteAheadLog.RecordType.commit),
+            .header_len = 40,
+            .flags = 0x02, // bit1: payload contains inline values (V0: 1)
+            .txn_id = record.txn_id,
+            .prev_lsn = self.current_lsn,
+            .payload_len = @intCast(serialized.len),
+            .header_crc32c = 0, // Will be calculated
+            .payload_crc32c = payload_crc32c,
         };
 
-        return self.appendRecord(header, serialized);
+        return self.appendRecordWithTrailer(header, serialized);
     }
 
     /// Append a checkpoint record
@@ -162,38 +204,49 @@ pub const WriteAheadLog = struct {
             if (bytes_read < RecordHeader.SIZE) break;
 
             const header = std.mem.bytesAsValue(RecordHeader, &header_bytes);
-            if (header.magic != 0x57414C00) break;
-            if (!header.validateChecksum()) break;
-            if (header.lsn < start_lsn) {
-                file_pos += RecordHeader.SIZE + header.length;
+            if (header.magic != 0x4C4F4752) break; // "LOGR"
+            if (!header.validateHeaderChecksum()) break;
+            if (header.txn_id < start_lsn) {
+                file_pos += RecordHeader.SIZE + header.payload_len + RecordTrailer.SIZE;
                 continue;
             }
 
             // Read record data
-            const record_data = try allocator.alloc(u8, header.length);
+            const record_data = try allocator.alloc(u8, header.payload_len);
             defer allocator.free(record_data);
 
             const data_read = try self.file.pread(record_data, file_pos + RecordHeader.SIZE);
-            if (data_read < header.length) break;
+            if (data_read < header.payload_len) break;
+
+            // Verify payload CRC
+            var hasher = std.hash.Crc32.init();
+            hasher.update(record_data);
+            const calculated_payload_crc = hasher.final();
+            if (calculated_payload_crc != header.payload_crc32c) {
+                continue; // Skip corrupted record
+            }
 
             switch (header.record_type) {
-                .commit => {
+                0 => { // commit
                     const commit_record = try WriteAheadLog.deserializeCommitRecord(record_data, allocator);
                     try result.commit_records.append(allocator, commit_record);
                 },
-                .checkpoint => {
-                    if (header.length == @sizeOf(u64)) {
+                1 => { // checkpoint
+                    if (header.payload_len == @sizeOf(u64)) {
                         const checkpoint_txn_id = std.mem.bytesAsValue(u64, record_data);
                         result.last_checkpoint_txn_id = checkpoint_txn_id.*;
                     }
                 },
-                .truncate => {
-                    result.truncate_lsn = header.lsn;
+                2 => { // cartridge_meta
+                    result.truncate_lsn = header.txn_id;
+                },
+                else => {
+                    // Unknown record type, skip it
                 },
             }
 
-            result.last_lsn = header.lsn;
-            file_pos += RecordHeader.SIZE + header.length;
+            result.last_lsn = header.txn_id;
+            file_pos += RecordHeader.SIZE + header.payload_len + RecordTrailer.SIZE;
         }
 
         return result;
@@ -211,16 +264,16 @@ pub const WriteAheadLog = struct {
             if (bytes_read < RecordHeader.SIZE) break;
 
             const header = std.mem.bytesAsValue(RecordHeader, &header_bytes);
-            if (header.magic != 0x57414C00) break;
-            if (!header.validateChecksum()) break;
-            if (header.lsn == keep_lsn) {
+            if (header.magic != 0x4C4F4752) break; // "LOGR"
+            if (!header.validateHeaderChecksum()) break;
+            if (header.txn_id == keep_lsn) {
                 // Found the record to keep, truncate everything before it
                 try self.file.setEndPos(file_size - file_pos);
                 try self.file.seekTo(0);
                 return;
             }
 
-            file_pos += RecordHeader.SIZE + header.length;
+            file_pos += RecordHeader.SIZE + header.payload_len + RecordTrailer.SIZE;
         }
 
         // If we didn't find the LSN, truncate everything
@@ -228,9 +281,37 @@ pub const WriteAheadLog = struct {
         try self.file.seekTo(0);
     }
 
-    /// Private: Append any record type to WAL
-    fn appendRecord(self: *Self, header: RecordHeader, data: []const u8) !u64 {
-        const record_size = RecordHeader.SIZE + data.len;
+    /// Private: Append any record type to WAL with trailer
+    fn appendRecordWithTrailer(self: *Self, header: RecordHeader, data: []const u8) !u64 {
+        const record_size = RecordHeader.SIZE + data.len + RecordTrailer.SIZE;
+
+        // Calculate header CRC
+        const header_with_crc = RecordHeader{
+            .magic = header.magic,
+            .record_version = header.record_version,
+            .record_type = header.record_type,
+            .header_len = header.header_len,
+            .flags = header.flags,
+            .txn_id = header.txn_id,
+            .prev_lsn = header.prev_lsn,
+            .payload_len = header.payload_len,
+            .header_crc32c = header.calculateHeaderChecksum(),
+            .payload_crc32c = header.payload_crc32c,
+        };
+
+        // Create trailer
+        const total_len: u32 = @intCast(record_size);
+        const trailer = RecordTrailer{
+            .magic2 = 0x52474F4C, // "RGOL"
+            .total_len = total_len,
+            .trailer_crc32c = 0, // Will be calculated
+        };
+
+        const trailer_with_crc = RecordTrailer{
+            .magic2 = trailer.magic2,
+            .total_len = trailer.total_len,
+            .trailer_crc32c = trailer.calculateTrailerChecksum(),
+        };
 
         // Check if record fits in buffer
         if (self.buffer_pos + record_size > self.buffer.len) {
@@ -239,31 +320,16 @@ pub const WriteAheadLog = struct {
 
         // If record is larger than buffer, write directly
         if (record_size > self.buffer.len) {
-            const header_with_checksum = RecordHeader{
-                .magic = header.magic,
-                .lsn = header.lsn,
-                .record_type = header.record_type,
-                .length = header.length,
-                .checksum = header.calculateChecksum(),
-            };
-
-            try self.file.writeAll(std.mem.asBytes(&header_with_checksum));
+            try self.file.writeAll(std.mem.asBytes(&header_with_crc));
             try self.file.writeAll(data);
-            self.current_lsn = header.lsn;
+            try self.file.writeAll(std.mem.asBytes(&trailer_with_crc));
+            self.current_lsn += 1; // Increment LSN as record counter
             self.sync_needed = true;
-            return header.lsn;
+            return self.current_lsn;
         }
 
         // Write to buffer
-        const header_with_checksum = RecordHeader{
-            .magic = header.magic,
-            .lsn = header.lsn,
-            .record_type = header.record_type,
-            .length = header.length,
-            .checksum = header.calculateChecksum(),
-        };
-
-        @memcpy(self.buffer[self.buffer_pos..self.buffer_pos + RecordHeader.SIZE], std.mem.asBytes(&header_with_checksum));
+        @memcpy(self.buffer[self.buffer_pos..self.buffer_pos + RecordHeader.SIZE], std.mem.asBytes(&header_with_crc));
         self.buffer_pos += RecordHeader.SIZE;
 
         if (data.len > 0) {
@@ -271,9 +337,29 @@ pub const WriteAheadLog = struct {
             self.buffer_pos += data.len;
         }
 
-        self.current_lsn = header.lsn;
+        @memcpy(self.buffer[self.buffer_pos..self.buffer_pos + RecordTrailer.SIZE], std.mem.asBytes(&trailer_with_crc));
+        self.buffer_pos += RecordTrailer.SIZE;
+
+        self.current_lsn = header.txn_id; // Use txn_id as LSN for compatibility
         self.sync_needed = true;
-        return header.lsn;
+        return header.txn_id;
+    }
+
+    /// Private: Legacy append function for compatibility (deprecated)
+    fn appendRecord(self: *Self, header: RecordHeader, data: []const u8) !u64 {
+        const new_header = RecordHeader{
+            .magic = 0x4C4F4752, // "LOGR"
+            .record_version = 0,
+            .record_type = header.record_type,
+            .header_len = 40,
+            .flags = 0,
+            .txn_id = @intCast(header.payload_len), // Legacy compatibility
+            .prev_lsn = self.current_lsn,
+            .payload_len = @intCast(data.len),
+            .header_crc32c = 0,
+            .payload_crc32c = 0,
+        };
+        return self.appendRecordWithTrailer(new_header, data);
     }
 
     /// Private: Flush buffer to file
@@ -295,47 +381,58 @@ pub const WriteAheadLog = struct {
             if (bytes_read < RecordHeader.SIZE) break;
 
             const header = std.mem.bytesAsValue(RecordHeader, &header_bytes);
-            if (header.magic != 0x57414C00) break;
-            if (!header.validateChecksum()) break;
+            if (header.magic != 0x4C4F4752) break; // "LOGR"
+            if (!header.validateHeaderChecksum()) break;
 
-            if (header.lsn > highest_lsn) {
-                highest_lsn = header.lsn;
+            if (header.txn_id > highest_lsn) {
+                highest_lsn = header.txn_id;
             }
 
-            file_pos += RecordHeader.SIZE + header.length;
+            file_pos += RecordHeader.SIZE + header.payload_len + RecordTrailer.SIZE;
         }
 
         return highest_lsn;
     }
 
-    /// Private: Serialize commit record
+    /// Private: Serialize commit record payload per spec/commit_record_v0.md
     fn serializeCommitRecord(self: *Self, record: *const txn.CommitRecord) ![]u8 {
         var buffer = std.ArrayList(u8).initCapacity(self.allocator, 0) catch unreachable;
         errdefer buffer.deinit(self.allocator);
 
-        // Write header fields
-        try buffer.writer(self.allocator).writeInt(u64, record.txn_id, .little);
-        try buffer.writer(self.allocator).writeInt(u64, record.parent_txn_id, .little);
-        try buffer.writer(self.allocator).writeInt(u64, record.timestamp_ns, .little);
+        // Write commit payload header
+        const payload_header = txn.CommitPayloadHeader{
+            .commit_magic = 0x434D4954, // "CMIT"
+            .txn_id = record.txn_id,
+            .root_page_id = record.root_page_id,
+            .op_count = @intCast(record.mutations.len),
+            .reserved = 0,
+        };
+        try payload_header.serialize(buffer.writer(self.allocator));
 
-        const mutation_count: u32 = @intCast(record.mutations.len);
-        try buffer.writer(self.allocator).writeInt(u32, mutation_count, .little);
-
-        // Write mutations
+        // Write operations using new encoding
         for (record.mutations) |mutation| {
             switch (mutation) {
                 .put => |p| {
-                    const key_len: u32 = @intCast(p.key.len);
-                    const val_len: u32 = @intCast(p.value.len);
-                    try buffer.writer(self.allocator).writeInt(u32, key_len, .little);
-                    try buffer.appendSlice(self.allocator, p.key);
-                    try buffer.writer(self.allocator).writeInt(u32, val_len, .little);
-                    try buffer.appendSlice(self.allocator, p.value);
+                    const op = txn.EncodedOperation{
+                        .op_type = 0, // Put
+                        .op_flags = 0, // V0 must be 0
+                        .key_len = @intCast(p.key.len),
+                        .val_len = @intCast(p.value.len),
+                        .key_bytes = p.key,
+                        .val_bytes = p.value,
+                    };
+                    try op.serialize(buffer.writer(self.allocator));
                 },
                 .delete => |d| {
-                    const key_len: u32 = @intCast(d.key.len);
-                    try buffer.writer(self.allocator).writeInt(u32, key_len, .little);
-                    try buffer.appendSlice(self.allocator, d.key);
+                    const op = txn.EncodedOperation{
+                        .op_type = 1, // Delete
+                        .op_flags = 0, // V0 must be 0
+                        .key_len = @intCast(d.key.len),
+                        .val_len = 0, // Must be 0 for delete
+                        .key_bytes = d.key,
+                        .val_bytes = &[_]u8{},
+                    };
+                    try op.serialize(buffer.writer(self.allocator));
                 },
             }
         }
@@ -343,63 +440,58 @@ pub const WriteAheadLog = struct {
         return buffer.toOwnedSlice(self.allocator);
     }
 
-    /// Private: Deserialize commit record
+    /// Private: Deserialize commit record payload per spec/commit_record_v0.md
     fn deserializeCommitRecord(data: []const u8, allocator: std.mem.Allocator) !txn.CommitRecord {
         var pos: usize = 0;
 
-        const txn_id = std.mem.bytesAsValue(u64, data[pos..pos + 8]).*;
-        pos += 8;
-        const parent_txn_id = std.mem.bytesAsValue(u64, data[pos..pos + 8]).*;
-        pos += 8;
-        const timestamp_ns = std.mem.bytesAsValue(u64, data[pos..pos + 8]).*;
-        pos += 8;
-        const mutation_count = std.mem.bytesAsValue(u32, data[pos..pos + 4]).*;
-        pos += 4;
+        // Read commit payload header
+        var fbs = std.io.fixedBufferStream(data);
+        const header = try txn.CommitPayloadHeader.deserialize(fbs.reader());
+        pos += txn.CommitPayloadHeader.SIZE;
 
         var mutations = std.ArrayList(txn.Mutation).initCapacity(allocator, 0) catch unreachable;
         errdefer mutations.deinit(allocator);
 
-        for (0..mutation_count) |_| {
-            const mutation_type = std.mem.bytesAsValue(u8, data[pos..pos + 1]).*;
+        // Read operations
+        for (0..header.op_count) |_| {
+            const op_type = data[pos];
             pos += 1;
+            _ = data[pos]; // op_flags, should be 0 in V0
+            pos += 1;
+            const key_len = std.mem.bytesAsValue(u16, data[pos..pos + 2]).*;
+            pos += 2;
+            const val_len = std.mem.bytesAsValue(u32, data[pos..pos + 4]).*;
+            pos += 4;
 
-            switch (mutation_type) {
-                0 => { // PUT
-                    const key_len = std.mem.bytesAsValue(u32, data[pos..pos + 4]).*;
-                    pos += 4;
-                    const key = try allocator.dupe(u8, data[pos..pos + key_len]);
-                    pos += key_len;
-                    const val_len = std.mem.bytesAsValue(u32, data[pos..pos + 4]).*;
-                    pos += 4;
+            const key = try allocator.dupe(u8, data[pos..pos + key_len]);
+            pos += key_len;
+
+            switch (op_type) {
+                0 => { // Put
                     const value = try allocator.dupe(u8, data[pos..pos + val_len]);
                     pos += val_len;
                     try mutations.append(allocator, txn.Mutation{ .put = .{ .key = key, .value = value } });
                 },
-                1 => { // DELETE
-                    const key_len = std.mem.bytesAsValue(u32, data[pos..pos + 4]).*;
-                    pos += 4;
-                    const key = try allocator.dupe(u8, data[pos..pos + key_len]);
-                    pos += key_len;
+                1 => { // Delete
+                    if (val_len != 0) return error.InvalidDeleteOperation;
                     try mutations.append(allocator, txn.Mutation{ .delete = .{ .key = key } });
                 },
-                else => return error.InvalidMutationType,
+                else => return error.InvalidOperationType,
             }
         }
 
         const record = txn.CommitRecord{
-            .txn_id = txn_id,
-            .parent_txn_id = parent_txn_id,
-            .timestamp_ns = timestamp_ns,
+            .txn_id = header.txn_id,
+            .root_page_id = header.root_page_id,
             .mutations = try mutations.toOwnedSlice(allocator),
             .checksum = 0,
         };
 
         return txn.CommitRecord{
             .txn_id = record.txn_id,
-            .parent_txn_id = record.parent_txn_id,
-            .timestamp_ns = record.timestamp_ns,
+            .root_page_id = record.root_page_id,
             .mutations = record.mutations,
-            .checksum = record.calculateChecksum(),
+            .checksum = record.calculatePayloadChecksum(),
         };
     }
 };
@@ -465,12 +557,11 @@ test "WriteAheadLog.create_and_append_commit_record" {
 
     var record = txn.CommitRecord{
         .txn_id = 1,
-        .parent_txn_id = 0,
-        .timestamp_ns = 1234567890,
+        .root_page_id = 3,
         .mutations = &mutations,
         .checksum = 0,
     };
-    record.checksum = record.calculateChecksum();
+    record.checksum = record.calculatePayloadChecksum();
 
     // Append record
     const lsn = try wal.appendCommitRecord(record);
@@ -495,12 +586,11 @@ test "WriteAheadLog.open_existing_finds_correct_lsn" {
 
         var record = txn.CommitRecord{
             .txn_id = 1,
-            .parent_txn_id = 0,
-            .timestamp_ns = 1234567890,
+            .root_page_id = 2,
             .mutations = &mutations,
             .checksum = 0,
         };
-        record.checksum = record.calculateChecksum();
+        record.checksum = record.calculatePayloadChecksum();
 
         _ = try wal.appendCommitRecord(record);
         _ = try wal.appendCommitRecord(record); // Add second record
@@ -531,12 +621,11 @@ test "WriteAheadLog.replay_reads_commit_records" {
 
     var record = txn.CommitRecord{
         .txn_id = 42,
-        .parent_txn_id = 1,
-        .timestamp_ns = 1234567890,
+        .root_page_id = 7,
         .mutations = &mutations,
         .checksum = 0,
     };
-    record.checksum = record.calculateChecksum();
+    record.checksum = record.calculatePayloadChecksum();
 
     _ = try wal.appendCommitRecord(record);
     try wal.sync();
@@ -553,8 +642,7 @@ test "WriteAheadLog.replay_reads_commit_records" {
 
     const replayed_record = result.commit_records.items[0];
     try testing.expectEqual(@as(u64, 42), replayed_record.txn_id);
-    try testing.expectEqual(@as(u64, 1), replayed_record.parent_txn_id);
-    try testing.expectEqual(@as(u64, 1234567890), replayed_record.timestamp_ns);
+    try testing.expectEqual(@as(u64, 7), replayed_record.root_page_id);
     try testing.expectEqual(@as(usize, 2), replayed_record.mutations.len);
 }
 
@@ -574,12 +662,11 @@ test "WriteAheadLog.truncate_keeps_specified_lsn" {
 
     var record = txn.CommitRecord{
         .txn_id = 1,
-        .parent_txn_id = 0,
-        .timestamp_ns = 1234567890,
+        .root_page_id = 3,
         .mutations = &mutations,
         .checksum = 0,
     };
-    record.checksum = record.calculateChecksum();
+    record.checksum = record.calculatePayloadChecksum();
 
     _ = try wal.appendCommitRecord(record);
     const keep_lsn = try wal.appendCommitRecord(record);
