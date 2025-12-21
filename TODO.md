@@ -241,7 +241,15 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED**: Throughput ~322K ops/sec with 0 allocations per operation
   - **COMPLETED**: Integrated with benchmark harness and passes validation
   - **NOTE**: Performance above target indicates optimization needed in snapshot creation path
-- [ ] 🟠 Add microbench `bench/mvcc/readers_256_point_get_hot` (parameterized N)
+- [✅] 🟠 Add microbench `bench/mvcc/readers_256_point_get_hot` (parameterized N)
+  - **COMPLETED**: Implemented MVCC readers benchmark with 256 parameterized readers
+  - **COMPLETED**: Added hot cache functionality with 100 keys for realistic reads
+  - **COMPLETED**: Each reader performs 1,000 random point get operations
+  - **COMPLETED**: Proper metrics collection for I/O, allocations, and latency
+  - **COMPLETED**: Performance: 122,557 ops/sec with 256K total operations
+  - **COMPLETED**: Integrated with benchmark harness and passes validation
+  - **COMPLETED**: Tests MVCC snapshot registry performance with many concurrent readers
+  - Committed with hash 19316d1
 - [ ] 🟠 Add microbench `bench/mvcc/writer_commits_with_readers_128`
 - [ ] 🟠 Property tests: snapshot immutability and time-travel correctness
 - [ ] 🟡 Simple page cache with pinning/epochs for readers
