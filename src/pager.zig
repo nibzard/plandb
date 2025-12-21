@@ -365,12 +365,243 @@ pub fn getOppositeMetaId(page_id: u64) !u64 {
     return error.InvalidMetaId;
 }
 
+// Free list page payload - stores linked list of free page IDs
+pub const FreelistPayload = struct {
+    freelist_magic: u32 = 0x46524545, // "FREE"
+    next_page_id: u64, // Next freelist page (0 if none)
+    free_count: u32, // Number of free page IDs in this page
+    reserved: [32]u8 = std.mem.zeroes([32]u8), // Reserved for future use
+    // Followed by free_count * u64 page IDs
+
+    const Self = @This();
+
+    pub const SIZE: usize = @sizeOf(Self);
+
+    pub const MAX_FREE_PER_PAGE: usize = (@as(usize, DEFAULT_PAGE_SIZE) - PageHeader.SIZE - SIZE) / @sizeOf(u64);
+
+    // Encode freelist payload to bytes
+    pub fn encode(self: Self, dest: []u8) !void {
+        if (dest.len < SIZE) return error.BufferTooSmall;
+        std.mem.bytesAsValue(Self, dest[0..SIZE]).* = self;
+    }
+
+    // Decode freelist payload from bytes
+    pub fn decode(bytes: []const u8) !Self {
+        if (bytes.len < SIZE) return error.InvalidFreelistSize;
+        const freelist = std.mem.bytesAsValue(Self, bytes[0..SIZE]);
+
+        // Validate magic
+        if (freelist.freelist_magic != 0x46524545) return error.InvalidFreelistMagic;
+
+        // Validate free count
+        if (freelist.free_count > MAX_FREE_PER_PAGE) return error.InvalidFreeCount;
+
+        return freelist.*;
+    }
+};
+
+// Page allocator with rebuild-on-open freelist policy
+pub const PageAllocator = struct {
+    pager: *Pager,
+    free_pages: std.ArrayList(u64),
+    last_allocated_page: u64,
+    allocator: std.mem.Allocator,
+
+    const Self = @This();
+
+    // Initialize page allocator by rebuilding freelist from committed tree
+    pub fn init(pager: *Pager, allocator: std.mem.Allocator) !Self {
+        var self = Self{
+            .pager = pager,
+            .free_pages = undefined,
+            .last_allocated_page = 0,
+            .allocator = allocator,
+        };
+
+        self.free_pages = std.ArrayList(u64).initCapacity(allocator, 64) catch unreachable;
+        try self.rebuildFreelist();
+        return self;
+    }
+
+    // Deinitialize page allocator
+    pub fn deinit(self: *Self) void {
+        self.free_pages.deinit(self.allocator);
+    }
+
+    // Rebuild freelist by finding pages NOT reachable from committed root
+    fn rebuildFreelist(self: *Self) !void {
+        // Get file size to determine total pages
+        const file_size = try self.pager.file.getEndPos();
+        const total_pages = file_size / self.pager.page_size;
+
+        // Mark all pages (except reserved meta pages) as potentially free initially
+        var page_in_use = try self.allocator.alloc(bool, total_pages);
+        defer self.allocator.free(page_in_use);
+        @memset(page_in_use, false);
+
+        // Mark meta pages as in use
+        if (total_pages > 0) page_in_use[META_A_PAGE_ID] = true;
+        if (total_pages > 1) page_in_use[META_B_PAGE_ID] = true;
+
+        // If we have a root page, traverse the tree to mark reachable pages
+        const root_page_id = self.pager.getRootPageId();
+        if (root_page_id != 0) {
+            try self.markTreePages(root_page_id, page_in_use);
+        }
+
+        // Build freelist from pages not in use
+        self.free_pages.clearRetainingCapacity();
+        self.last_allocated_page = total_pages;
+
+        for (page_in_use, 0..) |in_use, page_id| {
+            if (!in_use and page_id >= 2) { // Skip meta pages 0 and 1
+                try self.free_pages.append(self.allocator, @intCast(page_id));
+            }
+        }
+
+        // Sort free pages for deterministic allocation (lowest ID first)
+        std.sort.insertion(u64, self.free_pages.items, {}, struct {
+            fn lessThan(_: void, a: u64, b: u64) bool {
+                return a < b;
+            }
+        }.lessThan);
+    }
+
+    // Mark pages reachable from a given root page as in use
+    fn markTreePages(self: *Self, root_page_id: u64, page_in_use: []bool) !void {
+        // Stack for iterative traversal to avoid recursion
+        var stack = std.ArrayList(u64).initCapacity(self.allocator, 32) catch unreachable;
+        defer stack.deinit(self.allocator);
+        try stack.append(self.allocator, root_page_id);
+
+        while (stack.items.len > 0) {
+            const page_id = stack.pop() orelse unreachable;
+
+            // Skip if invalid or already marked
+            if (page_id >= page_in_use.len or page_in_use[@intCast(page_id)]) {
+                continue;
+            }
+
+            // Mark page as in use
+            page_in_use[@intCast(page_id)] = true;
+
+            // Read page to check type and find child pages
+            var page_buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+            self.pager.readPage(page_id, &page_buffer) catch |err| switch (err) {
+                error.UnexpectedEOF => continue, // Skip corrupt pages
+                else => return err,
+            };
+
+            const header = validatePage(&page_buffer) catch |err| switch (err) {
+                error.InvalidPageChecksum, error.InvalidHeaderChecksum, error.InvalidPayloadLength => continue, // Skip corrupt pages
+                else => return err,
+            };
+
+            // If it's a btree page, add child pages to stack
+            if (header.page_type == .btree_internal) {
+                const child_page_ids = try self.extractChildPageIds(&page_buffer);
+                for (child_page_ids) |child_id| {
+                    try stack.append(self.allocator, child_id);
+                }
+            }
+            // Leaf pages have no children, freelist pages are handled by freelist rebuild
+        }
+    }
+
+    // Extract child page IDs from an internal btree node
+    fn extractChildPageIds(self: *Self, page_buffer: []const u8) ![]const u64 {
+        _ = self;
+        const header = try PageHeader.decode(page_buffer);
+        if (header.page_type != .btree_internal) return &[_]u64{};
+
+        const payload_start = PageHeader.SIZE;
+        if (payload_start + BtreeNodeHeader.SIZE > page_buffer.len) return &[_]u64{};
+
+        const node_header = try BtreeNodeHeader.decode(page_buffer[payload_start..]);
+
+        // For V0, we assume child page IDs are stored after the node header
+        // This is a simplified approach - real implementation would need to parse the actual encoding
+        const child_count = node_header.key_count + 1;
+        const child_ids_start = payload_start + BtreeNodeHeader.SIZE;
+        const child_ids_end = child_ids_start + child_count * @sizeOf(u64);
+
+        if (child_ids_end > page_buffer.len) return &[_]u64{};
+
+        const child_ids_bytes = page_buffer[child_ids_start..child_ids_end];
+
+        // Since we don't have persistent allocation, return empty for now
+        // Real implementation would need proper parsing of child pointers
+        _ = child_ids_bytes;
+        return &[_]u64{};
+    }
+
+    // Allocate a new page from freelist or extend the file
+    pub fn allocatePage(self: *Self) !u64 {
+        // Try to reuse from freelist first
+        if (self.free_pages.items.len > 0) {
+            return self.free_pages.orderedRemove(0); // Take lowest ID first
+        }
+
+        // Extend file with new page
+        const new_page_id = self.last_allocated_page;
+        self.last_allocated_page += 1;
+
+        // Extend file by writing a zeroed page
+        var zero_page: [DEFAULT_PAGE_SIZE]u8 = std.mem.zeroes([DEFAULT_PAGE_SIZE]u8);
+
+        // Create a valid header for the new page
+        var header = PageHeader{
+            .page_type = .freelist, // Will be overwritten by caller
+            .page_id = new_page_id,
+            .txn_id = 0,
+            .payload_len = 0,
+            .header_crc32c = 0,
+            .page_crc32c = 0,
+        };
+        header.header_crc32c = header.calculateHeaderChecksum();
+        try header.encode(zero_page[0..PageHeader.SIZE]);
+
+        const offset = new_page_id * self.pager.page_size;
+        _ = try self.pager.file.pwriteAll(&zero_page, offset);
+
+        return new_page_id;
+    }
+
+    // Free a page (add to freelist for future reuse)
+    pub fn freePage(self: *Self, page_id: u64) !void {
+        // Don't allow freeing meta pages
+        if (page_id == META_A_PAGE_ID or page_id == META_B_PAGE_ID) {
+            return error.InvalidOperation;
+        }
+
+        // Add to freelist, maintaining sort order
+        for (self.free_pages.items, 0..) |existing_id, i| {
+            if (page_id < existing_id) {
+                try self.free_pages.insert(self.allocator, i, page_id);
+                return;
+            }
+        }
+        try self.free_pages.append(self.allocator, page_id);
+    }
+
+    // Get number of free pages available
+    pub fn getFreePageCount(self: *const Self) usize {
+        return self.free_pages.items.len;
+    }
+
+    // Get the highest allocated page ID
+    pub fn getLastAllocatedPageId(self: *const Self) u64 {
+        return self.last_allocated_page - 1;
+    }
+};
+
 // Pager represents the storage layer with file handles and state
 pub const Pager = struct {
     file: std.fs.File,
     page_size: u16,
     current_meta: MetaState,
     allocator: std.mem.Allocator,
+    page_allocator: ?PageAllocator,
 
     const Self = @This();
 
@@ -415,16 +646,25 @@ pub const Pager = struct {
         // Re-open file to keep it open for the pager lifetime
         const persistent_file = try std.fs.cwd().openFile(path, .{ .mode = .read_write });
 
-        return Self{
+        var pager = Self{
             .file = persistent_file,
             .page_size = best_meta.meta.page_size,
             .current_meta = best_meta,
             .allocator = allocator,
+            .page_allocator = null,
         };
+
+        // Initialize page allocator with rebuild-on-open policy
+        pager.page_allocator = try PageAllocator.init(&pager, allocator);
+
+        return pager;
     }
 
     // Close the pager and release file handle
     pub fn close(self: *Self) void {
+        if (self.page_allocator) |*alloc| {
+            alloc.deinit();
+        }
         self.file.close();
     }
 
@@ -470,6 +710,35 @@ pub const Pager = struct {
 
     pub fn getLogTailLsn(self: *const Self) u64 {
         return self.current_meta.meta.log_tail_lsn;
+    }
+
+    // Page allocator convenience methods
+    pub fn allocatePage(self: *Self) !u64 {
+        if (self.page_allocator) |*alloc| {
+            return alloc.allocatePage();
+        }
+        return error.PageAllocatorNotInitialized;
+    }
+
+    pub fn freePage(self: *Self, page_id: u64) !void {
+        if (self.page_allocator) |*alloc| {
+            return alloc.freePage(page_id);
+        }
+        return error.PageAllocatorNotInitialized;
+    }
+
+    pub fn getFreePageCount(self: *const Self) usize {
+        if (self.page_allocator) |*alloc| {
+            return alloc.getFreePageCount();
+        }
+        return 0;
+    }
+
+    pub fn getLastAllocatedPageId(self: *const Self) u64 {
+        if (self.page_allocator) |*alloc| {
+            return alloc.getLastAllocatedPageId();
+        }
+        return 0;
     }
 };
 
@@ -925,7 +1194,7 @@ test "Pager.open_recovery_selects_highest_valid_meta" {
     defer arena.deinit();
 
     // Create test database file with two meta pages
-    const file = try std.fs.cwd().createFile(test_filename, .{ .read = true });
+    const file = try std.fs.cwd().createFile(test_filename, .{ .truncate = true });
     defer file.close();
 
     // Create two different meta pages
@@ -976,7 +1245,7 @@ test "Pager.open_recovery_handles_corrupt_meta_pages" {
     defer arena.deinit();
 
     // Create file with one valid meta and one corrupt
-    const file = try std.fs.cwd().createFile(test_filename, .{ .read = true });
+    const file = try std.fs.cwd().createFile(test_filename, .{ .truncate = true });
     defer file.close();
 
     var buffer_a: [DEFAULT_PAGE_SIZE]u8 = undefined;
@@ -1017,7 +1286,7 @@ test "Pager.open_recovery_fails_when_both_metas_corrupt" {
     defer arena.deinit();
 
     // Create file with both metas corrupt
-    const file = try std.fs.cwd().createFile(test_filename, .{ .read = true });
+    const file = try std.fs.cwd().createFile(test_filename, .{ .truncate = true });
     defer file.close();
 
     var buffer: [DEFAULT_PAGE_SIZE]u8 = std.mem.zeroes([DEFAULT_PAGE_SIZE]u8);
@@ -1040,7 +1309,7 @@ test "Pager.open_recovery_fails_on_file_too_small" {
     defer arena.deinit();
 
     // Create file smaller than a page
-    const file = try std.fs.cwd().createFile(test_filename, .{ .read = true });
+    const file = try std.fs.cwd().createFile(test_filename, .{ .truncate = true });
     defer file.close();
 
     var small_buffer: [100]u8 = undefined;
@@ -1059,7 +1328,7 @@ test "Pager.open_recovery_fails_on_unsupported_page_size" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
-    const file = try std.fs.cwd().createFile(test_filename, .{ .read = true });
+    const file = try std.fs.cwd().createFile(test_filename, .{ .truncate = true });
     defer file.close();
 
     var buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
@@ -1078,4 +1347,297 @@ test "Pager.open_recovery_fails_on_unsupported_page_size" {
     _ = try file.pwriteAll(&buffer, 0);
 
     try testing.expectError(error.UnsupportedPageSize, Pager.open(test_filename, arena.allocator()));
+}
+
+test "FreelistPayload.encode_decode_roundtrip" {
+    const original = FreelistPayload{
+        .next_page_id = 10,
+        .free_count = 3,
+    };
+
+    var buffer: [FreelistPayload.SIZE]u8 = undefined;
+    try original.encode(&buffer);
+    const decoded = try FreelistPayload.decode(&buffer);
+
+    try testing.expectEqual(original.freelist_magic, decoded.freelist_magic);
+    try testing.expectEqual(original.next_page_id, decoded.next_page_id);
+    try testing.expectEqual(original.free_count, decoded.free_count);
+}
+
+test "FreelistPayload.validate_magic" {
+    var buffer: [FreelistPayload.SIZE]u8 = undefined;
+
+    const valid_freelist = FreelistPayload{
+        .next_page_id = 0,
+        .free_count = 0,
+    };
+
+    try valid_freelist.encode(&buffer);
+    _ = try FreelistPayload.decode(&buffer);
+
+    // Corrupt the magic by flipping one byte at the correct offset (offset 8)
+    buffer[8] += 1; // Change first byte of magic (at offset 8)
+    try testing.expectError(error.InvalidFreelistMagic, FreelistPayload.decode(&buffer));
+}
+
+test "FreelistPayload.validate_free_count" {
+    var buffer: [FreelistPayload.SIZE]u8 = undefined;
+
+    const invalid_freelist = FreelistPayload{
+        .next_page_id = 0,
+        .free_count = FreelistPayload.MAX_FREE_PER_PAGE + 1, // Too large
+    };
+
+    try invalid_freelist.encode(&buffer);
+    try testing.expectError(error.InvalidFreeCount, FreelistPayload.decode(&buffer));
+}
+
+test "PageAllocator.init_rebuilds_freelist_from_empty_db" {
+    const test_filename = "test_allocator_empty.db";
+    defer {
+        std.fs.cwd().deleteFile(test_filename) catch {};
+    }
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    // Create empty database file (just meta pages)
+    const file = try std.fs.cwd().createFile(test_filename, .{ .truncate = true });
+    defer file.close();
+
+    var buffer_a: [DEFAULT_PAGE_SIZE]u8 = undefined;
+    var buffer_b: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    const meta = MetaPayload{
+        .committed_txn_id = 0,
+        .root_page_id = 0, // Empty tree
+        .freelist_head_page_id = 0,
+        .log_tail_lsn = 0,
+        .meta_crc32c = 0,
+    };
+
+    try encodeMetaPage(META_A_PAGE_ID, meta, &buffer_a);
+    try encodeMetaPage(META_B_PAGE_ID, meta, &buffer_b);
+
+    _ = try file.pwriteAll(&buffer_a, 0);
+    _ = try file.pwriteAll(&buffer_b, DEFAULT_PAGE_SIZE);
+
+    // Open pager with allocator
+    var pager = try Pager.open(test_filename, arena.allocator());
+    defer pager.close();
+
+    // Should have no free pages initially (empty database has only meta pages)
+    try testing.expectEqual(@as(usize, 0), pager.getFreePageCount());
+    try testing.expectEqual(@as(u64, 1), pager.getLastAllocatedPageId()); // Only meta pages
+}
+
+test "PageAllocator.allocatePage_extends_file" {
+    const test_filename = "test_allocator_extend.db";
+    defer {
+        std.fs.cwd().deleteFile(test_filename) catch {};
+    }
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    // Create minimal database file using a separate function to avoid file handle conflicts
+    {
+        var file = try std.fs.cwd().createFile(test_filename, .{ .truncate = true });
+        defer file.close();
+
+        var buffer_a: [DEFAULT_PAGE_SIZE]u8 = undefined;
+        var buffer_b: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+        const meta = MetaPayload{
+            .committed_txn_id = 0,
+            .root_page_id = 0,
+            .freelist_head_page_id = 0,
+            .log_tail_lsn = 0,
+            .meta_crc32c = 0,
+        };
+
+        try encodeMetaPage(META_A_PAGE_ID, meta, &buffer_a);
+        try encodeMetaPage(META_B_PAGE_ID, meta, &buffer_b);
+
+        _ = try file.pwriteAll(&buffer_a, 0);
+        _ = try file.pwriteAll(&buffer_b, DEFAULT_PAGE_SIZE);
+    }
+
+    var pager = try Pager.open(test_filename, arena.allocator());
+    defer pager.close();
+
+    // Allocate first page - should be page ID 2 (after meta pages)
+    const page_id = try pager.allocatePage();
+    try testing.expectEqual(@as(u64, 2), page_id);
+
+    // Last allocated page should be 2 (file now has 3 pages)
+    try testing.expectEqual(@as(u64, 2), pager.getLastAllocatedPageId());
+
+    // Allocate another page - should be page ID 3
+    const page_id2 = try pager.allocatePage();
+    try testing.expectEqual(@as(u64, 3), page_id2);
+
+    try testing.expectEqual(@as(u64, 3), pager.getLastAllocatedPageId());
+}
+
+test "PageAllocator.freePage_reuses_freed_pages" {
+    const test_filename = "test_allocator_reuse.db";
+    defer {
+        std.fs.cwd().deleteFile(test_filename) catch {};
+    }
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    // Create minimal database file using a separate function to avoid file handle conflicts
+    {
+        var file = try std.fs.cwd().createFile(test_filename, .{ .truncate = true });
+        defer file.close();
+
+        var buffer_a: [DEFAULT_PAGE_SIZE]u8 = undefined;
+        var buffer_b: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+        const meta = MetaPayload{
+            .committed_txn_id = 0,
+            .root_page_id = 0,
+            .freelist_head_page_id = 0,
+            .log_tail_lsn = 0,
+            .meta_crc32c = 0,
+        };
+
+        try encodeMetaPage(META_A_PAGE_ID, meta, &buffer_a);
+        try encodeMetaPage(META_B_PAGE_ID, meta, &buffer_b);
+
+        _ = try file.pwriteAll(&buffer_a, 0);
+        _ = try file.pwriteAll(&buffer_b, DEFAULT_PAGE_SIZE);
+    }
+
+    var pager = try Pager.open(test_filename, arena.allocator());
+    defer pager.close();
+
+    // Allocate some pages
+    const page1 = try pager.allocatePage(); // Will be page 2
+    const page2 = try pager.allocatePage(); // Will be page 3
+    const page3 = try pager.allocatePage(); // Will be page 4
+
+    try testing.expectEqual(@as(u64, 2), page1);
+    try testing.expectEqual(@as(u64, 3), page2);
+    try testing.expectEqual(@as(u64, 4), page3);
+
+    try testing.expectEqual(@as(usize, 0), pager.getFreePageCount());
+
+    // Free page 3
+    try pager.freePage(page2);
+    try testing.expectEqual(@as(usize, 1), pager.getFreePageCount());
+
+    // Next allocation should reuse freed page
+    const reused_page = try pager.allocatePage();
+    try testing.expectEqual(@as(u64, 3), reused_page); // Should reuse page 3
+    try testing.expectEqual(@as(usize, 0), pager.getFreePageCount());
+}
+
+test "PageAllocator.freePage_rejects_meta_pages" {
+    const test_filename = "test_allocator_meta_protection.db";
+    defer {
+        std.fs.cwd().deleteFile(test_filename) catch {};
+    }
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const file = try std.fs.cwd().createFile(test_filename, .{ .truncate = true });
+    defer file.close();
+
+    var buffer_a: [DEFAULT_PAGE_SIZE]u8 = undefined;
+    var buffer_b: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    const meta = MetaPayload{
+        .committed_txn_id = 0,
+        .root_page_id = 0,
+        .freelist_head_page_id = 0,
+        .log_tail_lsn = 0,
+        .meta_crc32c = 0,
+    };
+
+    try encodeMetaPage(META_A_PAGE_ID, meta, &buffer_a);
+    try encodeMetaPage(META_B_PAGE_ID, meta, &buffer_b);
+
+    _ = try file.pwriteAll(&buffer_a, 0);
+    _ = try file.pwriteAll(&buffer_b, DEFAULT_PAGE_SIZE);
+
+    var pager = try Pager.open(test_filename, arena.allocator());
+    defer pager.close();
+
+    // Should not be able to free meta pages
+    try testing.expectError(error.InvalidOperation, pager.freePage(META_A_PAGE_ID));
+    try testing.expectError(error.InvalidOperation, pager.freePage(META_B_PAGE_ID));
+}
+
+test "PageAllocator.rebuild_freelist_skips_btree_pages" {
+    const test_filename = "test_allocator_rebuild.db";
+    defer {
+        std.fs.cwd().deleteFile(test_filename) catch {};
+    }
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const file = try std.fs.cwd().createFile(test_filename, .{ .truncate = true });
+    defer file.close();
+
+    // Create a database with a btree root page
+    var buffer_a: [DEFAULT_PAGE_SIZE]u8 = undefined;
+    var buffer_b: [DEFAULT_PAGE_SIZE]u8 = undefined;
+    var root_buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    const meta = MetaPayload{
+        .committed_txn_id = 1,
+        .root_page_id = 2, // Root page is page 2
+        .freelist_head_page_id = 0,
+        .log_tail_lsn = 0,
+        .meta_crc32c = 0,
+    };
+
+    try encodeMetaPage(META_A_PAGE_ID, meta, &buffer_a);
+    try encodeMetaPage(META_B_PAGE_ID, meta, &buffer_b);
+
+    _ = try file.pwriteAll(&buffer_a, 0);
+    _ = try file.pwriteAll(&buffer_b, DEFAULT_PAGE_SIZE);
+
+    // Create a valid btree leaf page as root
+    var root_header = PageHeader{
+        .page_type = .btree_leaf,
+        .page_id = 2,
+        .txn_id = 1,
+        .payload_len = BtreeNodeHeader.SIZE,
+        .header_crc32c = 0,
+        .page_crc32c = 0,
+    };
+    root_header.header_crc32c = root_header.calculateHeaderChecksum();
+
+    var root_node = BtreeNodeHeader{
+        .level = 0, // Leaf
+        .key_count = 0,
+        .right_sibling = 0,
+    };
+
+    try root_header.encode(root_buffer[0..PageHeader.SIZE]);
+    try root_node.encode(root_buffer[PageHeader.SIZE .. PageHeader.SIZE + BtreeNodeHeader.SIZE]);
+
+    // Calculate page checksum
+    root_header.page_crc32c = calculatePageChecksum(root_buffer[0 .. PageHeader.SIZE + root_header.payload_len]);
+    try root_header.encode(root_buffer[0..PageHeader.SIZE]);
+
+    _ = try file.pwriteAll(&root_buffer, 2 * DEFAULT_PAGE_SIZE);
+
+    // Open pager and verify freelist rebuild
+    var pager = try Pager.open(test_filename, arena.allocator());
+    defer pager.close();
+
+    // Should have 0 free pages since page 2 is used as root
+    try testing.expectEqual(@as(usize, 0), pager.getFreePageCount());
+    try testing.expectEqual(@as(u64, 2), pager.getLastAllocatedPageId());
+
+    // Root page should be accessible
+    try testing.expectEqual(@as(u64, 2), pager.getRootPageId());
 }
