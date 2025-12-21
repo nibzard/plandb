@@ -585,7 +585,7 @@ pub const WriteAheadLog = struct {
     }
 
     /// Private: Deserialize commit record payload per spec/commit_record_v0.md
-    fn deserializeCommitRecord(data: []const u8, allocator: std.mem.Allocator) !txn.CommitRecord {
+    pub fn deserializeCommitRecord(data: []const u8, allocator: std.mem.Allocator) !txn.CommitRecord {
         if (data.len < txn.CommitPayloadHeader.SIZE) return error.PayloadTooSmall;
 
         var pos: usize = 0;
