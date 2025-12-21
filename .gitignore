@@ -1,0 +1,35 @@
+# Zig build artifacts
+zig-cache/
+zig-out/
+zig-build/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# Log files
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# Benchmark results (if not committed)
+bench/results/
+bench/output/
+
+# Test artifacts
+test/

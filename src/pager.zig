@@ -447,6 +447,218 @@ pub const BtreeLeafEntry = struct {
     }
 };
 
+// B+tree internal node payload with separator keys and child pointers
+pub const BtreeInternalPayload = struct {
+    // Variable-length layout:
+    // - child_page_ids: [key_count + 1]u64 (child pointers)
+    // - separator_keys: [key_count]separator key entries growing backwards
+    // Separator entry format: key_len(u16) + key_bytes
+
+    const Self = @This();
+
+    // Maximum number of keys per internal node (conservative estimate)
+    pub const MAX_KEYS_PER_INTERNAL: usize = 200;
+
+    // Get child page IDs array size in bytes for given key count
+    pub fn getChildPageIdsSize(key_count: u16) usize {
+        return (@as(usize, key_count) + 1) * @sizeOf(u64);
+    }
+
+    // Get pointer to child page IDs array (const version)
+    pub fn getChildPageIds(_: *const Self, payload_bytes: []const u8) []const u64 {
+        const node_header = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
+        const child_count = @as(usize, node_header.key_count) + 1;
+        const child_ids_bytes = payload_bytes[BtreeNodeHeader.SIZE .. BtreeNodeHeader.SIZE + child_count * @sizeOf(u64)];
+        const child_ids_ptr = @as([*]const u64, @ptrCast(@alignCast(child_ids_bytes.ptr)));
+        return child_ids_ptr[0..child_count];
+    }
+
+    // Get pointer to child page IDs array (mutable version)
+    pub fn getChildPageIdsMut(_: *Self, payload_bytes: []u8) []u64 {
+        const node_header = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
+        const child_count = @as(usize, node_header.key_count) + 1;
+        const child_ids_bytes = payload_bytes[BtreeNodeHeader.SIZE .. BtreeNodeHeader.SIZE + child_count * @sizeOf(u64)];
+        const child_ids_ptr = @as([*]u64, @ptrCast(@alignCast(child_ids_bytes.ptr)));
+        return child_ids_ptr[0..child_count];
+    }
+
+    // Get separator key data area (space after child page IDs)
+    pub fn getSeparatorKeyArea(_: *const Self, payload_bytes: []const u8) []const u8 {
+        const node_header = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
+        const child_ids_size = Self.getChildPageIdsSize(node_header.key_count);
+        return payload_bytes[BtreeNodeHeader.SIZE + child_ids_size..];
+    }
+
+    // Get separator key at given index (const version)
+    pub fn getSeparatorKey(self: *const Self, payload_bytes: []const u8, separator_idx: u16) ![]const u8 {
+        const node_header = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
+        if (separator_idx >= node_header.key_count) return error.SeparatorIndexOutOfBounds;
+
+        const separator_area = self.getSeparatorKeyArea(payload_bytes);
+        var current_offset: usize = separator_area.len; // Start from end
+
+        // Walk backwards to find the separator at separator_idx
+        var i: u16 = node_header.key_count - 1;
+        while (i >= separator_idx) {
+            if (current_offset < @sizeOf(u16)) return error.CorruptSeparatorData;
+
+            const key_len_bytes = separator_area[current_offset - @sizeOf(u16)..current_offset];
+            const key_len = std.mem.readInt(u16, key_len_bytes[0..2], .little);
+
+            if (current_offset < @sizeOf(u16) + key_len) return error.CorruptSeparatorData;
+
+            current_offset -= @sizeOf(u16) + key_len;
+
+            if (i == separator_idx) {
+                const key_start = current_offset;
+                const key_end = key_start + key_len;
+                return separator_area[key_start..key_end];
+            }
+
+            i -= 1;
+        }
+
+        return error.SeparatorNotFound;
+    }
+
+    // Add a separator key and child pointer (maintains sorted order)
+    pub fn addChild(self: *Self, payload_bytes: []u8, separator_key: []const u8, child_page_id: u64) !void {
+        const node_header = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
+
+        if (node_header.key_count >= MAX_KEYS_PER_INTERNAL) return error.InternalNodeFull;
+
+        // Calculate space needed for new separator key
+        const separator_entry_size = @sizeOf(u16) + separator_key.len;
+        const separator_area = self.getSeparatorKeyArea(payload_bytes);
+
+        // Check if we have space
+        if (separator_area.len < separator_entry_size) return error.InsufficientSpace;
+
+        // Find insertion position to maintain sorted order
+        var insert_pos: u16 = 0;
+        while (insert_pos < node_header.key_count) {
+            const existing_key = try self.getSeparatorKey(payload_bytes, insert_pos);
+            if (std.mem.lessThan(u8, separator_key, existing_key)) {
+                break;
+            }
+            insert_pos += 1;
+        }
+
+        // Get child page IDs array
+        const child_page_ids = self.getChildPageIdsMut(payload_bytes);
+
+        // Insert child page ID at position insert_pos + 1
+        // Shift existing child pointers to make room
+        if (insert_pos + 1 < child_page_ids.len) {
+            std.mem.copyBackwards(u64,
+                child_page_ids[insert_pos + 2..],
+                child_page_ids[insert_pos + 1..child_page_ids.len - 1]);
+        }
+        child_page_ids[insert_pos + 1] = child_page_id;
+
+        // Add separator key at the end of separator area (growing backwards)
+        const new_separator_offset = separator_area.len - separator_entry_size;
+        var separator_bytes = separator_area[new_separator_offset..];
+
+        // Write separator: key_len + key_bytes (use pointer cast for mutability)
+        const separator_len_ptr = @as(*[2]u8, @ptrCast(@alignCast(separator_bytes.ptr)));
+        std.mem.writeInt(u16, separator_len_ptr, @intCast(separator_key.len), .little);
+        @memcpy(separator_bytes[2..2+separator_key.len], separator_key);
+
+        // Update key count
+        const header_mut = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
+        header_mut.key_count += 1;
+    }
+
+    // Find child page ID for a given key (returns index and page_id)
+    pub fn findChild(self: *const Self, payload_bytes: []const u8, key: []const u8) struct { idx: u16, page_id: u64 } {
+        const node_header = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
+        const child_page_ids = self.getChildPageIds(payload_bytes);
+
+        // For empty internal node, return first child
+        if (node_header.key_count == 0) {
+            return .{ .idx = 0, .page_id = child_page_ids[0] };
+        }
+
+        // Binary search to find correct child
+        var left: u16 = 0;
+        var right = node_header.key_count;
+
+        while (left < right) {
+            const mid = left + (right - left) / 2;
+            const separator_key = self.getSeparatorKey(payload_bytes, mid) catch {
+                // On error, conservatively return left child
+                return .{ .idx = left, .page_id = child_page_ids[left] };
+            };
+
+            if (std.mem.eql(u8, key, separator_key)) {
+                // Exact match - go to right child
+                return .{ .idx = mid + 1, .page_id = child_page_ids[mid + 1] };
+            } else if (std.mem.lessThan(u8, key, separator_key)) {
+                right = mid;
+            } else {
+                left = mid + 1;
+            }
+        }
+
+        return .{ .idx = left, .page_id = child_page_ids[left] };
+    }
+
+    // Validate internal node structure and invariants
+    pub fn validate(self: *const Self, payload_bytes: []const u8) !void {
+        const node_header = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
+
+        // Validate node header
+        if (node_header.node_magic != BTREE_MAGIC) return error.InvalidBtreeMagic;
+        if (node_header.level == 0) return error.InvalidInternalLevel; // Internal must have level > 0
+        if (node_header.key_count > MAX_KEYS_PER_INTERNAL) return error.TooManyKeys;
+
+        // Validate child page IDs array bounds
+        const child_ids_size = Self.getChildPageIdsSize(node_header.key_count);
+        if (BtreeNodeHeader.SIZE + child_ids_size > payload_bytes.len) {
+            return error.ChildPageIdsOutOfBounds;
+        }
+
+        const child_page_ids = self.getChildPageIds(payload_bytes);
+
+        // Validate child page IDs are not zero (except maybe for debugging)
+        for (child_page_ids) |page_id| {
+            if (page_id == 0) return error.InvalidChildPageId;
+        }
+
+        // Validate separator keys are sorted and within bounds
+        const separator_area = self.getSeparatorKeyArea(payload_bytes);
+        var current_offset: usize = separator_area.len;
+        var prev_key: ?[]const u8 = null;
+
+        for (0..node_header.key_count) |_| {
+            // Extract separator key from end of area
+            if (current_offset < @sizeOf(u16)) return error.CorruptSeparatorData;
+
+            const key_len_bytes = separator_area[current_offset - @sizeOf(u16)..current_offset];
+            const key_len = std.mem.readInt(u16, key_len_bytes[0..2], .little);
+
+            if (current_offset < @sizeOf(u16) + key_len) return error.CorruptSeparatorData;
+
+            current_offset -= @sizeOf(u16) + key_len;
+            const separator_key = separator_area[current_offset..current_offset + key_len];
+
+            // Validate separator key fits within payload
+            if (current_offset + key_len > payload_bytes.len) {
+                return error.SeparatorExceedsPayload;
+            }
+
+            // Validate separator keys are strictly increasing (when read from first to last)
+            if (prev_key) |prev_key_slice| {
+                if (!std.mem.lessThan(u8, prev_key_slice, separator_key)) {
+                    return error.SeparatorsNotSorted;
+                }
+            }
+            prev_key = separator_key;
+        }
+    }
+};
+
 // Utility functions for page-level operations
 pub fn calculatePageChecksum(page_bytes: []const u8) u32 {
     // For now, we'll use a simple approach: calculate CRC of the header with checksum field zeroed,
@@ -1201,6 +1413,55 @@ pub fn createEmptyBtreeLeaf(page_id: u64, txn_id: u64, right_sibling: u64, buffe
     try createBtreePage(page_id, 0, 0, right_sibling, txn_id, &payload, buffer);
 }
 
+// Create an empty B+tree internal node page
+pub fn createEmptyBtreeInternal(page_id: u64, level: u16, txn_id: u64, right_sibling: u64, buffer: []u8) !void {
+    if (buffer.len < DEFAULT_PAGE_SIZE) return error.BufferTooSmall;
+
+    // Create node header for empty internal node
+    const node_header = BtreeNodeHeader{
+        .level = level, // Internal node level > 0
+        .key_count = 0,
+        .right_sibling = right_sibling,
+    };
+
+    var node_data: [BtreeNodeHeader.SIZE]u8 = undefined;
+    try node_header.encode(&node_data);
+
+    // For empty internal node, we need space for at least 1 child pointer
+    const initial_child_space = @sizeOf(u64); // Space for one child page ID
+    var payload: [BtreeNodeHeader.SIZE + initial_child_space]u8 = undefined;
+    @memcpy(payload[0..BtreeNodeHeader.SIZE], &node_data);
+    @memset(payload[BtreeNodeHeader.SIZE..], 0);
+
+    // Create internal node page
+    try createBtreePage(page_id, level, 0, right_sibling, txn_id, &payload, buffer);
+}
+
+// Create an internal node with one child (used during tree building)
+pub fn createBtreeInternalWithOneChild(page_id: u64, level: u16, child_page_id: u64, txn_id: u64, right_sibling: u64, buffer: []u8) !void {
+    if (buffer.len < DEFAULT_PAGE_SIZE) return error.BufferTooSmall;
+
+    // Create node header for internal node with one child
+    const node_header = BtreeNodeHeader{
+        .level = level,
+        .key_count = 0, // No separators yet, just one child
+        .right_sibling = right_sibling,
+    };
+
+    var node_data: [BtreeNodeHeader.SIZE]u8 = undefined;
+    try node_header.encode(&node_data);
+
+    // Create payload with one child pointer
+    var payload: [BtreeNodeHeader.SIZE + @sizeOf(u64)]u8 = undefined;
+    @memcpy(payload[0..BtreeNodeHeader.SIZE], &node_data);
+
+    // Write child page ID
+    std.mem.writeInt(u64, payload[BtreeNodeHeader.SIZE..BtreeNodeHeader.SIZE + @sizeOf(u64)], child_page_id, .little);
+
+    // Create internal node page
+    try createBtreePage(page_id, level, 0, right_sibling, txn_id, &payload, buffer);
+}
+
 // Add a key-value pair to a B+tree leaf page
 pub fn addEntryToBtreeLeaf(page_buffer: []u8, key: []const u8, value: []const u8) !void {
     if (page_buffer.len < PageHeader.SIZE) return error.BufferTooSmall;
@@ -1258,6 +1519,66 @@ pub fn validateBtreeLeaf(page_buffer: []const u8) !void {
     // Validate leaf structure
     var leaf = BtreeLeafPayload{};
     try leaf.validate(payload_bytes);
+}
+
+// Validate a B+tree internal node page structure
+pub fn validateBtreeInternal(page_buffer: []const u8) !void {
+    if (page_buffer.len < PageHeader.SIZE) return error.BufferTooSmall;
+
+    // Validate page structure
+    const header = try validatePage(page_buffer[0..PageHeader.SIZE + try getPayloadLength(page_buffer)]);
+    if (header.page_type != .btree_internal) return error.InvalidPageType;
+
+    const payload_start = PageHeader.SIZE;
+    const payload_end = payload_start + header.payload_len;
+    const payload_bytes = page_buffer[payload_start..payload_end];
+
+    // Validate internal node structure
+    var internal = BtreeInternalPayload{};
+    try internal.validate(payload_bytes);
+}
+
+// Find child page ID for a key in a B+tree internal node
+pub fn findChildInBtreeInternal(page_buffer: []const u8, key: []const u8) ?u64 {
+    if (page_buffer.len < PageHeader.SIZE) return null;
+
+    // Validate this is a btree internal node page
+    const header = PageHeader.decode(page_buffer[0..PageHeader.SIZE]) catch return null;
+    if (header.page_type != .btree_internal) return null;
+
+    const payload_start = PageHeader.SIZE;
+    const payload_end = payload_start + header.payload_len;
+    const payload_bytes = page_buffer[payload_start..payload_end];
+
+    var internal = BtreeInternalPayload{};
+    const result = internal.findChild(payload_bytes, key);
+    return result.page_id;
+}
+
+// Add a separator key and child pointer to a B+tree internal node
+pub fn addChildToBtreeInternal(page_buffer: []u8, separator_key: []const u8, child_page_id: u64) !void {
+    if (page_buffer.len < PageHeader.SIZE) return error.BufferTooSmall;
+
+    // Validate this is a btree internal node page
+    const header = try PageHeader.decode(page_buffer[0..PageHeader.SIZE]);
+    if (header.page_type != .btree_internal) return error.InvalidPageType;
+
+    const payload_start = PageHeader.SIZE;
+    const payload_end = payload_start + header.payload_len;
+    const payload_bytes = page_buffer[payload_start..payload_end];
+
+    // Add the child
+    var internal = BtreeInternalPayload{};
+    try internal.addChild(payload_bytes, separator_key, child_page_id);
+
+    // Update payload length in header (it may have grown)
+    var header_mut = std.mem.bytesAsValue(PageHeader, page_buffer[0..PageHeader.SIZE]);
+    header_mut.payload_len = @intCast(payload_end - payload_start);
+
+    // Recalculate checksums
+    header_mut.header_crc32c = header_mut.calculateHeaderChecksum();
+    const page_data = page_buffer[0 .. PageHeader.SIZE + header_mut.payload_len];
+    header_mut.page_crc32c = calculatePageChecksum(page_data);
 }
 
 // Helper to get payload length from page buffer
@@ -2706,4 +3027,216 @@ test "BtreeLeafPayload_large_entries_work_correctly" {
 
     // Validate structure
     try validateBtreeLeaf(&buffer);
+}
+
+test "BtreeInternalPayload.getChildPageIdsSize_calculates_correctly" {
+    try testing.expectEqual(@as(usize, 8), BtreeInternalPayload.getChildPageIdsSize(0)); // 1 child
+    try testing.expectEqual(@as(usize, 16), BtreeInternalPayload.getChildPageIdsSize(1)); // 2 children
+    try testing.expectEqual(@as(usize, 24), BtreeInternalPayload.getChildPageIdsSize(2)); // 3 children
+    try testing.expectEqual(@as(usize, 1608), BtreeInternalPayload.getChildPageIdsSize(200)); // 201 children
+}
+
+test "createEmptyBtreeInternal_creates_valid_empty_internal_node" {
+    var buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    try createEmptyBtreeInternal(5, 1, 100, 0, &buffer);
+
+    // Validate page structure
+    const header = try validatePage(&buffer);
+    try testing.expectEqual(@as(u64, 5), header.page_id);
+    try testing.expectEqual(PageType.btree_internal, header.page_type);
+    try testing.expectEqual(@as(u64, 100), header.txn_id);
+
+    // Validate node header
+    const node_header = try BtreeNodeHeader.decode(buffer[PageHeader.SIZE .. PageHeader.SIZE + BtreeNodeHeader.SIZE]);
+    try testing.expectEqual(@as(u16, 1), node_header.level); // Internal node
+    try testing.expectEqual(@as(u16, 0), node_header.key_count); // Empty
+    try testing.expectEqual(@as(u64, 0), node_header.right_sibling);
+
+    // Validate internal node structure
+    try validateBtreeInternal(&buffer);
+}
+
+test "createBtreeInternalWithOneChild_creates_valid_internal_node" {
+    var buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    try createBtreeInternalWithOneChild(10, 2, 42, 200, 15, &buffer);
+
+    // Validate page structure
+    const header = try validatePage(&buffer);
+    try testing.expectEqual(@as(u64, 10), header.page_id);
+    try testing.expectEqual(PageType.btree_internal, header.page_type);
+    try testing.expectEqual(@as(u64, 200), header.txn_id);
+
+    // Validate node header
+    const node_header = try BtreeNodeHeader.decode(buffer[PageHeader.SIZE .. PageHeader.SIZE + BtreeNodeHeader.SIZE]);
+    try testing.expectEqual(@as(u16, 2), node_header.level);
+    try testing.expectEqual(@as(u16, 0), node_header.key_count);
+    try testing.expectEqual(@as(u64, 15), node_header.right_sibling);
+
+    // Validate internal node structure
+    try validateBtreeInternal(&buffer);
+
+    // Verify child page ID
+    const payload_start = PageHeader.SIZE;
+    const payload_end = payload_start + header.payload_len;
+    const payload_bytes = buffer[payload_start..payload_end];
+    var internal = BtreeInternalPayload{};
+    const child_page_ids = internal.getChildPageIds(payload_bytes);
+    try testing.expectEqual(@as(usize, 1), child_page_ids.len);
+    try testing.expectEqual(@as(u64, 42), child_page_ids[0]);
+}
+
+test "addChildToBtreeInternal_adds_children_correctly" {
+    var buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    // Create internal node with one child
+    try createBtreeInternalWithOneChild(1, 1, 10, 1, 0, &buffer);
+
+    // Add first separator and child
+    try addChildToBtreeInternal(&buffer, "m", 20);
+
+    // Add second separator and child (should be inserted before "m")
+    try addChildToBtreeInternal(&buffer, "f", 15);
+
+    // Add third separator and child (should be inserted after "m")
+    try addChildToBtreeInternal(&buffer, "s", 25);
+
+    // Verify child lookup works
+    try testing.expectEqual(@as(u64, 10), findChildInBtreeInternal(&buffer, "a").?); // Goes to first child
+    try testing.expectEqual(@as(u64, 15), findChildInBtreeInternal(&buffer, "g").?); // Goes to second child
+    try testing.expectEqual(@as(u64, 20), findChildInBtreeInternal(&buffer, "p").?); // Goes to third child
+    try testing.expectEqual(@as(u64, 25), findChildInBtreeInternal(&buffer, "z").?); // Goes to fourth child
+
+    // Test exact separator key matches (should go to right child)
+    try testing.expectEqual(@as(u64, 15), findChildInBtreeInternal(&buffer, "f").?); // Exact match with "f" - go right
+    try testing.expectEqual(@as(u64, 20), findChildInBtreeInternal(&buffer, "m").?); // Exact match with "m" - go right
+    try testing.expectEqual(@as(u64, 25), findChildInBtreeInternal(&buffer, "s").?); // Exact match with "s" - go right
+
+    // Validate structure
+    try validateBtreeInternal(&buffer);
+}
+
+test "addChildToBtreeInternal_maintains_sorted_separator_order" {
+    var buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    // Create internal node with one child
+    try createBtreeInternalWithOneChild(1, 1, 5, 1, 0, &buffer);
+
+    // Add separators in random order
+    const separators = [_]struct { []const u8, u64 }{
+        .{ "zebra", 100 },
+        .{ "apple", 50 },
+        .{ "banana", 75 },
+        .{ "orange", 90 },
+    };
+
+    for (separators) |sep| {
+        try addChildToBtreeInternal(&buffer, sep[0], sep[1]);
+    }
+
+    // Verify separators are in sorted order by checking child routing
+    try testing.expectEqual(@as(u64, 5), findChildInBtreeInternal(&buffer, "ant").?);   // Before apple -> first child
+    try testing.expectEqual(@as(u64, 50), findChildInBtreeInternal(&buffer, "avocado").?); // Between apple and banana
+    try testing.expectEqual(@as(u64, 75), findChildInBtreeInternal(&buffer, "blueberry").?); // Between banana and orange
+    try testing.expectEqual(@as(u64, 90), findChildInBtreeInternal(&buffer, "pear").?); // Between orange and zebra
+    try testing.expectEqual(@as(u64, 100), findChildInBtreeInternal(&buffer, "zoo").?); // After zebra -> last child
+
+    // Validate structure (this checks sorting)
+    try validateBtreeInternal(&buffer);
+}
+
+test "findChildInBtreeInternal_returns_null_for_invalid_page" {
+    var buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    // Create a leaf page instead of internal
+    try createEmptyBtreeLeaf(1, 1, 0, &buffer);
+
+    // Should return null for leaf page
+    try testing.expect(findChildInBtreeInternal(&buffer, "key") == null);
+}
+
+test "validateBtreeInternal_rejects_corrupted_internal_node" {
+    var buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    // Create empty internal node
+    try createEmptyBtreeInternal(1, 1, 1, 0, &buffer);
+
+    // Corrupt the node magic in payload
+    buffer[PageHeader.SIZE + @offsetOf(BtreeNodeHeader, "node_magic")] += 1;
+
+    // Should fail validation
+    try testing.expectError(error.InvalidBtreeMagic, validateBtreeInternal(&buffer));
+}
+
+test "validateBtreeInternal_rejects_wrong_level" {
+    var buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    // Create empty internal node
+    try createEmptyBtreeInternal(1, 1, 1, 0, &buffer);
+
+    // Change level to 0 (leaf level)
+    buffer[PageHeader.SIZE + @offsetOf(BtreeNodeHeader, "level")] = 0;
+
+    // Should fail validation
+    try testing.expectError(error.InvalidInternalLevel, validateBtreeInternal(&buffer));
+}
+
+test "BtreeInternalPayload.validate_rejects_zero_child_page_id" {
+    var buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    // Create internal node with one child
+    try createBtreeInternalWithOneChild(1, 1, 0, 1, 0, &buffer); // Child page ID is 0 (invalid)
+
+    // Should fail validation
+    try testing.expectError(error.InvalidChildPageId, validateBtreeInternal(&buffer));
+}
+
+test "BtreeInternalPayload_getSeparatorKey_returns_correct_keys" {
+    var buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    // Create internal node with one child
+    try createBtreeInternalWithOneChild(1, 1, 10, 1, 0, &buffer);
+
+    // Add several separators
+    try addChildToBtreeInternal(&buffer, "middle", 20);
+    try addChildToBtreeInternal(&buffer, "start", 15);
+    try addChildToBtreeInternal(&buffer, "end", 25);
+
+    // Extract and verify separator keys
+    const payload_start = PageHeader.SIZE;
+    const header = try PageHeader.decode(buffer[0..PageHeader.SIZE]);
+    const payload_end = payload_start + header.payload_len;
+    const payload_bytes = buffer[payload_start..payload_end];
+    var internal = BtreeInternalPayload{};
+
+    // Should have 3 separators in sorted order: "end", "middle", "start"
+    const separator0 = try internal.getSeparatorKey(payload_bytes, 0);
+    const separator1 = try internal.getSeparatorKey(payload_bytes, 1);
+    const separator2 = try internal.getSeparatorKey(payload_bytes, 2);
+
+    try testing.expectEqualStrings("end", separator0);
+    try testing.expectEqualStrings("middle", separator1);
+    try testing.expectEqualStrings("start", separator2);
+
+    // Test out of bounds access
+    try testing.expectError(error.SeparatorIndexOutOfBounds, internal.getSeparatorKey(payload_bytes, 3));
+}
+
+test "BtreeInternalPayload_large_separator_keys_work_correctly" {
+    var buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    // Create internal node with one child
+    try createBtreeInternalWithOneChild(1, 1, 10, 1, 0, &buffer);
+
+    // Add separator with large key
+    const large_separator = [_]u8{'x'} ** 200;
+    try addChildToBtreeInternal(&buffer, &large_separator, 20);
+
+    // Verify child lookup works with large separator
+    try testing.expectEqual(@as(u64, 10), findChildInBtreeInternal(&buffer, "a").?); // Before large separator
+    try testing.expectEqual(@as(u64, 20), findChildInBtreeInternal(&buffer, "y").?); // After large separator
+
+    // Validate structure
+    try validateBtreeInternal(&buffer);
 }
