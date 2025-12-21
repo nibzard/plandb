@@ -235,6 +235,35 @@ pub const ReadTxn = struct {
         return null;
     }
 
+    // Create an iterator for all key-value pairs in order
+    // Note: Currently only supported for file-based databases
+    pub fn iterator(self: *ReadTxn) !ReadIterator {
+        if (self.db.pager) |*pager| {
+            return ReadIterator{
+                .iter = try pager.createIteratorWithRangeAtRoot(self.allocator, null, null, self.root_page_id),
+            };
+        }
+
+        // In-memory databases don't support this iterator API yet
+        // Use the scan() method for in-memory iteration
+        return error.InMemoryIteratorNotSupported;
+    }
+
+    // Create an iterator for a specific key range [start_key, end_key)
+    // Note: Currently only supported for file-based databases
+    pub fn iteratorRange(self: *ReadTxn, start_key: ?[]const u8, end_key: ?[]const u8) !ReadIterator {
+        if (self.db.pager) |*pager| {
+            return ReadIterator{
+                .iter = try pager.createIteratorWithRangeAtRoot(self.allocator, start_key, end_key, self.root_page_id),
+            };
+        }
+
+        // In-memory databases don't support this iterator API yet
+        // Use the scan() method for in-memory iteration
+        return error.InMemoryIteratorNotSupported;
+    }
+
+    // Prefix scan is a convenience method that uses range scan under the hood
     pub fn scan(self: *ReadTxn, prefix: []const u8) ![]const KV {
         // For file-based databases, use B+tree iterator
         if (self.db.pager) |*pager| {
@@ -439,6 +468,41 @@ pub const WriteTxn = struct {
 };
 
 pub const KV = struct { key: []const u8, value: []const u8 };
+
+// Iterator for reading key-value pairs from a ReadTxn
+pub const ReadIterator = struct {
+    // For file-based databases - this is the main focus
+    iter: ?pager_mod.BtreeIterator = null,
+
+    // For in-memory databases - simplified for now
+    unsupported_in_memory: bool = false,
+
+    const Self = @This();
+
+    pub fn next(self: *Self) !?KV {
+        if (self.iter) |*iter| {
+            // File-based B+tree iterator
+            if (try iter.next()) |kv| {
+                return .{ .key = kv.key, .value = kv.value };
+            }
+            return null;
+        }
+
+        // In-memory iteration not yet implemented for this iterator
+        // Use the existing scan() method instead
+        return error.InMemoryIteratorNotSupported;
+    }
+
+    pub fn valid(self: *const Self) bool {
+        if (self.iter) |iter| {
+            return iter.valid();
+        } else {
+            return false;
+        }
+    }
+
+    // No explicit close needed - iterators are cleaned up when ReadTxn is closed
+};
 
 fn kvLess(_: void, a: KV, b: KV) bool {
     return std.mem.lessThan(u8, a.key, b.key);
@@ -783,4 +847,129 @@ test "WriteTxn_read_your_writes" {
     try testing.expect(std.mem.eql(u8, "value1", w.get("key1").?));
     try testing.expect(w.get("key2") == null);
     try testing.expect(std.mem.eql(u8, "value3", w.get("key3").?));
+}
+
+test "ReadTxn_iterator_file_based" {
+    const test_db = "test_iterator.db";
+    const test_wal = "test_iterator.wal";
+    defer {
+        std.fs.cwd().deleteFile(test_db) catch {};
+        std.fs.cwd().deleteFile(test_wal) catch {};
+    }
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var db = try Db.openWithFile(arena.allocator(), test_db, test_wal);
+    defer db.close();
+
+    // Insert test data
+    var w = try db.beginWrite();
+    try w.put("a", "1");
+    try w.put("b", "2");
+    try w.put("c", "3");
+    try w.put("d", "4");
+    try w.put("e", "5");
+    _ = try w.commit();
+
+    // Test full iteration
+    var r = try db.beginReadLatest();
+    defer r.close();
+
+    var iter = try r.iterator();
+    defer {}
+
+    var count: usize = 0;
+    var keys: [5][]const u8 = undefined;
+    while (try iter.next()) |kv| {
+        keys[count] = kv.key;
+        count += 1;
+    }
+
+    try testing.expectEqual(@as(usize, 5), count);
+
+    // Verify keys are in sorted order
+    try testing.expectEqualStrings("a", keys[0]);
+    try testing.expectEqualStrings("b", keys[1]);
+    try testing.expectEqualStrings("c", keys[2]);
+    try testing.expectEqualStrings("d", keys[3]);
+    try testing.expectEqualStrings("e", keys[4]);
+}
+
+test "ReadTxn_iteratorRange_file_based" {
+    const test_db = "test_iterator_range.db";
+    const test_wal = "test_iterator_range.wal";
+    defer {
+        std.fs.cwd().deleteFile(test_db) catch {};
+        std.fs.cwd().deleteFile(test_wal) catch {};
+    }
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var db = try Db.openWithFile(arena.allocator(), test_db, test_wal);
+    defer db.close();
+
+    // Insert test data
+    var w = try db.beginWrite();
+    try w.put("apple", "red");
+    try w.put("apricot", "orange");
+    try w.put("banana", "yellow");
+    try w.put("blueberry", "blue");
+    try w.put("cherry", "red");
+    _ = try w.commit();
+
+    // Test range iteration
+    var r = try db.beginReadLatest();
+    defer r.close();
+
+    var iter = try r.iteratorRange("ap", "bq"); // Should get apple, apricot, banana
+    defer {}
+
+    var items: [3]KV = undefined;
+    var count: usize = 0;
+    while (try iter.next()) |kv| {
+        items[count] = kv;
+        count += 1;
+        if (count >= items.len) break;
+    }
+
+    try testing.expectEqual(@as(usize, 3), count);
+    try testing.expectEqualStrings("apple", items[0].key);
+    try testing.expectEqualStrings("red", items[0].value);
+    try testing.expectEqualStrings("apricot", items[1].key);
+    try testing.expectEqualStrings("orange", items[1].value);
+    try testing.expectEqualStrings("banana", items[2].key);
+    try testing.expectEqualStrings("yellow", items[2].value);
+}
+
+test "ReadTxn_scan_prefix" {
+    var db = try Db.open(std.testing.allocator);
+    defer db.close();
+
+    // Insert test data
+    var w = try db.beginWrite();
+    try w.put("user:001", "Alice");
+    try w.put("user:002", "Bob");
+    try w.put("user:003", "Charlie");
+    try w.put("product:001", "Widget");
+    try w.put("user:004", "David");
+    _ = try w.commit();
+
+    // Test prefix scan
+    var r = try db.beginReadLatest();
+    defer r.close();
+
+    const user_items = try r.scan("user:");
+    defer testing.allocator.free(user_items);
+
+    try testing.expectEqual(@as(usize, 4), user_items.len);
+    try testing.expectEqualStrings("user:001", user_items[0].key);
+    try testing.expectEqualStrings("Alice", user_items[0].value);
+    try testing.expectEqualStrings("user:002", user_items[1].key);
+    try testing.expectEqualStrings("Bob", user_items[1].value);
+    try testing.expectEqualStrings("user:003", user_items[2].key);
+    try testing.expectEqualStrings("Charlie", user_items[2].value);
+    try testing.expectEqualStrings("user:004", user_items[3].key);
+    try testing.expectEqualStrings("David", user_items[3].value);
 }

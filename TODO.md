@@ -192,7 +192,12 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED**: Updated commit() and abort() to properly release writer lock
   - **COMPLETED**: Added comprehensive test suite covering concurrent write attempts, lock release on commit/abort, and error handling
   - **COMPLETED**: All tests passing, single-writer semantics correctly enforced
-- [ ] 🟠 Ensure read-your-writes within a write txn
+- [✅] 🟠 Ensure read-your-writes within a write txn
+  - **COMPLETED**: Added getPendingMutation() method to TransactionContext for querying pending mutations
+  - **COMPLETED**: Added get() method to WriteTxn that implements read-your-writes by checking transaction context first
+  - **COMPLETED**: Supports both file-based (B+tree) and in-memory databases
+  - **COMPLETED**: Comprehensive tests added and passing
+  - **COMPLETED**: Read-your-writes semantics now properly enforced within write transactions
 - [ ] 🔴 Add microbench `bench/mvcc/snapshot_open_close`
 - [ ] 🟠 Add microbench `bench/mvcc/readers_256_point_get_hot` (parameterized N)
 - [ ] 🟠 Add microbench `bench/mvcc/writer_commits_with_readers_128`
