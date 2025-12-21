@@ -131,32 +131,113 @@ fn benchPagerOpenClose(allocator: std.mem.Allocator, config: types.Config) !type
 
 fn benchPagerReadRandomHot(allocator: std.mem.Allocator, config: types.Config) !types.Results {
     const ops: u64 = 5_000;
+    const page_count: u64 = 1_000; // Number of pages to populate for random reads
     var prng = std.Random.DefaultPrng.init(config.seed orelse 12345);
     const rand = prng.random();
-    var database = try db.Db.open(allocator);
-    defer database.close();
 
-    // preload
-    var w = try database.beginWrite();
-    for (0..10_000) |i| {
-        var buf: [16]u8 = undefined;
-        const key = try std.fmt.bufPrint(&buf, "key{d}", .{i});
-        try w.put(key, "v");
+    // Create temporary database file for pager-level testing
+    const test_filename = try std.fmt.allocPrint(allocator, "bench_hot_{d}.db", .{std.time.milliTimestamp()});
+    defer allocator.free(test_filename);
+
+    var total_reads: u64 = 0;
+    var total_writes: u64 = 0;
+    var total_alloc_bytes: u64 = 0;
+
+    // Store allocated page IDs for warm-up and benchmark reads
+    var page_ids = try allocator.alloc(u64, page_count);
+    defer allocator.free(page_ids);
+
+    // Create database and populate with pages using direct file operations
+    {
+        // Create file directly and extend it to fit all pages
+        const file = try std.fs.cwd().createFile(test_filename, .{ .truncate = true });
+        defer file.close();
+
+        // Create initial meta pages
+        var buffer_a: [pager.DEFAULT_PAGE_SIZE]u8 = undefined;
+        var buffer_b: [pager.DEFAULT_PAGE_SIZE]u8 = undefined;
+
+        const meta = pager.MetaPayload{
+            .committed_txn_id = 0,
+            .root_page_id = 0,
+            .freelist_head_page_id = 0,
+            .log_tail_lsn = 0,
+            .meta_crc32c = 0,
+        };
+
+        try pager.encodeMetaPage(pager.META_A_PAGE_ID, meta, &buffer_a);
+        try pager.encodeMetaPage(pager.META_B_PAGE_ID, meta, &buffer_b);
+
+        _ = try file.pwriteAll(&buffer_a, 0);
+        _ = try file.pwriteAll(&buffer_b, pager.DEFAULT_PAGE_SIZE);
+        total_writes += pager.DEFAULT_PAGE_SIZE * 2;
+
+        // Create and write test pages
+        for (0..page_count) |i| {
+            const page_id = i + 3; // Start after meta pages
+            page_ids[i] = page_id;
+
+            // Create test page with predictable pattern
+            var page_buffer: [pager.DEFAULT_PAGE_SIZE]u8 = undefined;
+            var payload_buffer: [pager.DEFAULT_PAGE_SIZE - pager.PageHeader.SIZE]u8 = undefined;
+
+            // Fill payload with repeating pattern for easy verification
+            for (0..payload_buffer.len) |j| {
+                payload_buffer[j] = @intCast((i + j) % 256); // Simple pattern, wrap to u8
+            }
+
+            // Create proper page with header
+            try pager.createPage(page_id, .btree_leaf, 1, &payload_buffer, &page_buffer);
+
+            // Write page to file at the correct offset
+            const offset = page_id * pager.DEFAULT_PAGE_SIZE;
+            _ = try file.pwriteAll(&page_buffer, offset);
+            total_writes += pager.DEFAULT_PAGE_SIZE;
+        }
+
+        total_alloc_bytes += page_count * pager.DEFAULT_PAGE_SIZE;
     }
-    _ = try w.commit();
 
+    // Open database for read-only testing (simulates cache warm-up)
+    var pager_instance = try pager.Pager.open(test_filename, allocator);
+    defer pager_instance.close();
+
+    // Warm up cache by reading all pages once
+    for (0..page_count) |i| {
+        const page_id = page_ids[i];
+        var page_buffer: [pager.DEFAULT_PAGE_SIZE]u8 = undefined;
+        try pager_instance.readPage(page_id, &page_buffer);
+        total_reads += pager.DEFAULT_PAGE_SIZE;
+    }
+
+    // Benchmark random page reads (hot cache performance)
     const start_time = std.time.nanoTimestamp();
-    var r = try database.beginReadLatest();
-    defer r.close();
     for (0..ops) |_| {
-        const idx = rand.intRangeLessThan(usize, 0, 10_000);
-        var buf: [16]u8 = undefined;
-        const key = try std.fmt.bufPrint(&buf, "key{d}", .{idx});
-        _ = r.get(key);
+        const idx = rand.intRangeLessThan(usize, 0, page_count);
+        const page_id = page_ids[idx];
+
+        var page_buffer: [pager.DEFAULT_PAGE_SIZE]u8 = undefined;
+        try pager_instance.readPage(page_id, &page_buffer);
+        total_reads += pager.DEFAULT_PAGE_SIZE;
+
+        // Optional: validate page content to ensure read correctness
+        const header = std.mem.bytesAsValue(pager.PageHeader, page_buffer[0..pager.PageHeader.SIZE]);
+        if (header.page_id != page_id) {
+            return error.PageIdMismatch;
+        }
     }
     const duration_ns = @as(u64, @intCast(std.time.nanoTimestamp() - start_time));
 
-    return basicResult(ops, duration_ns, .{ .read_total = ops * config.db.page_size, .write_total = 0 }, .{ .fsync_count = 0 }, .{ .alloc_count = ops, .alloc_bytes = ops * 32 });
+    // Clean up file
+    try std.fs.cwd().deleteFile(test_filename);
+
+    return basicResult(ops, duration_ns, .{
+        .read_total = total_reads,
+        .write_total = total_writes
+    }, .{ .fsync_count = 0 }, .{
+        .alloc_count = page_count + 2,
+        .alloc_bytes = total_alloc_bytes
+    });
 }
 
 fn benchPagerCommitMeta(allocator: std.mem.Allocator, config: types.Config) !types.Results {
@@ -268,7 +349,7 @@ fn benchPagerCommitMeta(allocator: std.mem.Allocator, config: types.Config) !typ
     if (lsn_increments_correctly != commits) {
         // Log warning but don't fail benchmark - let monitoring catch it
         std.log.warn("Fsync correctness check: {d}/{d} commits had valid LSN progression", .{ lsn_increments_correctly, commits });
-        std.log.warn("This indicates issues with two-phase commit that need to be investigated");
+        std.log.warn("This indicates issues with two-phase commit that need to be investigated", .{});
     }
 
     return basicResult(commits, duration_ns, .{
