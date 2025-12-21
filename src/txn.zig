@@ -54,14 +54,30 @@ pub const CommitPayloadHeader = struct {
         const commit_magic = try reader.readInt(u32, .little);
         if (commit_magic != 0x434D4954) return error.InvalidCommitMagic;
 
-        return CommitPayloadHeader{
+        const header = CommitPayloadHeader{
             .commit_magic = commit_magic,
             .txn_id = try reader.readInt(u64, .little),
             .root_page_id = try reader.readInt(u64, .little),
             .op_count = try reader.readInt(u32, .little),
             .reserved = try reader.readInt(u32, .little),
         };
+
+        try header.validate();
+        return header;
     }
+
+    /// Validate header fields against limits and invariants
+    pub fn validate(self: @This()) !void {
+        if (self.reserved != 0) return error.InvalidReservedField;
+        if (self.op_count > SizeLimits.MAX_OPERATIONS_PER_COMMIT) return error.TooManyOperations;
+    }
+};
+
+/// Recommended size limits per spec/commit_record_v0.md
+pub const SizeLimits = struct {
+    pub const MAX_KEY_SIZE: u32 = 4 * 1024; // 4KB recommended max key size
+    pub const MAX_VALUE_SIZE: u32 = 16 * 1024 * 1024; // 16MB recommended max value size
+    pub const MAX_OPERATIONS_PER_COMMIT: u32 = 1000; // Reasonable limit for operations per commit
 };
 
 /// Operation encoding per spec/commit_record_v0.md
@@ -85,11 +101,24 @@ pub const EncodedOperation = struct {
     }
 
     pub fn calculateSerializedSize(self: @This()) usize {
-        var size = 1 + 1 + 2 + 4 + self.key_len; // op_type + op_flags + key_len + val_len + key_bytes
+        var size: usize = 1 + 1 + 2 + 4; // op_type + op_flags + key_len + val_len
+        size += self.key_len; // key_bytes
         if (self.op_type == 0) { // Put
-            size += self.val_len;
+            size += self.val_len; // val_bytes
         }
         return size;
+    }
+
+    /// Validate operation against size limits
+    pub fn validate(self: @This()) !void {
+        if (self.op_flags != 0) return error.InvalidOperationFlags;
+
+        if (self.key_len > SizeLimits.MAX_KEY_SIZE) return error.KeyTooLarge;
+        if (self.val_len > SizeLimits.MAX_VALUE_SIZE) return error.ValueTooLarge;
+
+        if (self.key_bytes.len != self.key_len) return error.KeyLengthMismatch;
+        if (self.op_type == 0 and self.val_bytes.len != self.val_len) return error.ValueLengthMismatch;
+        if (self.op_type == 1 and self.val_len != 0) return error.DeleteHasValue;
     }
 };
 
@@ -177,6 +206,18 @@ pub const TransactionContext = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        // Free allocated keys and values in mutations
+        for (self.mutations.items) |mutation| {
+            switch (mutation) {
+                .put => |p| {
+                    self.allocator.free(p.key);
+                    self.allocator.free(p.value);
+                },
+                .delete => |d| {
+                    self.allocator.free(d.key);
+                },
+            }
+        }
         self.mutations.deinit(self.allocator);
         self.allocated_pages.deinit(self.allocator);
 
@@ -461,6 +502,161 @@ test "TransactionContext_getPendingMutation" {
     try testing.expect(result6 != null);
     try testing.expect(!result6.?.is_deleted);
     try testing.expectEqualStrings("value2", result6.?.value.?);
+}
+
+test "EncodedOperation_validation_normal_cases" {
+    // Valid put operation
+    const put_op = EncodedOperation{
+        .op_type = 0,
+        .op_flags = 0,
+        .key_len = 4,
+        .val_len = 6,
+        .key_bytes = "test",
+        .val_bytes = "value!",
+    };
+    try put_op.validate();
+
+    // Valid delete operation
+    const delete_op = EncodedOperation{
+        .op_type = 1,
+        .op_flags = 0,
+        .key_len = 4,
+        .val_len = 0,
+        .key_bytes = "test",
+        .val_bytes = &[_]u8{},
+    };
+    try delete_op.validate();
+}
+
+test "EncodedOperation_validation_rejects_invalid_flags" {
+    const op = EncodedOperation{
+        .op_type = 0,
+        .op_flags = 1, // Invalid: V0 must be 0
+        .key_len = 4,
+        .val_len = 6,
+        .key_bytes = "test",
+        .val_bytes = "value!",
+    };
+    try testing.expectError(error.InvalidOperationFlags, op.validate());
+}
+
+test "EncodedOperation_validation_rejects_large_key" {
+    const large_key = try std.testing.allocator.alloc(u8, SizeLimits.MAX_KEY_SIZE + 1);
+    defer std.testing.allocator.free(large_key);
+    @memset(large_key, 'x');
+
+    const op = EncodedOperation{
+        .op_type = 0,
+        .op_flags = 0,
+        .key_len = @intCast(large_key.len),
+        .val_len = 6,
+        .key_bytes = large_key,
+        .val_bytes = "value!",
+    };
+    try testing.expectError(error.KeyTooLarge, op.validate());
+}
+
+test "EncodedOperation_validation_rejects_large_value" {
+    const large_value = try std.testing.allocator.alloc(u8, SizeLimits.MAX_VALUE_SIZE + 1);
+    defer std.testing.allocator.free(large_value);
+    @memset(large_value, 'x');
+
+    const op = EncodedOperation{
+        .op_type = 0,
+        .op_flags = 0,
+        .key_len = 4,
+        .val_len = @intCast(large_value.len),
+        .key_bytes = "test",
+        .val_bytes = large_value,
+    };
+    try testing.expectError(error.ValueTooLarge, op.validate());
+}
+
+test "EncodedOperation_validation_rejects_length_mismatch" {
+    // Key length mismatch
+    const op1 = EncodedOperation{
+        .op_type = 0,
+        .op_flags = 0,
+        .key_len = 10, // Claims 10 bytes
+        .val_len = 6,
+        .key_bytes = "short", // Only 5 bytes
+        .val_bytes = "value!",
+    };
+    try testing.expectError(error.KeyLengthMismatch, op1.validate());
+
+    // Value length mismatch
+    const op2 = EncodedOperation{
+        .op_type = 0,
+        .op_flags = 0,
+        .key_len = 4,
+        .val_len = 10, // Claims 10 bytes
+        .key_bytes = "test",
+        .val_bytes = "short", // Only 5 bytes
+    };
+    try testing.expectError(error.ValueLengthMismatch, op2.validate());
+}
+
+test "EncodedOperation_validation_rejects_delete_with_value" {
+    const op = EncodedOperation{
+        .op_type = 1, // Delete
+        .op_flags = 0,
+        .key_len = 4,
+        .val_len = 6, // Invalid: delete must have val_len = 0
+        .key_bytes = "test",
+        .val_bytes = "value!",
+    };
+    try testing.expectError(error.DeleteHasValue, op.validate());
+}
+
+test "CommitPayloadHeader_validation_normal_case" {
+    const header = CommitPayloadHeader{
+        .commit_magic = 0x434D4954,
+        .txn_id = 42,
+        .root_page_id = 7,
+        .op_count = 3,
+        .reserved = 0,
+    };
+    try header.validate();
+}
+
+test "CommitPayloadHeader_validation_rejects_nonzero_reserved" {
+    const header = CommitPayloadHeader{
+        .commit_magic = 0x434D4954,
+        .txn_id = 42,
+        .root_page_id = 7,
+        .op_count = 3,
+        .reserved = 123, // Invalid: must be 0 in V0
+    };
+    try testing.expectError(error.InvalidReservedField, header.validate());
+}
+
+test "CommitPayloadHeader_validation_rejects_too_many_operations" {
+    const header = CommitPayloadHeader{
+        .commit_magic = 0x434D4954,
+        .txn_id = 42,
+        .root_page_id = 7,
+        .op_count = SizeLimits.MAX_OPERATIONS_PER_COMMIT + 1,
+        .reserved = 0,
+    };
+    try testing.expectError(error.TooManyOperations, header.validate());
+}
+
+test "EncodedOperation_serialize_roundtrip" {
+    const original = EncodedOperation{
+        .op_type = 0,
+        .op_flags = 0,
+        .key_len = 4,
+        .val_len = 6,
+        .key_bytes = "test",
+        .val_bytes = "value!",
+    };
+
+    var buffer: [100]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buffer);
+    try original.serialize(fbs.writer());
+
+    // Verify serialized size matches calculated size
+    try testing.expectEqual(original.calculateSerializedSize(), fbs.pos);
 }
 
 const testing = std.testing;

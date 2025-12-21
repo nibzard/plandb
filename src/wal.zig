@@ -15,6 +15,7 @@ pub const WriteAheadLog = struct {
     buffer_pos: usize,
     sync_needed: bool,
     allocator: std.mem.Allocator,
+    file_pos: usize, // Current file position for appending
 
     const Self = @This();
 
@@ -110,12 +111,13 @@ pub const WriteAheadLog = struct {
             .buffer_pos = 0,
             .sync_needed = false,
             .allocator = allocator,
+            .file_pos = file_size,
         };
     }
 
     /// Create a new WAL file
     pub fn create(path: []const u8, allocator: std.mem.Allocator) !Self {
-        const file = try std.fs.cwd().createFile(path, .{ .truncate = true });
+        const file = try std.fs.cwd().createFile(path, .{ .truncate = true, .read = true });
         errdefer file.close();
 
         const buffer = try allocator.alignedAlloc(u8, null, 64 * 1024);
@@ -128,6 +130,7 @@ pub const WriteAheadLog = struct {
             .buffer_pos = 0,
             .sync_needed = false,
             .allocator = allocator,
+            .file_pos = 0,
         };
     }
 
@@ -195,10 +198,17 @@ pub const WriteAheadLog = struct {
         var result = ReplayResult.init(allocator);
         errdefer result.deinit();
 
+        // Ensure we're at the start of the file for reading
+        try self.file.seekTo(0);
         var file_pos: usize = 0;
         const file_size = try self.file.getEndPos();
 
-        while (file_pos < file_size) {
+        var iterations: usize = 0;
+        while (file_pos < file_size and iterations < 1000) {
+            iterations += 1;
+            // Ensure we have enough bytes for a header
+            if (file_pos + RecordHeader.SIZE > file_size) break;
+
             var header_bytes: [RecordHeader.SIZE]u8 = undefined;
             const bytes_read = try self.file.pread(&header_bytes, file_pos);
             if (bytes_read < RecordHeader.SIZE) break;
@@ -206,8 +216,13 @@ pub const WriteAheadLog = struct {
             const header = std.mem.bytesAsValue(RecordHeader, &header_bytes);
             if (header.magic != 0x4C4F4752) break; // "LOGR"
             if (!header.validateHeaderChecksum()) break;
+
+            // Ensure we have enough bytes for the full record
+            const record_size = RecordHeader.SIZE + header.payload_len + RecordTrailer.SIZE;
+            if (file_pos + record_size > file_size) break;
+
             if (header.txn_id < start_lsn) {
-                file_pos += RecordHeader.SIZE + header.payload_len + RecordTrailer.SIZE;
+                file_pos += record_size;
                 continue;
             }
 
@@ -246,7 +261,7 @@ pub const WriteAheadLog = struct {
             }
 
             result.last_lsn = header.txn_id;
-            file_pos += RecordHeader.SIZE + header.payload_len + RecordTrailer.SIZE;
+            file_pos += record_size;
         }
 
         return result;
@@ -320,9 +335,10 @@ pub const WriteAheadLog = struct {
 
         // If record is larger than buffer, write directly
         if (record_size > self.buffer.len) {
-            try self.file.writeAll(std.mem.asBytes(&header_with_crc));
-            try self.file.writeAll(data);
-            try self.file.writeAll(std.mem.asBytes(&trailer_with_crc));
+            _ = try self.file.pwriteAll(std.mem.asBytes(&header_with_crc), self.file_pos);
+            _ = try self.file.pwriteAll(data, self.file_pos + RecordHeader.SIZE);
+            _ = try self.file.pwriteAll(std.mem.asBytes(&trailer_with_crc), self.file_pos + RecordHeader.SIZE + data.len);
+            self.file_pos += record_size;
             self.current_lsn += 1; // Increment LSN as record counter
             self.sync_needed = true;
             return self.current_lsn;
@@ -340,9 +356,9 @@ pub const WriteAheadLog = struct {
         @memcpy(self.buffer[self.buffer_pos..self.buffer_pos + RecordTrailer.SIZE], std.mem.asBytes(&trailer_with_crc));
         self.buffer_pos += RecordTrailer.SIZE;
 
-        self.current_lsn = header.txn_id; // Use txn_id as LSN for compatibility
+        self.current_lsn += 1; // Increment LSN for each record appended
         self.sync_needed = true;
-        return header.txn_id;
+        return self.current_lsn;
     }
 
     /// Private: Legacy append function for compatibility (deprecated)
@@ -365,13 +381,14 @@ pub const WriteAheadLog = struct {
     /// Private: Flush buffer to file
     fn flush(self: *Self) !void {
         if (self.buffer_pos == 0) return;
-        _ = try self.file.pwriteAll(self.buffer[0..self.buffer_pos], 0);
+        _ = try self.file.pwriteAll(self.buffer[0..self.buffer_pos], self.file_pos);
+        self.file_pos += self.buffer_pos;
         self.buffer_pos = 0;
     }
 
-    /// Private: Scan existing WAL to find highest LSN
+    /// Private: Scan existing WAL to find highest LSN (count of records)
     fn scanHighestLsn(file: *const std.fs.File) !u64 {
-        var highest_lsn: u64 = 0;
+        var record_count: u64 = 0;
         var file_pos: usize = 0;
         const file_size = try file.getEndPos();
 
@@ -384,14 +401,11 @@ pub const WriteAheadLog = struct {
             if (header.magic != 0x4C4F4752) break; // "LOGR"
             if (!header.validateHeaderChecksum()) break;
 
-            if (header.txn_id > highest_lsn) {
-                highest_lsn = header.txn_id;
-            }
-
+            record_count += 1;
             file_pos += RecordHeader.SIZE + header.payload_len + RecordTrailer.SIZE;
         }
 
-        return highest_lsn;
+        return record_count;
     }
 
     /// Private: Serialize commit record payload per spec/commit_record_v0.md
@@ -409,7 +423,7 @@ pub const WriteAheadLog = struct {
         };
         try payload_header.serialize(buffer.writer(self.allocator));
 
-        // Write operations using new encoding
+        // Write operations using new encoding with validation
         for (record.mutations) |mutation| {
             switch (mutation) {
                 .put => |p| {
@@ -421,6 +435,7 @@ pub const WriteAheadLog = struct {
                         .key_bytes = p.key,
                         .val_bytes = p.value,
                     };
+                    try op.validate();
                     try op.serialize(buffer.writer(self.allocator));
                 },
                 .delete => |d| {
@@ -432,6 +447,7 @@ pub const WriteAheadLog = struct {
                         .key_bytes = d.key,
                         .val_bytes = &[_]u8{},
                     };
+                    try op.validate();
                     try op.serialize(buffer.writer(self.allocator));
                 },
             }
@@ -442,6 +458,8 @@ pub const WriteAheadLog = struct {
 
     /// Private: Deserialize commit record payload per spec/commit_record_v0.md
     fn deserializeCommitRecord(data: []const u8, allocator: std.mem.Allocator) !txn.CommitRecord {
+        if (data.len < txn.CommitPayloadHeader.SIZE) return error.PayloadTooSmall;
+
         var pos: usize = 0;
 
         // Read commit payload header
@@ -449,31 +467,48 @@ pub const WriteAheadLog = struct {
         const header = try txn.CommitPayloadHeader.deserialize(fbs.reader());
         pos += txn.CommitPayloadHeader.SIZE;
 
-        var mutations = std.ArrayList(txn.Mutation).initCapacity(allocator, 0) catch unreachable;
+        // Validate that we don't read beyond data
+        if (header.op_count > txn.SizeLimits.MAX_OPERATIONS_PER_COMMIT) return error.TooManyOperations;
+
+        var mutations = std.ArrayList(txn.Mutation).initCapacity(allocator, header.op_count) catch unreachable;
         errdefer mutations.deinit(allocator);
 
-        // Read operations
+        // Read operations with validation
         for (0..header.op_count) |_| {
+            // Ensure we have enough bytes for operation header
+            if (pos + 1 + 1 + 2 + 4 > data.len) return error.PayloadTruncated;
+
             const op_type = data[pos];
             pos += 1;
-            _ = data[pos]; // op_flags, should be 0 in V0
+            const op_flags = data[pos];
             pos += 1;
             const key_len = std.mem.bytesAsValue(u16, data[pos..pos + 2]).*;
             pos += 2;
             const val_len = std.mem.bytesAsValue(u32, data[pos..pos + 4]).*;
             pos += 4;
 
+            // Validate operation header
+            // Validate before accessing data
+            if (op_type > 1) return error.InvalidOperationType;
+            if (op_flags != 0) return error.InvalidOperationFlags;
+            if (key_len > txn.SizeLimits.MAX_KEY_SIZE) return error.KeyTooLarge;
+            if (val_len > txn.SizeLimits.MAX_VALUE_SIZE) return error.ValueTooLarge;
+
+            // Ensure we have enough bytes for key and value data
+            if (pos + key_len + val_len > data.len) return error.PayloadTruncated;
+
             const key = try allocator.dupe(u8, data[pos..pos + key_len]);
             pos += key_len;
 
             switch (op_type) {
                 0 => { // Put
+                    if (val_len == 0) return error.PutHasNoValue;
                     const value = try allocator.dupe(u8, data[pos..pos + val_len]);
                     pos += val_len;
                     try mutations.append(allocator, txn.Mutation{ .put = .{ .key = key, .value = value } });
                 },
                 1 => { // Delete
-                    if (val_len != 0) return error.InvalidDeleteOperation;
+                    if (val_len != 0) return error.DeleteHasValue;
                     try mutations.append(allocator, txn.Mutation{ .delete = .{ .key = key } });
                 },
                 else => return error.InvalidOperationType,
@@ -628,6 +663,7 @@ test "WriteAheadLog.replay_reads_commit_records" {
     record.checksum = record.calculatePayloadChecksum();
 
     _ = try wal.appendCommitRecord(record);
+    try wal.flush(); // Flush buffer to ensure data is written
     try wal.sync();
 
     // Replay from beginning
@@ -682,6 +718,48 @@ test "WriteAheadLog.truncate_keeps_specified_lsn" {
     defer wal_reopened.deinit();
 
     try testing.expectEqual(@as(u64, 1), wal_reopened.getCurrentLsn());
+}
+
+test "WriteAheadLog.deserializeCommitRecord_validation" {
+    const test_filename = "test_wal_deserialize_validation.db";
+    defer {
+        std.fs.cwd().deleteFile(test_filename) catch {};
+    }
+
+    // Create WAL with a record
+    var wal = try WriteAheadLog.create(test_filename, std.testing.allocator);
+    defer wal.deinit();
+
+    const mutations = [_]txn.Mutation{
+        txn.Mutation{ .put = .{ .key = "key1", .value = "value1" } },
+        txn.Mutation{ .delete = .{ .key = "key2" } },
+    };
+
+    var record = txn.CommitRecord{
+        .txn_id = 42,
+        .root_page_id = 7,
+        .mutations = &mutations,
+        .checksum = 0,
+    };
+    record.checksum = record.calculatePayloadChecksum();
+
+    _ = try wal.appendCommitRecord(record);
+    try wal.flush(); // Flush buffer to ensure data is written
+    try wal.sync();
+
+    // Replay and verify record can be deserialized
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var result = try wal.replayFrom(0, arena.allocator());
+    defer result.deinit();
+
+    try testing.expectEqual(@as(usize, 1), result.commit_records.items.len);
+
+    const replayed_record = result.commit_records.items[0];
+    try testing.expectEqual(@as(u64, 42), replayed_record.txn_id);
+    try testing.expectEqual(@as(u64, 7), replayed_record.root_page_id);
+    try testing.expectEqual(@as(usize, 2), replayed_record.mutations.len);
 }
 
 const testing = std.testing;
