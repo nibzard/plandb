@@ -169,7 +169,33 @@ pub const Db = struct {
         // This is step 2 of the fsync ordering: data -> WAL -> meta
         try wal_inst.sync();
 
-        // Phase 2: Commit - Update meta page
+        // Apply mutations to B+tree
+        for (commit_record.mutations) |mutation| {
+            switch (mutation) {
+                .put => |put_op| {
+                    try pager_inst.putBtreeValue(put_op.key, put_op.value, commit_record.txn_id);
+                },
+                .delete => |del_op| {
+                    // TODO: Implement delete operation when needed
+                    _ = del_op;
+                },
+            }
+        }
+
+        // Apply mutations to B+tree
+        for (commit_record.mutations) |mutation| {
+            switch (mutation) {
+                .put => |put_op| {
+                    try pager_inst.putBtreeValue(put_op.key, put_op.value, commit_record.txn_id);
+                },
+                .delete => |del_op| {
+                    // TODO: Implement delete operation when needed
+                    _ = del_op;
+                },
+            }
+        }
+
+        // Get the current meta state after applying mutations (putBtreeValue already updated it)
         const current_meta_state = pager_inst.current_meta;
         var new_meta = current_meta_state.meta;
         new_meta.committed_txn_id = commit_record.txn_id;
@@ -177,12 +203,20 @@ pub const Db = struct {
         // Get opposite meta page for atomic update
         const opposite_meta_id = try pager_mod.getOppositeMetaId(current_meta_state.page_id);
 
-        // Encode new meta page
+        // Encode new meta page with updated txn_id
         var meta_buffer: [pager_mod.DEFAULT_PAGE_SIZE]u8 = undefined;
         try pager_mod.encodeMetaPage(opposite_meta_id, new_meta, &meta_buffer);
 
         // Write meta page
         try pager_inst.writePage(opposite_meta_id, &meta_buffer);
+
+        // Update pager's current_meta to reflect the new state
+        const meta_header = try pager_mod.PageHeader.decode(&meta_buffer);
+        pager_inst.current_meta = .{
+            .page_id = opposite_meta_id,
+            .header = meta_header,
+            .meta = new_meta,
+        };
 
         // CRITICAL: Fsync database file to ensure meta update is durable
         // This is step 3 of the fsync ordering: data -> WAL -> meta -> DB sync
@@ -191,7 +225,7 @@ pub const Db = struct {
         // Mark transaction as committed
         try txn_ctx.commit();
 
-        // Get new root page ID after commit (pager should have updated this)
+        // Get new root page ID after commit (now that current_meta is updated)
         const new_root_page_id = pager_inst.getRootPageId();
 
         // Register new snapshot in snapshot registry

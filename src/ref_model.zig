@@ -40,11 +40,12 @@ pub const Model = struct {
     }
 
     fn cloneSnapshot(allocator: std.mem.Allocator, snap: SnapshotState) !SnapshotState {
-        const copy = SnapshotState.init(allocator);
+        var copy = SnapshotState.init(allocator);
         var it = snap.iterator();
         while (it.next()) |entry| {
-            _ = entry;
-            // TODO: fix cloning for new Zig HashMap API
+            const key_copy = try allocator.dupe(u8, entry.key_ptr.*);
+            const value_copy = try allocator.dupe(u8, entry.value_ptr.*);
+            try copy.put(key_copy, value_copy);
         }
         return copy;
     }
@@ -72,10 +73,14 @@ pub const WriteTxn = struct {
         var it = self.writes.iterator();
         while (it.next()) |entry| {
             if (entry.value_ptr.*) |val| {
-                try new_snap.put(entry.key_ptr.*, val);
+                // Transfer ownership of key and value to new snapshot
+                // We need to make a copy since the original will be freed in cleanup()
+                const key_copy = try self.allocator.dupe(u8, entry.key_ptr.*);
+                const value_copy = try self.allocator.dupe(u8, val);
+                try new_snap.put(key_copy, value_copy);
             } else {
                 _ = new_snap.remove(entry.key_ptr.*);
-                self.allocator.free(entry.key_ptr.*);
+                // key will be freed in cleanup()
             }
         }
 
