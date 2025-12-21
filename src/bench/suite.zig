@@ -29,6 +29,13 @@ pub fn registerBenchmarks(bench_runner: *runner.Runner) !void {
         .suite = .micro,
     });
 
+    try bench_runner.addBenchmark(.{
+        .name = "bench/pager/read_page_random_16k_cold",
+        .run_fn = benchPagerReadRandomCold,
+        .critical = true,
+        .suite = .micro,
+    });
+
     // B+tree benchmarks
     try bench_runner.addBenchmark(.{
         .name = "bench/btree/point_get_hot_1m",
@@ -236,6 +243,114 @@ fn benchPagerReadRandomHot(allocator: std.mem.Allocator, config: types.Config) !
         .write_total = total_writes
     }, .{ .fsync_count = 0 }, .{
         .alloc_count = page_count + 2,
+        .alloc_bytes = total_alloc_bytes
+    });
+}
+
+fn benchPagerReadRandomCold(allocator: std.mem.Allocator, config: types.Config) !types.Results {
+    const ops: u64 = 5_000;
+    const page_count: u64 = 1_000; // Number of pages to populate for random reads
+    var prng = std.Random.DefaultPrng.init(config.seed orelse 12345);
+    const rand = prng.random();
+
+    // Create temporary database file for pager-level testing
+    const test_filename = try std.fmt.allocPrint(allocator, "bench_cold_{d}.db", .{std.time.milliTimestamp()});
+    defer allocator.free(test_filename);
+
+    var total_reads: u64 = 0;
+    var total_writes: u64 = 0;
+    var total_alloc_bytes: u64 = 0;
+
+    // Store allocated page IDs for random reads
+    var page_ids = try allocator.alloc(u64, page_count);
+    defer allocator.free(page_ids);
+
+    // Create database and populate with pages using direct file operations
+    {
+        // Create file directly and extend it to fit all pages
+        const file = try std.fs.cwd().createFile(test_filename, .{ .truncate = true });
+        defer file.close();
+
+        // Create initial meta pages
+        var buffer_a: [pager.DEFAULT_PAGE_SIZE]u8 = undefined;
+        var buffer_b: [pager.DEFAULT_PAGE_SIZE]u8 = undefined;
+
+        const meta = pager.MetaPayload{
+            .committed_txn_id = 0,
+            .root_page_id = 0,
+            .freelist_head_page_id = 0,
+            .log_tail_lsn = 0,
+            .meta_crc32c = 0,
+        };
+
+        try pager.encodeMetaPage(pager.META_A_PAGE_ID, meta, &buffer_a);
+        try pager.encodeMetaPage(pager.META_B_PAGE_ID, meta, &buffer_b);
+
+        _ = try file.pwriteAll(&buffer_a, 0);
+        _ = try file.pwriteAll(&buffer_b, pager.DEFAULT_PAGE_SIZE);
+        total_writes += pager.DEFAULT_PAGE_SIZE * 2;
+
+        // Create and write test pages
+        for (0..page_count) |i| {
+            const page_id = i + 3; // Start after meta pages
+            page_ids[i] = page_id;
+
+            // Create test page with predictable pattern
+            var page_buffer: [pager.DEFAULT_PAGE_SIZE]u8 = undefined;
+            var payload_buffer: [pager.DEFAULT_PAGE_SIZE - pager.PageHeader.SIZE]u8 = undefined;
+
+            // Fill payload with repeating pattern for easy verification
+            for (0..payload_buffer.len) |j| {
+                payload_buffer[j] = @intCast((i + j) % 256); // Simple pattern, wrap to u8
+            }
+
+            // Create proper page with header
+            try pager.createPage(page_id, .btree_leaf, 1, &payload_buffer, &page_buffer);
+
+            // Write page to file at the correct offset
+            const offset = page_id * pager.DEFAULT_PAGE_SIZE;
+            _ = try file.pwriteAll(&page_buffer, offset);
+            total_writes += pager.DEFAULT_PAGE_SIZE;
+        }
+
+        total_alloc_bytes += page_count * pager.DEFAULT_PAGE_SIZE;
+    }
+
+    // Benchmark random page reads with cache dropping between reads
+    const start_time = std.time.nanoTimestamp();
+    for (0..ops) |_| {
+        // Close and reopen pager to ensure cold cache
+        // This is the best-effort cache dropping approach
+        var pager_instance = try pager.Pager.open(test_filename, allocator);
+        defer pager_instance.close();
+
+        const idx = rand.intRangeLessThan(usize, 0, page_count);
+        const page_id = page_ids[idx];
+
+        var page_buffer: [pager.DEFAULT_PAGE_SIZE]u8 = undefined;
+        try pager_instance.readPage(page_id, &page_buffer);
+        total_reads += pager.DEFAULT_PAGE_SIZE;
+
+        // Validate page content to ensure read correctness
+        const header = std.mem.bytesAsValue(pager.PageHeader, page_buffer[0..pager.PageHeader.SIZE]);
+        if (header.page_id != page_id) {
+            return error.PageIdMismatch;
+        }
+
+        // The pager instance will be closed and reopened for each operation,
+        // ensuring a cold cache scenario. This is our "best-effort" approach
+        // to simulate cold cache reads.
+    }
+    const duration_ns = @as(u64, @intCast(std.time.nanoTimestamp() - start_time));
+
+    // Clean up file
+    try std.fs.cwd().deleteFile(test_filename);
+
+    return basicResult(ops, duration_ns, .{
+        .read_total = total_reads,
+        .write_total = total_writes
+    }, .{ .fsync_count = 0 }, .{
+        .alloc_count = page_count * 2, // Each read opens a new pager instance
         .alloc_bytes = total_alloc_bytes
     });
 }
