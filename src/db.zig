@@ -12,6 +12,10 @@ const pager_mod = @import("pager.zig");
 const snapshot = @import("snapshot.zig");
 const testing = std.testing;
 
+pub const WriteBusy = error{
+    WriteBusy,
+};
+
 pub const Db = struct {
     allocator: std.mem.Allocator,
     model: ref_model.Model,
@@ -19,6 +23,7 @@ pub const Db = struct {
     pager: ?pager_mod.Pager,
     next_txn_id: u64,
     snapshot_registry: ?snapshot.SnapshotRegistry,
+    writer_active: bool,
 
     pub fn open(allocator: std.mem.Allocator) !Db {
         return .{
@@ -28,6 +33,7 @@ pub const Db = struct {
             .pager = null,
             .next_txn_id = 1,
             .snapshot_registry = null, // In-memory databases don't need snapshot registry
+            .writer_active = false,
         };
     }
 
@@ -53,6 +59,7 @@ pub const Db = struct {
             .pager = pager,
             .next_txn_id = next_txn_id,
             .snapshot_registry = snapshot_registry,
+            .writer_active = false,
         };
     }
 
@@ -119,12 +126,20 @@ pub const Db = struct {
     }
 
     pub fn beginWrite(self: *Db) !WriteTxn {
+        // Enforce single-writer rule
+        if (self.writer_active) {
+            return WriteBusy.WriteBusy;
+        }
+
         const txn_id = self.next_txn_id;
         self.next_txn_id += 1;
 
         const parent_txn_id = if (self.pager) |pager_inst| pager_inst.getCommittedTxnId() else 0;
 
         const ctx = try txn.TransactionContext.init(self.allocator, txn_id, parent_txn_id);
+
+        // Mark writer as active
+        self.writer_active = true;
 
         return WriteTxn{
             .inner = self.model.beginWrite(),
@@ -353,6 +368,11 @@ pub const WriteTxn = struct {
     }
 
     pub fn commit(self: *WriteTxn) !u64 {
+        defer {
+            // Release writer lock regardless of outcome
+            self.db.writer_active = false;
+        }
+
         // If file-based, use two-phase commit
         if (self.db.wal != null and self.db.pager != null) {
             const lsn = try self.db.executeTwoPhaseCommit(&self.txn_ctx);
@@ -368,6 +388,9 @@ pub const WriteTxn = struct {
     }
 
     pub fn abort(self: *WriteTxn) void {
+        // Release writer lock
+        self.db.writer_active = false;
+
         self.txn_ctx.abort();
         self.inner.abort();
     }
@@ -608,4 +631,50 @@ test "Snapshot_registry_cleanup" {
     try testing.expect(!registry.hasSnapshot(3));
     try testing.expect(registry.hasSnapshot(4));
     try testing.expect(registry.hasSnapshot(5));
+}
+
+test "Single_writer_lock_enforcement" {
+    var db = try Db.open(std.testing.allocator);
+    defer db.close();
+
+    // Initially no writer should be active
+    try testing.expect(!db.writer_active);
+
+    // Begin first write transaction - should succeed
+    var w1 = try db.beginWrite();
+    try testing.expect(db.writer_active);
+
+    // Attempt to begin second write transaction - should fail with WriteBusy
+    const w2_result = db.beginWrite();
+    try testing.expectError(WriteBusy.WriteBusy, w2_result);
+
+    // Commit first transaction - should release the lock
+    _ = try w1.commit();
+    try testing.expect(!db.writer_active);
+
+    // Now we should be able to begin a new write transaction
+    var w3 = try db.beginWrite();
+    try testing.expect(db.writer_active);
+
+    // Abort should also release the lock
+    w3.abort();
+    try testing.expect(!db.writer_active);
+}
+
+test "Single_writer_with_abort_releases_lock" {
+    var db = try Db.open(std.testing.allocator);
+    defer db.close();
+
+    // Begin write transaction
+    var w1 = try db.beginWrite();
+    try testing.expect(db.writer_active);
+
+    // Abort should release the lock
+    w1.abort();
+    try testing.expect(!db.writer_active);
+
+    // Should be able to begin new transaction after abort
+    var w2 = try db.beginWrite();
+    defer w2.abort();
+    try testing.expect(db.writer_active);
 }

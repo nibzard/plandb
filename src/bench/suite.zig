@@ -56,6 +56,13 @@ pub fn registerBenchmarks(bench_runner: *runner.Runner) !void {
         .suite = .micro,
     });
 
+    try bench_runner.addBenchmark(.{
+        .name = "bench/btree/range_scan_1k_rows_hot",
+        .run_fn = benchBtreeRangeScan,
+        .critical = true,
+        .suite = .micro,
+    });
+
     // MVCC benchmarks
     try bench_runner.addBenchmark(.{
         .name = "bench/mvcc/snapshot_open_close",
@@ -608,6 +615,62 @@ fn benchLogAppendCommit(allocator: std.mem.Allocator, config: types.Config) !typ
         .alloc_count = records * 4,
         .alloc_bytes = records * 256
     });
+}
+
+fn benchBtreeRangeScan(allocator: std.mem.Allocator, config: types.Config) !types.Results {
+    _ = config;
+    const ops: u64 = 1_000; // Number of range scans
+    const rows_per_scan: u64 = 1_000; // Number of rows to scan per operation
+
+    var database = try db.Db.open(allocator);
+    defer database.close();
+
+    // Populate database with test data
+    var w = try database.beginWrite();
+    for (0..rows_per_scan * 10) |i| { // Create 10x more rows than we'll scan
+        var key_buf: [32]u8 = undefined;
+        var value_buf: [64]u8 = undefined;
+        const key = try std.fmt.bufPrint(&key_buf, "row_{d:0>8}", .{i});
+        const value = try std.fmt.bufPrint(&value_buf, "value_{d}", .{i});
+        try w.put(key, value);
+    }
+    _ = try w.commit();
+
+    var r = try database.beginReadLatest();
+    defer r.close();
+
+    // Perform range scans
+    var total_items_scanned: u64 = 0;
+    const start_time = std.time.nanoTimestamp();
+
+    for (0..ops) |scan_idx| {
+        // Scan different ranges to get varied performance
+        const start_row = (scan_idx * rows_per_scan) % (rows_per_scan * 9);
+        var start_key_buf: [32]u8 = undefined;
+        const start_key = try std.fmt.bufPrint(&start_key_buf, "row_{d:0>8}", .{start_row});
+
+        // Scan the range
+        const items = try r.scan(start_key);
+        defer allocator.free(items);
+
+        // Count items (limit to rows_per_scan to avoid scanning entire database)
+        var count: u64 = 0;
+        for (items) |_| {
+            count += 1;
+            total_items_scanned += 1;
+            if (count >= rows_per_scan) break;
+        }
+    }
+
+    const duration_ns = @as(u64, @intCast(std.time.nanoTimestamp() - start_time));
+
+    return basicResult(
+        ops,
+        duration_ns,
+        .{ .read_total = total_items_scanned * 100, .write_total = 0 }, // Estimate read bytes
+        .{ .fsync_count = 0 },
+        .{ .alloc_count = ops * 2, .alloc_bytes = ops * 200 }, // Rough allocation estimates
+    );
 }
 
 fn basicResult(ops: u64, duration_ns: u64, bytes: types.Bytes, io: types.IO, alloc: types.Alloc) types.Results {
