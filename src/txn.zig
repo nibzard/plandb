@@ -46,6 +46,8 @@ pub const CommitPayloadHeader = struct {
         try writer.writeInt(u32, self.commit_magic, .little);
         try writer.writeInt(u64, self.txn_id, .little);
         try writer.writeInt(u64, self.root_page_id, .little);
+        // Write 4 bytes of padding to match struct layout
+        try writer.writeInt(u32, 0, .little);
         try writer.writeInt(u32, self.op_count, .little);
         try writer.writeInt(u32, self.reserved, .little);
     }
@@ -54,12 +56,19 @@ pub const CommitPayloadHeader = struct {
         const commit_magic = try reader.readInt(u32, .little);
         if (commit_magic != 0x434D4954) return error.InvalidCommitMagic;
 
+        const txn_id = try reader.readInt(u64, .little);
+        const root_page_id = try reader.readInt(u64, .little);
+        // Read 4 bytes of padding
+        _ = try reader.readInt(u32, .little);
+        const op_count = try reader.readInt(u32, .little);
+        const reserved = try reader.readInt(u32, .little);
+
         const header = CommitPayloadHeader{
             .commit_magic = commit_magic,
-            .txn_id = try reader.readInt(u64, .little),
-            .root_page_id = try reader.readInt(u64, .little),
-            .op_count = try reader.readInt(u32, .little),
-            .reserved = try reader.readInt(u32, .little),
+            .txn_id = txn_id,
+            .root_page_id = root_page_id,
+            .op_count = op_count,
+            .reserved = reserved,
         };
 
         try header.validate();

@@ -551,6 +551,7 @@ pub const WriteAheadLog = struct {
         };
         try payload_header.serialize(buffer.writer(self.allocator));
 
+        
         // Write operations using new encoding with validation
         for (record.mutations) |mutation| {
             switch (mutation) {
@@ -581,7 +582,7 @@ pub const WriteAheadLog = struct {
             }
         }
 
-        return buffer.toOwnedSlice(self.allocator);
+        return try buffer.toOwnedSlice(self.allocator);
     }
 
     /// Private: Deserialize commit record payload per spec/commit_record_v0.md
@@ -593,7 +594,7 @@ pub const WriteAheadLog = struct {
         // Read commit payload header
         var fbs = std.io.fixedBufferStream(data);
         const header = try txn.CommitPayloadHeader.deserialize(fbs.reader());
-        pos += txn.CommitPayloadHeader.SIZE;
+        pos = txn.CommitPayloadHeader.SIZE;
 
         // Validate that we don't read beyond data
         if (header.op_count > txn.SizeLimits.MAX_OPERATIONS_PER_COMMIT) return error.TooManyOperations;
@@ -610,9 +611,9 @@ pub const WriteAheadLog = struct {
             pos += 1;
             const op_flags = data[pos];
             pos += 1;
-            const key_len = std.mem.bytesAsValue(u16, data[pos..pos + 2]).*;
+            const key_len = std.mem.readInt(u16, data[pos..][0..2], .little);
             pos += 2;
-            const val_len = std.mem.bytesAsValue(u32, data[pos..pos + 4]).*;
+            const val_len = std.mem.readInt(u32, data[pos..][0..4], .little);
             pos += 4;
 
             // Validate operation header

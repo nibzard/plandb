@@ -67,6 +67,7 @@ pub const ReplayEngine = struct {
             const record_result = try self.readCommitRecordFromFile(&log_file, file_pos);
 
             if (record_result.record) |commit_record| {
+                // Use a mutable copy for potential modifications
                 var mutable_record = commit_record;
                 defer self.cleanupCommitRecord(&mutable_record);
 
