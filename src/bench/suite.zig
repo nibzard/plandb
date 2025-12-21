@@ -2,6 +2,7 @@ const std = @import("std");
 const runner = @import("runner.zig");
 const types = @import("types.zig");
 const db = @import("../db.zig");
+const pager = @import("../pager.zig");
 
 // Stub benchmark functions for testing the harness
 
@@ -72,17 +73,60 @@ pub fn registerBenchmarks(bench_runner: *runner.Runner) !void {
 fn benchPagerOpenClose(allocator: std.mem.Allocator, config: types.Config) !types.Results {
     _ = config;
     const iterations: u64 = 200;
+
+    var total_alloc_bytes: u64 = 0;
+    var total_reads: u64 = 0;
+    var total_writes: u64 = 0;
+
     const start_time = std.time.nanoTimestamp();
     for (0..iterations) |_| {
-        var database = try db.Db.open(allocator);
-        database.close();
+        // Create temporary empty database file
+        const test_filename = try std.fmt.allocPrint(allocator, "bench_empty_{d}.db", .{std.time.milliTimestamp()});
+        defer allocator.free(test_filename);
+
+        // Create empty database file with proper meta pages
+        {
+            const file = try std.fs.cwd().createFile(test_filename, .{ .truncate = true });
+            defer file.close();
+
+            // Create meta pages for empty database
+            var buffer_a: [pager.DEFAULT_PAGE_SIZE]u8 = undefined;
+            var buffer_b: [pager.DEFAULT_PAGE_SIZE]u8 = undefined;
+
+            const meta = pager.MetaPayload{
+                .committed_txn_id = 0,
+                .root_page_id = 0, // Empty tree
+                .freelist_head_page_id = 0,
+                .log_tail_lsn = 0,
+                .meta_crc32c = 0,
+            };
+
+            try pager.encodeMetaPage(pager.META_A_PAGE_ID, meta, &buffer_a);
+            try pager.encodeMetaPage(pager.META_B_PAGE_ID, meta, &buffer_b);
+
+            _ = try file.pwriteAll(&buffer_a, 0);
+            _ = try file.pwriteAll(&buffer_b, pager.DEFAULT_PAGE_SIZE);
+            total_writes += pager.DEFAULT_PAGE_SIZE * 2;
+        }
+
+        // Open and close the database
+        {
+            var pager_instance = try pager.Pager.open(test_filename, allocator);
+            total_reads += pager.DEFAULT_PAGE_SIZE * 2; // Reads both meta pages during open
+            pager_instance.close();
+        }
+
+        // Clean up file
+        try std.fs.cwd().deleteFile(test_filename);
+
+        total_alloc_bytes += 1024; // Estimated allocation per open/close
     }
     const duration_ns = @as(u64, @intCast(std.time.nanoTimestamp() - start_time));
 
     return basicResult(iterations, duration_ns, .{
-        .read_total = 0,
-        .write_total = 0,
-    }, .{ .fsync_count = 0 }, .{ .alloc_count = iterations, .alloc_bytes = iterations * 1024 });
+        .read_total = total_reads,
+        .write_total = total_writes,
+    }, .{ .fsync_count = 0 }, .{ .alloc_count = iterations * 2, .alloc_bytes = total_alloc_bytes });
 }
 
 fn benchPagerReadRandomHot(allocator: std.mem.Allocator, config: types.Config) !types.Results {
