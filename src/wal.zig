@@ -20,7 +20,7 @@ pub const WriteAheadLog = struct {
     const Self = @This();
 
     /// WAL record header per spec/commit_record_v0.md
-    const RecordHeader = struct {
+    pub const RecordHeader = struct {
         magic: u32 = 0x4C4F4752, // "LOGR"
         record_version: u16 = 0,
         record_type: u16,
@@ -64,7 +64,7 @@ pub const WriteAheadLog = struct {
     };
 
     /// WAL record trailer per spec/commit_record_v0.md
-    const RecordTrailer = struct {
+    pub const RecordTrailer = struct {
         magic2: u32 = 0x52474F4C, // "RGOL" (LOGR reversed)
         total_len: u32, // header_len + payload_len + trailer_len
         trailer_crc32c: u32,
@@ -203,8 +203,11 @@ pub const WriteAheadLog = struct {
         var file_pos: usize = 0;
         const file_size = try self.file.getEndPos();
 
+        std.debug.print("Replay: file_size={}, file_pos={}\n", .{ file_size, file_pos });
+
         var iterations: usize = 0;
         while (file_pos < file_size and iterations < 1000) {
+            std.debug.print("Replay iteration {}: file_pos={}, file_size={}\n", .{ iterations, file_pos, file_size });
             iterations += 1;
             // Ensure we have enough bytes for a header
             if (file_pos + RecordHeader.SIZE > file_size) break;
@@ -213,9 +216,21 @@ pub const WriteAheadLog = struct {
             const bytes_read = try self.file.pread(&header_bytes, file_pos);
             if (bytes_read < RecordHeader.SIZE) break;
 
-            const header = std.mem.bytesAsValue(RecordHeader, &header_bytes);
-            if (header.magic != 0x4C4F4752) break; // "LOGR"
-            if (!header.validateHeaderChecksum()) break;
+            const header = readExplicitHeader(&header_bytes) catch {
+                std.debug.print("Failed to read header at pos {}\n", .{file_pos});
+                break; // Invalid header format
+            };
+            if (header.magic != 0x4C4F4752) {
+                std.debug.print("Invalid magic number: 0x{x} at pos {}\n", .{ header.magic, file_pos });
+                break; // "LOGR"
+            }
+
+            // Validate header checksum using explicit calculation
+            const expected_header_crc = calculateExplicitHeaderChecksum(header);
+            if (header.header_crc32c != expected_header_crc) {
+                std.debug.print("Checksum mismatch: expected 0x{x}, got 0x{x} at pos {}\n", .{ expected_header_crc, header.header_crc32c, file_pos });
+                break;
+            }
 
             // Ensure we have enough bytes for the full record
             const record_size = RecordHeader.SIZE + header.payload_len + RecordTrailer.SIZE;
@@ -238,7 +253,8 @@ pub const WriteAheadLog = struct {
             hasher.update(record_data);
             const calculated_payload_crc = hasher.final();
             if (calculated_payload_crc != header.payload_crc32c) {
-                continue; // Skip corrupted record
+                file_pos += record_size; // Skip corrupted record
+                continue;
             }
 
             switch (header.record_type) {
@@ -301,32 +317,12 @@ pub const WriteAheadLog = struct {
         const record_size = RecordHeader.SIZE + data.len + RecordTrailer.SIZE;
 
         // Calculate header CRC
-        const header_with_crc = RecordHeader{
-            .magic = header.magic,
-            .record_version = header.record_version,
-            .record_type = header.record_type,
-            .header_len = header.header_len,
-            .flags = header.flags,
-            .txn_id = header.txn_id,
-            .prev_lsn = header.prev_lsn,
-            .payload_len = header.payload_len,
-            .header_crc32c = header.calculateHeaderChecksum(),
-            .payload_crc32c = header.payload_crc32c,
-        };
+        const header_crc = calculateExplicitHeaderChecksum(header);
+        const payload_crc = header.payload_crc32c;
 
         // Create trailer
         const total_len: u32 = @intCast(record_size);
-        const trailer = RecordTrailer{
-            .magic2 = 0x52474F4C, // "RGOL"
-            .total_len = total_len,
-            .trailer_crc32c = 0, // Will be calculated
-        };
-
-        const trailer_with_crc = RecordTrailer{
-            .magic2 = trailer.magic2,
-            .total_len = trailer.total_len,
-            .trailer_crc32c = trailer.calculateTrailerChecksum(),
-        };
+        const trailer_crc = calculateExplicitTrailerChecksum(total_len);
 
         // Check if record fits in buffer
         if (self.buffer_pos + record_size > self.buffer.len) {
@@ -335,30 +331,159 @@ pub const WriteAheadLog = struct {
 
         // If record is larger than buffer, write directly
         if (record_size > self.buffer.len) {
-            _ = try self.file.pwriteAll(std.mem.asBytes(&header_with_crc), self.file_pos);
-            _ = try self.file.pwriteAll(data, self.file_pos + RecordHeader.SIZE);
-            _ = try self.file.pwriteAll(std.mem.asBytes(&trailer_with_crc), self.file_pos + RecordHeader.SIZE + data.len);
+            // Write header fields in explicit order
+            var offset: usize = self.file_pos;
+            _ = try self.file.pwriteAll(std.mem.asBytes(&header.magic), offset);
+            offset += 4;
+            _ = try self.file.pwriteAll(std.mem.asBytes(&header.record_version), offset);
+            offset += 2;
+            _ = try self.file.pwriteAll(std.mem.asBytes(&header.record_type), offset);
+            offset += 2;
+            _ = try self.file.pwriteAll(std.mem.asBytes(&header.header_len), offset);
+            offset += 2;
+            _ = try self.file.pwriteAll(std.mem.asBytes(&header.flags), offset);
+            offset += 2;
+            _ = try self.file.pwriteAll(std.mem.asBytes(&header.txn_id), offset);
+            offset += 8;
+            _ = try self.file.pwriteAll(std.mem.asBytes(&header.prev_lsn), offset);
+            offset += 8;
+            _ = try self.file.pwriteAll(std.mem.asBytes(&header.payload_len), offset);
+            offset += 4;
+            _ = try self.file.pwriteAll(std.mem.asBytes(&header_crc), offset);
+            offset += 4;
+            _ = try self.file.pwriteAll(std.mem.asBytes(&payload_crc), offset);
+            offset += 4;
+
+            // Write payload
+            _ = try self.file.pwriteAll(data, offset);
+            offset += data.len;
+
+            // Write trailer fields in explicit order
+            const trailer_magic = @as(u32, 0x52474F4C); // "RGOL"
+            _ = try self.file.pwriteAll(std.mem.asBytes(&trailer_magic), offset);
+            offset += 4;
+            _ = try self.file.pwriteAll(std.mem.asBytes(&total_len), offset);
+            offset += 4;
+            _ = try self.file.pwriteAll(std.mem.asBytes(&trailer_crc), offset);
+            offset += 4;
+
             self.file_pos += record_size;
             self.current_lsn += 1; // Increment LSN as record counter
             self.sync_needed = true;
             return self.current_lsn;
         }
 
-        // Write to buffer
-        @memcpy(self.buffer[self.buffer_pos..self.buffer_pos + RecordHeader.SIZE], std.mem.asBytes(&header_with_crc));
-        self.buffer_pos += RecordHeader.SIZE;
+        // Write to buffer in explicit order
+        var buffer_pos: usize = self.buffer_pos;
 
+        // Header fields
+        @memcpy(self.buffer[buffer_pos..buffer_pos + 4], std.mem.asBytes(&header.magic));
+        buffer_pos += 4;
+        @memcpy(self.buffer[buffer_pos..buffer_pos + 2], std.mem.asBytes(&header.record_version));
+        buffer_pos += 2;
+        @memcpy(self.buffer[buffer_pos..buffer_pos + 2], std.mem.asBytes(&header.record_type));
+        buffer_pos += 2;
+        @memcpy(self.buffer[buffer_pos..buffer_pos + 2], std.mem.asBytes(&header.header_len));
+        buffer_pos += 2;
+        @memcpy(self.buffer[buffer_pos..buffer_pos + 2], std.mem.asBytes(&header.flags));
+        buffer_pos += 2;
+        @memcpy(self.buffer[buffer_pos..buffer_pos + 8], std.mem.asBytes(&header.txn_id));
+        buffer_pos += 8;
+        @memcpy(self.buffer[buffer_pos..buffer_pos + 8], std.mem.asBytes(&header.prev_lsn));
+        buffer_pos += 8;
+        @memcpy(self.buffer[buffer_pos..buffer_pos + 4], std.mem.asBytes(&header.payload_len));
+        buffer_pos += 4;
+        @memcpy(self.buffer[buffer_pos..buffer_pos + 4], std.mem.asBytes(&header_crc));
+        buffer_pos += 4;
+        @memcpy(self.buffer[buffer_pos..buffer_pos + 4], std.mem.asBytes(&payload_crc));
+        buffer_pos += 4;
+
+        // Payload
         if (data.len > 0) {
-            @memcpy(self.buffer[self.buffer_pos..self.buffer_pos + data.len], data);
-            self.buffer_pos += data.len;
+            @memcpy(self.buffer[buffer_pos..buffer_pos + data.len], data);
+            buffer_pos += data.len;
         }
 
-        @memcpy(self.buffer[self.buffer_pos..self.buffer_pos + RecordTrailer.SIZE], std.mem.asBytes(&trailer_with_crc));
-        self.buffer_pos += RecordTrailer.SIZE;
+        // Trailer fields
+        const trailer_magic = @as(u32, 0x52474F4C); // "RGOL"
+        @memcpy(self.buffer[buffer_pos..buffer_pos + 4], std.mem.asBytes(&trailer_magic));
+        buffer_pos += 4;
+        @memcpy(self.buffer[buffer_pos..buffer_pos + 4], std.mem.asBytes(&total_len));
+        buffer_pos += 4;
+        @memcpy(self.buffer[buffer_pos..buffer_pos + 4], std.mem.asBytes(&trailer_crc));
+        buffer_pos += 4;
 
+        self.buffer_pos = buffer_pos;
         self.current_lsn += 1; // Increment LSN for each record appended
         self.sync_needed = true;
         return self.current_lsn;
+    }
+
+    /// Calculate header checksum with explicit field ordering
+    fn calculateExplicitHeaderChecksum(header: RecordHeader) u32 {
+        var hasher = std.hash.Crc32.init();
+        hasher.update(std.mem.asBytes(&header.magic));
+        hasher.update(std.mem.asBytes(&header.record_version));
+        hasher.update(std.mem.asBytes(&header.record_type));
+        hasher.update(std.mem.asBytes(&header.header_len));
+        hasher.update(std.mem.asBytes(&header.flags));
+        hasher.update(std.mem.asBytes(&header.txn_id));
+        hasher.update(std.mem.asBytes(&header.prev_lsn));
+        hasher.update(std.mem.asBytes(&header.payload_len));
+        hasher.update(std.mem.asBytes(&@as(u32, 0))); // header_crc32c field set to 0
+        hasher.update(std.mem.asBytes(&header.payload_crc32c));
+        return hasher.final();
+    }
+
+    /// Calculate trailer checksum with explicit field ordering
+    fn calculateExplicitTrailerChecksum(total_len: u32) u32 {
+        var hasher = std.hash.Crc32.init();
+        const trailer_magic = @as(u32, 0x52474F4C); // "RGOL"
+        hasher.update(std.mem.asBytes(&trailer_magic));
+        hasher.update(std.mem.asBytes(&total_len));
+        hasher.update(std.mem.asBytes(&@as(u32, 0))); // trailer_crc32c field set to 0
+        return hasher.final();
+    }
+
+    /// Read header fields explicitly from byte buffer
+    fn readExplicitHeader(bytes: []const u8) !RecordHeader {
+        if (bytes.len < RecordHeader.SIZE) return error.InvalidHeaderSize;
+
+        var pos: usize = 0;
+
+        const magic = std.mem.littleToNative(u32, std.mem.bytesAsValue(u32, bytes[pos..pos + 4]).*);
+        pos += 4;
+        const record_version = std.mem.littleToNative(u16, std.mem.bytesAsValue(u16, bytes[pos..pos + 2]).*);
+        pos += 2;
+        const record_type = std.mem.littleToNative(u16, std.mem.bytesAsValue(u16, bytes[pos..pos + 2]).*);
+        pos += 2;
+        const header_len = std.mem.littleToNative(u16, std.mem.bytesAsValue(u16, bytes[pos..pos + 2]).*);
+        pos += 2;
+        const flags = std.mem.littleToNative(u16, std.mem.bytesAsValue(u16, bytes[pos..pos + 2]).*);
+        pos += 2;
+        const txn_id = std.mem.littleToNative(u64, std.mem.bytesAsValue(u64, bytes[pos..pos + 8]).*);
+        pos += 8;
+        const prev_lsn = std.mem.littleToNative(u64, std.mem.bytesAsValue(u64, bytes[pos..pos + 8]).*);
+        pos += 8;
+        const payload_len = std.mem.littleToNative(u32, std.mem.bytesAsValue(u32, bytes[pos..pos + 4]).*);
+        pos += 4;
+        const header_crc32c = std.mem.littleToNative(u32, std.mem.bytesAsValue(u32, bytes[pos..pos + 4]).*);
+        pos += 4;
+        const payload_crc32c = std.mem.littleToNative(u32, std.mem.bytesAsValue(u32, bytes[pos..pos + 4]).*);
+        pos += 4;
+
+        return RecordHeader{
+            .magic = magic,
+            .record_version = record_version,
+            .record_type = record_type,
+            .header_len = header_len,
+            .flags = flags,
+            .txn_id = txn_id,
+            .prev_lsn = prev_lsn,
+            .payload_len = payload_len,
+            .header_crc32c = header_crc32c,
+            .payload_crc32c = payload_crc32c,
+        };
     }
 
     /// Private: Legacy append function for compatibility (deprecated)
@@ -378,8 +503,8 @@ pub const WriteAheadLog = struct {
         return self.appendRecordWithTrailer(new_header, data);
     }
 
-    /// Private: Flush buffer to file
-    fn flush(self: *Self) !void {
+    /// Flush buffer to file
+    pub fn flush(self: *Self) !void {
         if (self.buffer_pos == 0) return;
         _ = try self.file.pwriteAll(self.buffer[0..self.buffer_pos], self.file_pos);
         self.file_pos += self.buffer_pos;
@@ -397,9 +522,12 @@ pub const WriteAheadLog = struct {
             const bytes_read = try file.pread(&header_bytes, file_pos);
             if (bytes_read < RecordHeader.SIZE) break;
 
-            const header = std.mem.bytesAsValue(RecordHeader, &header_bytes);
+            const header = readExplicitHeader(&header_bytes) catch break;
             if (header.magic != 0x4C4F4752) break; // "LOGR"
-            if (!header.validateHeaderChecksum()) break;
+
+            // Validate header checksum using explicit calculation
+            const expected_header_crc = calculateExplicitHeaderChecksum(header);
+            if (header.header_crc32c != expected_header_crc) break;
 
             record_count += 1;
             file_pos += RecordHeader.SIZE + header.payload_len + RecordTrailer.SIZE;

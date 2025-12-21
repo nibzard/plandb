@@ -283,29 +283,40 @@ pub const Db = struct {
         };
     }
 
-    // Helper function to write commit record to log file
+    // Helper function to write commit record to log file with proper framing
     fn writeCommitRecordToLog(self: *Db, log_file: *std.fs.File, commit_record: txn.CommitRecord) !void {
-        // For Phase 4, we'll use the existing WAL serialization format but write to separate log file
-        // This ensures compatibility with the existing commit record format
+        // For Phase 4, we need to write complete framed records to the .log file
+        // This includes: RecordHeader + Payload + RecordTrailer
 
-        // Use the existing WAL serialization logic
-        var temp_wal = wal.WriteAheadLog{
-            .file = log_file.*,
-            .current_lsn = 0,
-            .buffer = undefined, // We'll write directly
-            .buffer_pos = 0,
-            .sync_needed = false,
-            .allocator = self.allocator,
-            .file_pos = 0,
+        // Create a temporary WAL instance for proper record framing
+        const temp_path = try std.fmt.allocPrint(self.allocator, "{s}_temp_wal", .{self.log_path.?});
+        defer self.allocator.free(temp_path);
+
+        var temp_wal = try wal.WriteAheadLog.create(temp_path, self.allocator);
+        defer temp_wal.deinit();
+
+        // Use the WAL's appendCommitRecord to get proper framing
+        _ = try temp_wal.appendCommitRecord(commit_record);
+        try temp_wal.flush();
+
+        // Read the framed record from temp WAL and write to log file
+        var temp_file = try std.fs.cwd().openFile(temp_path, .{ .mode = .read_only }) catch |err| switch (err) {
+            error.FileNotFound => return error.InternalError,
+            else => return err,
         };
+        defer temp_file.close();
+        defer std.fs.cwd().deleteFile(temp_path) catch {};
 
-        // Serialize the commit record using existing WAL logic
-        const serialized = try temp_wal.serializeCommitRecord(&commit_record);
-        defer self.allocator.free(serialized);
+        const record_size = try temp_file.getEndPos();
+        const record_buffer = try self.allocator.alloc(u8, record_size);
+        defer self.allocator.free(record_buffer);
 
-        // Write directly to log file at current position
+        const bytes_read = try temp_file.readAll(record_buffer);
+        if (bytes_read != record_size) return error.InternalError;
+
+        // Write the fully framed record to the log file
         const file_size = try log_file.getEndPos();
-        _ = try log_file.pwriteAll(serialized, file_size);
+        _ = try log_file.pwriteAll(record_buffer, file_size);
     }
 };
 
