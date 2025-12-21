@@ -343,12 +343,12 @@ pub const Runner = struct {
             }
         }
 
-        // Initialize comparator with CI thresholds
+        // Initialize comparator with CI thresholds from args
         var comparator = @import("compare.zig").Comparator.init(self.allocator, .{
-            .max_throughput_regression_pct = 5.0,
-            .max_p99_latency_regression_pct = 10.0,
-            .max_alloc_regression_pct = 5.0,
-            .max_fsync_increase_pct = 0.0,
+            .max_throughput_regression_pct = args.max_throughput_regression_pct,
+            .max_p99_latency_regression_pct = args.max_p99_latency_regression_pct,
+            .max_alloc_regression_pct = args.max_alloc_regression_pct,
+            .max_fsync_increase_pct = args.max_fsync_increase_pct,
         });
 
         // Run benchmarks and check critical ones
@@ -972,6 +972,11 @@ pub const RunArgs = struct {
     output_dir: ?[]const u8 = null,
     baseline_dir: ?[]const u8 = null,
     seed: ?u32 = null,
+    // CI thresholds for regression detection
+    max_throughput_regression_pct: f64 = 5.0,
+    max_p99_latency_regression_pct: f64 = 10.0,
+    max_alloc_regression_pct: f64 = 5.0,
+    max_fsync_increase_pct: f64 = 0.0,
     config: types.Config = .{
         .db = .{
             .page_size = 16384,

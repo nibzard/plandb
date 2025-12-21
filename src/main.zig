@@ -65,6 +65,10 @@ fn printUsage() !void {
         \\  --seed <n>            Random seed
         \\  --warmup-ops <n>      Number of warmup operations before measurement
         \\  --warmup-ns <n>       Warmup time in nanoseconds before measurement
+        \\  --threshold-throughput <pct>  Max throughput regression percentage (default: 5.0)
+        \\  --threshold-p99 <pct>         Max P99 latency regression percentage (default: 10.0)
+        \\  --threshold-alloc <pct>       Max allocation regression percentage (default: 5.0)
+        \\  --threshold-fsync <pct>       Max fsync increase percentage (default: 0.0)
         \\
     , .{});
 }
@@ -175,6 +179,18 @@ fn gateSuite(allocator: std.mem.Allocator, args: []const []const u8) !void {
             i += 1;
         } else if (std.mem.eql(u8, args[i], "--warmup-ns") and i + 1 < args.len) {
             runner_args.config.warmup_ns = try std.fmt.parseInt(u64, args[i + 1], 10);
+            i += 1;
+        } else if (std.mem.eql(u8, args[i], "--threshold-throughput") and i + 1 < args.len) {
+            runner_args.max_throughput_regression_pct = try std.fmt.parseFloat(f64, args[i + 1]);
+            i += 1;
+        } else if (std.mem.eql(u8, args[i], "--threshold-p99") and i + 1 < args.len) {
+            runner_args.max_p99_latency_regression_pct = try std.fmt.parseFloat(f64, args[i + 1]);
+            i += 1;
+        } else if (std.mem.eql(u8, args[i], "--threshold-alloc") and i + 1 < args.len) {
+            runner_args.max_alloc_regression_pct = try std.fmt.parseFloat(f64, args[i + 1]);
+            i += 1;
+        } else if (std.mem.eql(u8, args[i], "--threshold-fsync") and i + 1 < args.len) {
+            runner_args.max_fsync_increase_pct = try std.fmt.parseFloat(f64, args[i + 1]);
             i += 1;
         } else {
             std.debug.print("Unknown option: {s}\n", .{args[i]});
