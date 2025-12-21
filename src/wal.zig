@@ -174,7 +174,7 @@ pub const WriteAheadLog = struct {
             switch (header.record_type) {
                 .commit => {
                     const commit_record = try WriteAheadLog.deserializeCommitRecord(record_data, allocator);
-                    try result.commit_records.append(commit_record);
+                    try result.commit_records.append(allocator, commit_record);
                 },
                 .checkpoint => {
                     if (header.length == @sizeOf(u64)) {
@@ -305,16 +305,16 @@ pub const WriteAheadLog = struct {
 
     /// Private: Serialize commit record
     fn serializeCommitRecord(self: *Self, record: *const txn.CommitRecord) ![]u8 {
-        var buffer = std.ArrayList(u8).init(self.allocator);
-        errdefer buffer.deinit();
+        var buffer = std.ArrayList(u8).initCapacity(self.allocator, 0) catch unreachable;
+        errdefer buffer.deinit(self.allocator);
 
         // Write header fields
-        try buffer.writer().writeInt(u64, record.txn_id, .little);
-        try buffer.writer().writeInt(u64, record.parent_txn_id, .little);
-        try buffer.writer().writeInt(u64, record.timestamp_ns, .little);
+        try buffer.writer(self.allocator).writeInt(u64, record.txn_id, .little);
+        try buffer.writer(self.allocator).writeInt(u64, record.parent_txn_id, .little);
+        try buffer.writer(self.allocator).writeInt(u64, record.timestamp_ns, .little);
 
         const mutation_count: u32 = @intCast(record.mutations.len);
-        try buffer.writer().writeInt(u32, mutation_count, .little);
+        try buffer.writer(self.allocator).writeInt(u32, mutation_count, .little);
 
         // Write mutations
         for (record.mutations) |mutation| {
@@ -322,20 +322,20 @@ pub const WriteAheadLog = struct {
                 .put => |p| {
                     const key_len: u32 = @intCast(p.key.len);
                     const val_len: u32 = @intCast(p.value.len);
-                    try buffer.writer().writeInt(u32, key_len, .little);
-                    try buffer.appendSlice(p.key);
-                    try buffer.writer().writeInt(u32, val_len, .little);
-                    try buffer.appendSlice(p.value);
+                    try buffer.writer(self.allocator).writeInt(u32, key_len, .little);
+                    try buffer.appendSlice(self.allocator, p.key);
+                    try buffer.writer(self.allocator).writeInt(u32, val_len, .little);
+                    try buffer.appendSlice(self.allocator, p.value);
                 },
                 .delete => |d| {
                     const key_len: u32 = @intCast(d.key.len);
-                    try buffer.writer().writeInt(u32, key_len, .little);
-                    try buffer.appendSlice(d.key);
+                    try buffer.writer(self.allocator).writeInt(u32, key_len, .little);
+                    try buffer.appendSlice(self.allocator, d.key);
                 },
             }
         }
 
-        return buffer.toOwnedSlice();
+        return buffer.toOwnedSlice(self.allocator);
     }
 
     /// Private: Deserialize commit record
@@ -351,8 +351,8 @@ pub const WriteAheadLog = struct {
         const mutation_count = std.mem.bytesAsValue(u32, data[pos..pos + 4]).*;
         pos += 4;
 
-        var mutations = std.ArrayList(txn.Mutation).init(allocator);
-        errdefer mutations.deinit();
+        var mutations = std.ArrayList(txn.Mutation).initCapacity(allocator, 0) catch unreachable;
+        errdefer mutations.deinit(allocator);
 
         for (0..mutation_count) |_| {
             const mutation_type = std.mem.bytesAsValue(u8, data[pos..pos + 1]).*;
@@ -368,14 +368,14 @@ pub const WriteAheadLog = struct {
                     pos += 4;
                     const value = try allocator.dupe(u8, data[pos..pos + val_len]);
                     pos += val_len;
-                    try mutations.append(txn.Mutation{ .put = .{ .key = key, .value = value } });
+                    try mutations.append(allocator, txn.Mutation{ .put = .{ .key = key, .value = value } });
                 },
                 1 => { // DELETE
                     const key_len = std.mem.bytesAsValue(u32, data[pos..pos + 4]).*;
                     pos += 4;
                     const key = try allocator.dupe(u8, data[pos..pos + key_len]);
                     pos += key_len;
-                    try mutations.append(txn.Mutation{ .delete = .{ .key = key } });
+                    try mutations.append(allocator, txn.Mutation{ .delete = .{ .key = key } });
                 },
                 else => return error.InvalidMutationType,
             }
@@ -410,7 +410,7 @@ pub const ReplayResult = struct {
 
     pub fn init(allocator: std.mem.Allocator) Self {
         return Self{
-            .commit_records = std.ArrayList(txn.CommitRecord).init(allocator),
+            .commit_records = std.ArrayList(txn.CommitRecord).initCapacity(allocator, 0) catch unreachable,
             .last_lsn = 0,
             .last_checkpoint_txn_id = 0,
             .truncate_lsn = null,

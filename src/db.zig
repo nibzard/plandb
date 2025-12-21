@@ -78,8 +78,8 @@ pub const Db = struct {
     fn executeTwoPhaseCommit(self: *Db, txn_ctx: *txn.TransactionContext) !u64 {
         if (self.wal == null or self.pager == null) return error.NotFileBased;
 
-        const wal_inst = self.wal.?;
-        const pager_inst = self.pager.?;
+        var wal_inst = self.wal.?;
+        var pager_inst = self.pager.?;
 
         // Phase 1: Prepare
         try txn_ctx.prepare();
@@ -96,12 +96,12 @@ pub const Db = struct {
         try wal_inst.sync();
 
         // Phase 2: Commit - Update meta page
-        const current_meta = pager_inst.current_meta.meta;
-        var new_meta = current_meta;
+        const current_meta_state = pager_inst.current_meta;
+        var new_meta = current_meta_state.meta;
         new_meta.committed_txn_id = commit_record.txn_id;
 
         // Get opposite meta page for atomic update
-        const opposite_meta_id = try pager_mod.getOppositeMetaId(current_meta.page_id);
+        const opposite_meta_id = try pager_mod.getOppositeMetaId(current_meta_state.page_id);
 
         // Encode new meta page
         var meta_buffer: [pager_mod.DEFAULT_PAGE_SIZE]u8 = undefined;
@@ -131,15 +131,15 @@ pub const ReadTxn = struct {
     }
 
     pub fn scan(self: *ReadTxn, prefix: []const u8) ![]const KV {
-        var items = std.ArrayList(KV).init(self.allocator);
+        var items = std.ArrayList(KV).initCapacity(self.allocator, 0) catch unreachable;
         var it = self.snapshot.iterator();
         while (it.next()) |entry| {
             if (std.mem.startsWith(u8, entry.key_ptr.*, prefix)) {
-                try items.append(.{ .key = entry.key_ptr.*, .value = entry.value_ptr.* });
+                try items.append(self.allocator, .{ .key = entry.key_ptr.*, .value = entry.value_ptr.* });
             }
         }
         std.mem.sort(KV, items.items, {}, kvLess);
-        return items.toOwnedSlice();
+        return items.toOwnedSlice(self.allocator);
     }
 
     pub fn close(self: *ReadTxn) void {

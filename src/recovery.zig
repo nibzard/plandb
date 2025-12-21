@@ -112,7 +112,7 @@ pub const RecoveryManager = struct {
         for (replay_data.commit_records.items) |commit_record| {
             if (commit_record.txn_id > result.db_txn_id) {
                 // This transaction is in WAL but not reflected in DB
-                try result.missing_txns.append(commit_record.txn_id);
+                try result.missing_txns.append(allocator, commit_record.txn_id);
             }
 
             // Validate checksums
@@ -205,14 +205,14 @@ pub const ConsistencyResult = struct {
             .is_consistent = true,
             .db_txn_id = 0,
             .wal_txn_id = 0,
-            .missing_txns = std.ArrayList(u64).init(allocator),
+            .missing_txns = std.ArrayList(u64).initCapacity(allocator, 0) catch unreachable,
             .corrupted_records = 0,
             .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *Self) void {
-        self.missing_txns.deinit();
+        self.missing_txns.deinit(self.allocator);
     }
 };
 

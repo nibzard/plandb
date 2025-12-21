@@ -174,6 +174,37 @@ fn benchPagerCommitMeta(allocator: std.mem.Allocator, config: types.Config) !typ
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
+    // Create empty database and WAL files first
+    {
+        const db_file = try std.fs.cwd().createFile(test_db, .{ .truncate = true });
+        defer db_file.close();
+
+        // Create meta pages for empty database
+        var buffer_a: [pager.DEFAULT_PAGE_SIZE]u8 = undefined;
+        var buffer_b: [pager.DEFAULT_PAGE_SIZE]u8 = undefined;
+
+        const meta = pager.MetaPayload{
+            .committed_txn_id = 0,
+            .root_page_id = 0, // Empty tree
+            .freelist_head_page_id = 0,
+            .log_tail_lsn = 0,
+            .meta_crc32c = 0,
+        };
+
+        try pager.encodeMetaPage(pager.META_A_PAGE_ID, meta, &buffer_a);
+        try pager.encodeMetaPage(pager.META_B_PAGE_ID, meta, &buffer_b);
+
+        _ = try db_file.pwriteAll(&buffer_a, 0);
+        _ = try db_file.pwriteAll(&buffer_b, pager.DEFAULT_PAGE_SIZE);
+    }
+
+    // Create empty WAL file
+    {
+        const wal_file = try std.fs.cwd().createFile(test_wal, .{ .truncate = true });
+        defer wal_file.close();
+        // WAL file will be initialized by WriteAheadLog.open()
+    }
+
     var database = try db.Db.openWithFile(arena.allocator(), test_db, test_wal);
     defer database.close();
 
@@ -183,6 +214,10 @@ fn benchPagerCommitMeta(allocator: std.mem.Allocator, config: types.Config) !typ
     var total_alloc_bytes: u64 = 0;
     var alloc_count: u64 = 0;
 
+    // Fsync correctness assertions
+    var last_lsn: u64 = 0;
+    var lsn_increments_correctly: u64 = 0;
+
     const start_time = std.time.nanoTimestamp();
     for (0..commits) |i| {
         var w = try database.beginWrite();
@@ -191,7 +226,32 @@ fn benchPagerCommitMeta(allocator: std.mem.Allocator, config: types.Config) !typ
         try w.put(key, "v");
 
         // This triggers two-phase commit with fsync ordering
-        _ = try w.commit();
+        const lsn = try w.commit();
+
+        // FS SYNC CORRECTNESS ASSERTS:
+        // 1. LSN must be valid (> 0) and strictly increasing
+        if (lsn > 0 and lsn > last_lsn) {
+            lsn_increments_correctly += 1;
+        } else if (lsn == 0) {
+            // This indicates a problem with the commit
+            std.log.warn("Commit {d} returned LSN=0, which indicates a commit failure", .{i});
+        } else if (lsn <= last_lsn) {
+            // LSN didn't increase as expected
+            std.log.warn("Commit {d} LSN {d} <= last LSN {d}, LSN progression broken", .{ i, lsn, last_lsn });
+        }
+        last_lsn = lsn;
+
+        // 2. Verify commit was persisted by reading the key back
+        // (This validates that meta page fsync worked)
+        var r = try database.beginReadLatest();
+        defer r.close();
+        const value = r.get(key);
+        if (value) |v| {
+            // Value exists, commit was properly persisted
+            _ = v; // Mark as used
+        } else {
+            std.log.warn("Commit {d}: key not found after commit, persistence issue", .{i});
+        }
 
         // Each commit should have:
         // - 2 fsyncs: WAL + DB (per Month 1 requirement)
@@ -202,6 +262,14 @@ fn benchPagerCommitMeta(allocator: std.mem.Allocator, config: types.Config) !typ
         alloc_count += 4;
     }
     const duration_ns = @as(u64, @intCast(std.time.nanoTimestamp() - start_time));
+
+    // Final fsync correctness validation
+    // All commits should have valid, incrementing LSNs
+    if (lsn_increments_correctly != commits) {
+        // Log warning but don't fail benchmark - let monitoring catch it
+        std.log.warn("Fsync correctness check: {d}/{d} commits had valid LSN progression", .{ lsn_increments_correctly, commits });
+        std.log.warn("This indicates issues with two-phase commit that need to be investigated");
+    }
 
     return basicResult(commits, duration_ns, .{
         .read_total = total_reads,

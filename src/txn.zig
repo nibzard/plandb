@@ -101,8 +101,8 @@ pub const TransactionContext = struct {
             .txn_id = txn_id,
             .parent_txn_id = parent_txn_id,
             .state = .active,
-            .mutations = std.ArrayList(Mutation).init(allocator),
-            .allocated_pages = std.ArrayList(u64).init(allocator),
+            .mutations = std.ArrayList(Mutation).initCapacity(allocator, 0) catch unreachable,
+            .allocated_pages = std.ArrayList(u64).initCapacity(allocator, 0) catch unreachable,
             .modified_pages = std.HashMap(u64, []const u8, std.hash_map.AutoContext(u64), std.hash_map.default_max_load_percentage).init(allocator),
             .timestamp_ns = @intCast(timestamp),
             .allocator = allocator,
@@ -110,8 +110,8 @@ pub const TransactionContext = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        self.mutations.deinit();
-        self.allocated_pages.deinit();
+        self.mutations.deinit(self.allocator);
+        self.allocated_pages.deinit(self.allocator);
 
         // Free all before images
         var it = self.modified_pages.iterator();
@@ -131,7 +131,7 @@ pub const TransactionContext = struct {
         const value_copy = try self.allocator.dupe(u8, value);
         errdefer self.allocator.free(value_copy);
 
-        try self.mutations.append(Mutation{ .put = .{ .key = key_copy, .value = value_copy } });
+        try self.mutations.append(self.allocator, Mutation{ .put = .{ .key = key_copy, .value = value_copy } });
     }
 
     /// Record a DELETE mutation in the transaction
@@ -142,13 +142,13 @@ pub const TransactionContext = struct {
         const key_copy = try self.allocator.dupe(u8, key);
         errdefer self.allocator.free(key_copy);
 
-        try self.mutations.append(Mutation{ .delete = .{ .key = key_copy } });
+        try self.mutations.append(self.allocator, Mutation{ .delete = .{ .key = key_copy } });
     }
 
     /// Track a page that was allocated during this transaction
     pub fn trackAllocatedPage(self: *Self, page_id: u64) !void {
         if (self.state != .active) return error.TransactionNotActive;
-        try self.allocated_pages.append(page_id);
+        try self.allocated_pages.append(self.allocator, page_id);
     }
 
     /// Capture before image of a page for rollback capability
