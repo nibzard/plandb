@@ -1,7 +1,8 @@
-//! Pager module for page-based storage management.
+//! Pager scaffolding for page-based storage.
 //!
-//! Provides page allocation, IO, and checksumming for the database file format.
-//! Implements atomic commits through dual meta pages and proper fsync ordering.
+//! Provides early page encode/decode, checksum helpers, and allocator tests.
+//! Durability (fsync ordering) and full atomic commit handling are only
+//! partially implemented and remain under active development.
 
 const std = @import("std");
 
@@ -226,8 +227,8 @@ pub const BtreeLeafPayload = struct {
     // Get pointer to slot array (const version)
     pub fn getSlotArray(_: *const Self, payload_bytes: []const u8) []const u16 {
         const node_header = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
-        const max_slots = 32; // Same as getSlotArrayMut
-        const slot_bytes = payload_bytes[BtreeNodeHeader.SIZE..BtreeNodeHeader.SIZE + max_slots * @sizeOf(u16)];
+        const slot_array_size = Self.getSlotArraySize(node_header.key_count);
+        const slot_bytes = payload_bytes[BtreeNodeHeader.SIZE..BtreeNodeHeader.SIZE + slot_array_size];
         const slot_ptr = @as([*]const u16, @ptrCast(@alignCast(slot_bytes.ptr)));
         return slot_ptr[0..node_header.key_count];
     }
@@ -235,12 +236,11 @@ pub const BtreeLeafPayload = struct {
     // Get pointer to slot array (mutable version)
     pub fn getSlotArrayMut(_: *Self, payload_bytes: []u8) []u16 {
         const node_header = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
-        // For now, assume we have space for up to 32 slots
-        const max_slots = 32;
-        const used_slots = node_header.key_count;
-        const slot_bytes = payload_bytes[BtreeNodeHeader.SIZE..BtreeNodeHeader.SIZE + max_slots * @sizeOf(u16)];
+        // Always allocate space for at least one more slot to allow for insertion
+        const slot_array_size = Self.getSlotArraySize(node_header.key_count + 1);
+        const slot_bytes = payload_bytes[BtreeNodeHeader.SIZE..BtreeNodeHeader.SIZE + slot_array_size];
         const slot_ptr = @as([*]u16, @ptrCast(@alignCast(slot_bytes.ptr)));
-        return slot_ptr[0..@as(usize, @max(used_slots + 1, max_slots))];
+        return slot_ptr[0..@as(usize, @max(node_header.key_count + 1, slot_array_size / @sizeOf(u16)))];
     }
 
     // Get entry at given slot index (const version)
@@ -278,9 +278,9 @@ pub const BtreeLeafPayload = struct {
         // Find space at the end of entry data area
         if (entry_data_area.len < total_entry_size) return error.InsufficientSpace;
 
-        // Create the new entry at the end
-        const entry_offset = payload_bytes.len - total_entry_size;
-        var entry_bytes = payload_bytes[entry_offset..];
+        // Create the new entry at the end of the entry data area (from the end growing backwards)
+        const entry_offset_from_payload_start = @as(u16, @intCast(payload_bytes.len - total_entry_size));
+        var entry_bytes = payload_bytes[entry_offset_from_payload_start..];
 
         // Write entry: key_len + val_len + key + value
         std.mem.writeInt(u16, entry_bytes[0..2], @intCast(key.len), .little);
@@ -290,30 +290,34 @@ pub const BtreeLeafPayload = struct {
 
         // Find insertion point to maintain sorted order
         var insert_pos: u16 = 0;
-        while (insert_pos < node_header.key_count) {
-            const existing_entry = try self.getEntry(payload_bytes, insert_pos);
-            if (std.mem.lessThan(u8, key, existing_entry.key)) {
-                break;
+        if (node_header.key_count > 0) {
+            // Only try to read existing entries if we have some
+            while (insert_pos < node_header.key_count) {
+                const existing_entry = self.getEntry(payload_bytes, insert_pos) catch break;
+                if (std.mem.lessThan(u8, key, existing_entry.key)) {
+                    break;
+                }
+                insert_pos += 1;
             }
-            insert_pos += 1;
         }
 
-        // Special handling for empty leaf - ensure we have slot array space
-        const current_slot_array_size = Self.getSlotArraySize(node_header.key_count);
+        // Ensure slot array has space for the new entry
         const new_slot_array_size = Self.getSlotArraySize(node_header.key_count + 1);
 
-        // If we need to expand the slot array, do it
-        if (new_slot_array_size > current_slot_array_size and current_slot_array_size == 0) {
-            // This is the first entry, we need to ensure slot array space exists
-            // The slot array starts after the node header
+        // Initialize slot array space if needed
+        if (new_slot_array_size > 0) {
             const slot_start = BtreeNodeHeader.SIZE;
             if (slot_start + new_slot_array_size <= payload_bytes.len) {
-                // Initialize slot array space with zeros
-                @memset(payload_bytes[slot_start..slot_start + new_slot_array_size], 0);
+                // Ensure the slot array area is available
+                const current_slot_area = payload_bytes[slot_start..slot_start + new_slot_array_size];
+                if (node_header.key_count == 0) {
+                    // First entry, initialize to zeros
+                    @memset(current_slot_area, 0);
+                }
             }
         }
 
-        // Get the slot array (now it should have space)
+        // Get the slot array
         const slot_array = self.getSlotArrayMut(payload_bytes);
 
         // Shift slots to make room - but only if we have existing slots
@@ -324,7 +328,7 @@ pub const BtreeLeafPayload = struct {
         }
 
         // Insert new slot
-        slot_array[insert_pos] = @intCast(entry_offset);
+        slot_array[insert_pos] = entry_offset_from_payload_start;
 
         // Update key count
         const header_mut = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
@@ -450,6 +454,12 @@ pub const BtreeLeafEntry = struct {
     pub fn getSize(self: Self) usize {
         return @sizeOf(u16) + @sizeOf(u32) + self.key.len + self.value.len;
     }
+};
+
+// Key-value pair type for encode/decode operations
+pub const KeyValue = struct {
+    key: []const u8,
+    value: []const u8,
 };
 
 // B+tree internal node payload with separator keys and child pointers
@@ -1640,6 +1650,72 @@ fn getPayloadLength(page_buffer: []const u8) !u32 {
     if (page_buffer.len < PageHeader.SIZE) return error.BufferTooSmall;
     const header = try PageHeader.decode(page_buffer[0..PageHeader.SIZE]);
     return header.payload_len;
+}
+
+// Encode B+tree leaf page from key-value pairs
+pub fn encodeBtreeLeafPage(page_id: u64, txn_id: u64, right_sibling: u64, entries: []const KeyValue, buffer: []u8) !void {
+    if (buffer.len < DEFAULT_PAGE_SIZE) return error.BufferTooSmall;
+    if (entries.len > BtreeLeafPayload.MAX_KEYS_PER_LEAF) return error.TooManyEntries;
+
+    // Create empty leaf page first
+    try createEmptyBtreeLeaf(page_id, txn_id, right_sibling, buffer);
+
+    // Add entries in sorted order (verify they're sorted)
+    for (entries) |entry| {
+        try addEntryToBtreeLeaf(buffer, entry.key, entry.value);
+    }
+}
+
+// Decode B+tree leaf page and extract all key-value pairs
+pub fn decodeBtreeLeafPage(page_buffer: []const u8, allocator: std.mem.Allocator) ![]KeyValue {
+    if (page_buffer.len < PageHeader.SIZE) return error.BufferTooSmall;
+
+    // Validate this is a btree leaf page
+    const header = try PageHeader.decode(page_buffer[0..PageHeader.SIZE]);
+    if (header.page_type != .btree_leaf) return error.InvalidPageType;
+
+    const payload_start = PageHeader.SIZE;
+    const payload_end = payload_start + header.payload_len;
+    const payload_bytes = page_buffer[payload_start..payload_end];
+
+    const node_header = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
+
+    // Allocate result array
+    var result = try allocator.alloc(KeyValue, node_header.key_count);
+    errdefer allocator.free(result);
+
+    // Extract all entries
+    var leaf_instance = BtreeLeafPayload{};
+    for (0..node_header.key_count) |i| {
+        const entry = try leaf_instance.getEntry(payload_bytes, @intCast(i));
+        const key_copy = try allocator.dupe(u8, entry.key);
+        const value_copy = try allocator.dupe(u8, entry.value);
+        result[i] = .{ .key = key_copy, .value = value_copy };
+    }
+
+    return result;
+}
+
+// Enhanced structural validator for B+tree leaf pages
+pub fn validateBtreeLeafStructure(page_buffer: []const u8) !void {
+    if (page_buffer.len < PageHeader.SIZE) return error.BufferTooSmall;
+
+    // Validate page header
+    const header = try PageHeader.decode(page_buffer[0..PageHeader.SIZE]);
+    if (header.page_type != .btree_leaf) return error.InvalidPageType;
+
+    // Validate page checksum
+    const page_data = page_buffer[0 .. PageHeader.SIZE + header.payload_len];
+    const expected_checksum = calculatePageChecksum(page_data);
+    if (header.page_crc32c != expected_checksum) return error.InvalidPageChecksum;
+
+    const payload_start = PageHeader.SIZE;
+    const payload_end = payload_start + header.payload_len;
+    const payload_bytes = page_buffer[payload_start..payload_end];
+
+    // Validate leaf structure using existing validator
+    var leaf = BtreeLeafPayload{};
+    try leaf.validate(payload_bytes);
 }
 
 // ==================== Unit Tests ====================
@@ -3221,7 +3297,7 @@ test "validateBtreeInternal_rejects_corrupted_internal_node" {
     var buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
 
     // Create empty internal node
-    try createEmptyBtreeInternal(1, 1, 1, 0, &buffer);
+    try createEmptyBtreeInternal(1, 1, 1, 0, 42, &buffer); // Add first_child_id=42
 
     // Corrupt the node magic in payload
     buffer[PageHeader.SIZE + @offsetOf(BtreeNodeHeader, "node_magic")] += 1;
@@ -3234,7 +3310,7 @@ test "validateBtreeInternal_rejects_wrong_level" {
     var buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
 
     // Create empty internal node
-    try createEmptyBtreeInternal(1, 1, 1, 0, &buffer);
+    try createEmptyBtreeInternal(1, 1, 1, 0, 42, &buffer); // Add first_child_id=42
 
     // Change level to 0 (leaf level)
     buffer[PageHeader.SIZE + @offsetOf(BtreeNodeHeader, "level")] = 0;
@@ -3300,4 +3376,143 @@ test "BtreeInternalPayload_large_separator_keys_work_correctly" {
 
     // Validate structure
     try validateBtreeInternal(&buffer);
+}
+
+test "encodeBtreeLeafPage_encodes_multiple_entries_correctly" {
+    var buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    const entries = [_]KeyValue{
+        .{ .key = "apple", .value = "red" },
+        .{ .key = "banana", .value = "yellow" },
+        .{ .key = "cherry", .value = "red" },
+        .{ .key = "date", .value = "brown" },
+    };
+
+    // Encode leaf page
+    try encodeBtreeLeafPage(10, 100, 0, &entries, &buffer);
+
+    // Validate the encoded page
+    try validateBtreeLeafStructure(&buffer);
+
+    // Verify entries can be retrieved
+    for (entries) |entry| {
+        const retrieved_value = getValueFromBtreeLeaf(&buffer, entry.key);
+        try testing.expect(retrieved_value != null);
+        try testing.expectEqualStrings(entry.value, retrieved_value.?);
+    }
+}
+
+test "encodeBtreeLeafPage_rejects_too_many_entries" {
+    var buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    // Create more entries than allowed
+    var entries: [BtreeLeafPayload.MAX_KEYS_PER_LEAF + 1]KeyValue = undefined;
+    for (0..BtreeLeafPayload.MAX_KEYS_PER_LEAF + 1) |i| {
+        const key_str = try std.fmt.allocPrint(testing.allocator, "key{d}", .{i});
+        defer testing.allocator.free(key_str);
+        entries[i] = .{ .key = key_str, .value = "value" };
+    }
+
+    // Should fail
+    try testing.expectError(error.TooManyEntries, encodeBtreeLeafPage(1, 1, 0, &entries, &buffer));
+}
+
+test "decodeBtreeLeafPage_decodes_all_entries_correctly" {
+    var buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    const original_entries = [_]KeyValue{
+        .{ .key = "alpha", .value = "first" },
+        .{ .key = "beta", .value = "second" },
+        .{ .key = "gamma", .value = "third" },
+        .{ .key = "delta", .value = "fourth" },
+        .{ .key = "epsilon", .value = "fifth" },
+    };
+
+    // Encode the page
+    try encodeBtreeLeafPage(5, 50, 15, &original_entries, &buffer);
+
+    // Decode the page
+    const decoded_entries = try decodeBtreeLeafPage(&buffer, testing.allocator);
+    defer {
+        for (decoded_entries) |entry| {
+            testing.allocator.free(entry.key);
+            testing.allocator.free(entry.value);
+        }
+        testing.allocator.free(decoded_entries);
+    }
+
+    // Verify all entries were decoded correctly and in order
+    try testing.expectEqual(original_entries.len, decoded_entries.len);
+    for (original_entries, 0..) |original, i| {
+        try testing.expectEqualStrings(original.key, decoded_entries[i].key);
+        try testing.expectEqualStrings(original.value, decoded_entries[i].value);
+    }
+}
+
+test "decodeBtreeLeafPage_handles_empty_leaf" {
+    var buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    // Create empty leaf
+    try createEmptyBtreeLeaf(1, 1, 0, &buffer);
+
+    // Decode should return empty array
+    const decoded_entries = try decodeBtreeLeafPage(&buffer, testing.allocator);
+    defer testing.allocator.free(decoded_entries);
+
+    try testing.expectEqual(@as(usize, 0), decoded_entries.len);
+}
+
+test "validateBtreeLeafStructure_comprehensive_validation" {
+    var buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    // Test valid leaf page
+    const entries = [_]KeyValue{
+        .{ .key = "a", .value = "1" },
+        .{ .key = "b", .value = "2" },
+        .{ .key = "c", .value = "3" },
+    };
+
+    try encodeBtreeLeafPage(2, 20, 5, &entries, &buffer);
+    try validateBtreeLeafStructure(&buffer);
+
+    // Test wrong page type - change header to internal node
+    buffer[PageHeader.SIZE + @offsetOf(BtreeNodeHeader, "level")] = 1;
+    try testing.expectError(error.InvalidLeafLevel, validateBtreeLeafStructure(&buffer));
+
+    // Reset to leaf and test corrupted checksum
+    buffer[PageHeader.SIZE + @offsetOf(BtreeNodeHeader, "level")] = 0;
+    // Corrupt the checksum
+    buffer[PageHeader.SIZE + 1] ^= 0xFF;
+    try testing.expectError(error.InvalidPageChecksum, validateBtreeLeafStructure(&buffer));
+}
+
+test "BtreeLeafPayload.slotted_page_format_roundtrip" {
+    var buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    // Test with various key/value sizes to stress slotted page format
+    const test_cases = [_]KeyValue{
+        .{ .key = "", .value = "" }, // Empty
+        .{ .key = "a", .value = "1" }, // Single chars
+        .{ .key = "medium_key", .value = "medium_value" }, // Medium
+        .{ .key = &([_]u8{'k'} ** 100), .value = &([_]u8{'v'} ** 200) }, // Large
+    };
+
+    for (test_cases) |case| {
+        // Reset buffer
+        @memset(&buffer, 0);
+
+        // Create empty leaf and add single entry
+        try createEmptyBtreeLeaf(1, 1, 0, &buffer);
+        try addEntryToBtreeLeaf(&buffer, case.key, case.value);
+
+        // Validate structure
+        try validateBtreeLeaf(&buffer);
+
+        // Retrieve and verify
+        const retrieved = getValueFromBtreeLeaf(&buffer, case.key);
+        try testing.expect(retrieved != null);
+        try testing.expectEqual(case.key.len, retrieved.?.len);
+        try testing.expectEqual(case.value.len, retrieved.?.len);
+        try testing.expect(std.mem.eql(u8, case.value, retrieved.?));
+    }
 }
