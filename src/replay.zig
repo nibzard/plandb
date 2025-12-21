@@ -27,10 +27,13 @@ pub const ReplayEngine = struct {
 
     /// Clean up replay engine resources
     pub fn deinit(self: *Self) void {
-        // Free all stored values
+        // Free all stored keys and values
         var it = self.memtable.iterator();
         while (it.next()) |entry| {
-            self.allocator.free(entry.value_ptr.*);
+            const key = entry.key_ptr.*;
+            const value = entry.value_ptr.*;
+            self.allocator.free(key);
+            self.allocator.free(value);
         }
         self.memtable.deinit();
     }
@@ -70,7 +73,7 @@ pub const ReplayEngine = struct {
                 // Use a mutable copy for potential modifications
                 var mutable_record = commit_record;
                 defer self.cleanupCommitRecord(&mutable_record);
-
+                
                 // Stop if we've reached the target transaction ID
                 if (mutable_record.txn_id > target_txn_id) {
                     break;
@@ -372,15 +375,16 @@ pub const ReplayEngine = struct {
             switch (mutation) {
                 .put => |put_op| {
                     // For puts, we replace any existing value
-                    const existing_value = self.memtable.get(put_op.key);
-                    if (existing_value) |old_value| {
-                        self.allocator.free(old_value);
+                    if (self.memtable.fetchRemove(put_op.key)) |entry| {
+                        // Free the old key and value
+                        self.allocator.free(entry.key);
+                        self.allocator.free(entry.value);
                     }
 
                     // Store a copy of the key and value
                     const key_copy = try self.allocator.dupe(u8, put_op.key);
                     const value_copy = try self.allocator.dupe(u8, put_op.value);
-                    try self.memtable.put(key_copy, value_copy);
+                                        try self.memtable.put(key_copy, value_copy);
                 },
                 .delete => |del_op| {
                     // For deletes, we remove the key if it exists
@@ -397,7 +401,7 @@ pub const ReplayEngine = struct {
 
     /// Clean up a commit record and all its allocated data
     fn cleanupCommitRecord(self: *Self, record: *txn.CommitRecord) void {
-        // Free mutations array
+                // Free mutations array
         for (record.mutations) |mutation| {
             switch (mutation) {
                 .put => |put_op| {

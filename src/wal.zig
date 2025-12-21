@@ -206,6 +206,7 @@ pub const WriteAheadLog = struct {
         std.debug.print("Replay: file_size={}, file_pos={}\n", .{ file_size, file_pos });
 
         var iterations: usize = 0;
+        var current_lsn: u64 = 1; // LSN starts from 1
         while (file_pos < file_size and iterations < 1000) {
             std.debug.print("Replay iteration {}: file_pos={}, file_size={}\n", .{ iterations, file_pos, file_size });
             iterations += 1;
@@ -236,8 +237,9 @@ pub const WriteAheadLog = struct {
             const record_size = RecordHeader.SIZE + header.payload_len + RecordTrailer.SIZE;
             if (file_pos + record_size > file_size) break;
 
-            if (header.txn_id < start_lsn) {
+            if (current_lsn < start_lsn) {
                 file_pos += record_size;
+                current_lsn += 1;
                 continue;
             }
 
@@ -276,8 +278,9 @@ pub const WriteAheadLog = struct {
                 },
             }
 
-            result.last_lsn = header.txn_id;
+            result.last_lsn = current_lsn;
             file_pos += record_size;
+            current_lsn += 1;
         }
 
         return result;
@@ -285,7 +288,12 @@ pub const WriteAheadLog = struct {
 
     /// Truncate WAL up to a specific LSN
     pub fn truncate(self: *Self, keep_lsn: u64) !void {
+        // Flush any buffered data first
+        try self.flush();
+        try self.sync();
+
         var file_pos: usize = 0;
+        var current_lsn: u64 = 1;
         const file_size = try self.file.getEndPos();
 
         // Find position of record with keep_lsn
@@ -294,22 +302,27 @@ pub const WriteAheadLog = struct {
             const bytes_read = try self.file.pread(&header_bytes, file_pos);
             if (bytes_read < RecordHeader.SIZE) break;
 
-            const header = std.mem.bytesAsValue(RecordHeader, &header_bytes);
+            const header = readExplicitHeader(&header_bytes) catch break;
             if (header.magic != 0x4C4F4752) break; // "LOGR"
-            if (!header.validateHeaderChecksum()) break;
-            if (header.txn_id == keep_lsn) {
-                // Found the record to keep, truncate everything before it
-                try self.file.setEndPos(file_size - file_pos);
+
+            const record_size = RecordHeader.SIZE + header.payload_len + RecordTrailer.SIZE;
+
+            if (current_lsn >= keep_lsn) {
+                // We've found the keep LSN or beyond, truncate here
+                try self.file.setEndPos(file_pos);
                 try self.file.seekTo(0);
+                const scanned_lsn = scanHighestLsn(&self.file) catch 0;
+                self.current_lsn = scanned_lsn;
                 return;
             }
-
-            file_pos += RecordHeader.SIZE + header.payload_len + RecordTrailer.SIZE;
+            file_pos += record_size;
+            current_lsn += 1;
         }
 
         // If we didn't find the LSN, truncate everything
         try self.file.setEndPos(0);
         try self.file.seekTo(0);
+        self.current_lsn = 0;
     }
 
     /// Private: Append any record type to WAL with trailer
@@ -683,8 +696,6 @@ pub const ReplayResult = struct {
     pub fn deinit(self: *Self) void {
         // Free all commit records
         for (self.commit_records.items) |*record| {
-            self.allocator.free(record.mutations);
-
             // Free allocated strings in mutations
             for (record.mutations) |mutation| {
                 switch (mutation) {
@@ -697,6 +708,7 @@ pub const ReplayResult = struct {
                     },
                 }
             }
+            self.allocator.free(record.mutations);
         }
         self.commit_records.deinit(self.allocator);
     }

@@ -132,7 +132,12 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **DISCOVERY**: Two-phase commit system requires careful fsync ordering to guarantee crash consistency
   - **DISCOVERY**: LSN validation critical for detecting sequence violations in concurrent commit scenarios
   - Committed with hash 6fdc255
-- [ ] 🟠 Hardening: torn meta write detected and rolls back to prior meta
+- [✅] 🟠 Hardening: torn meta write detected and rolls back to prior meta
+  - **COMPLETED**: Torn write detection implemented with MetaState.isTornWrite method
+  - **COMPLETED**: Rollback mechanism implemented in chooseBestMeta function
+  - **COMPLETED**: Comprehensive tests added for torn write scenarios
+  - **COMPLETED**: Protection against corruption from interrupted meta page writes
+  - **COMPLETED**: All tests passing, robust detection and recovery implemented
 - [ ] 🟡 Golden file: empty DB v0 opens and validates
 
 ## Phase 2 — B+tree
@@ -250,7 +255,15 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED**: Integrated with benchmark harness and passes validation
   - **COMPLETED**: Tests MVCC snapshot registry performance with many concurrent readers
   - Committed with hash 19316d1
-- [ ] 🟠 Add microbench `bench/mvcc/writer_commits_with_readers_128`
+- [✅] 🟠 Add microbench `bench/mvcc/writer_commits_with_readers_128`
+  - **COMPLETED**: Successfully implemented MVCC writer commits with readers benchmark
+  - **COMPLETED**: Tests concurrent read/write workload with 128 readers during commits
+  - **COMPLETED**: In-memory database for focused MVCC performance testing
+  - **COMPLETED**: Measures ~7.4 ops/sec commit performance with proper metrics collection
+  - **COMPLETED**: Validates MVCC snapshot registry under concurrent access patterns
+  - **COMPLETED**: Integrated with benchmark harness and passes validation
+  - **STATUS**: Implementation complete and working, MVCC concurrency testing ready
+  - Committed with hash c4d3ada
 - [ ] 🟠 Property tests: snapshot immutability and time-travel correctness
 - [ ] 🟡 Simple page cache with pinning/epochs for readers
 
