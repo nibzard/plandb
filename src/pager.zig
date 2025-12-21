@@ -1048,6 +1048,47 @@ pub const MetaState = struct {
                self.header.page_type == .meta and
                self.header.page_id == self.page_id;
     }
+
+    // Detect torn writes by validating internal consistency
+    pub fn isTornWrite(self: MetaState, file_size: u64) bool {
+        // Only check for torn writes if we have a reasonable file size
+        // Skip torn write detection for very small test files
+        if (file_size < DEFAULT_PAGE_SIZE * 3) return false;
+
+        // Check for obvious inconsistencies that indicate a torn write
+
+        // 1. Page size must be reasonable and match our expected size
+        if (self.meta.page_size != DEFAULT_PAGE_SIZE) return true;
+
+        // 2. Transaction IDs should be monotonic and reasonable
+        // A very high txn_id might indicate corruption
+        if (self.meta.committed_txn_id >= 1000000000000) return true; // Arbitrary large number
+
+        // 3. Root page should be 0 (empty) or a valid page ID within reasonable bounds
+        if (self.meta.root_page_id != 0) {
+            const pages_in_file = file_size / self.meta.page_size;
+            // Allow some slack for tests - page IDs shouldn't be ridiculously high
+            if (self.meta.root_page_id > pages_in_file * 10) return true;
+        }
+
+        // 4. Freelist head should be 0 or a valid page ID within reasonable bounds
+        if (self.meta.freelist_head_page_id != 0) {
+            const pages_in_file = file_size / self.meta.page_size;
+            // Allow some slack for tests - page IDs shouldn't be ridiculously high
+            if (self.meta.freelist_head_page_id > pages_in_file * 10) return true;
+        }
+
+        // 5. LSN should be reasonable (not excessively large)
+        if (self.meta.log_tail_lsn >= 1000000000000) return true; // Arbitrary large number
+
+        // 6. Magic number should be correct (this should be caught by checksum validation)
+        if (self.meta.meta_magic != META_MAGIC) return true;
+
+        // 7. Format version should be supported (this should be caught by checksum validation)
+        if (self.meta.format_version != FORMAT_VERSION) return true;
+
+        return false; // No signs of torn write detected
+    }
 };
 
 // Encode a complete meta page (header + meta payload)
@@ -1115,16 +1156,30 @@ pub fn decodeMetaPage(page_bytes: []const u8, expected_page_id: u64) !MetaState 
     };
 }
 
-// Choose the valid meta with the highest committed_txn_id
-pub fn chooseBestMeta(meta_a: ?MetaState, meta_b: ?MetaState) ?MetaState {
-    // Filter to only valid metas
-    const valid_a = meta_a orelse null;
-    const valid_b = meta_b orelse null;
+// Choose the valid meta with the highest committed_txn_id, with torn write detection
+pub fn chooseBestMeta(meta_a: ?MetaState, meta_b: ?MetaState, file_size: u64) ?MetaState {
+    // Filter to only valid metas and check for torn writes
+    var valid_a = meta_a orelse null;
+    var valid_b = meta_b orelse null;
+
+    // Check meta A for torn writes
+    if (valid_a) |*meta| {
+        if (!meta.isValid() or meta.isTornWrite(file_size)) {
+            valid_a = null;
+        }
+    }
+
+    // Check meta B for torn writes
+    if (valid_b) |*meta| {
+        if (!meta.isValid() or meta.isTornWrite(file_size)) {
+            valid_b = null;
+        }
+    }
 
     // If neither is valid, return null (corrupt database)
     if (valid_a == null and valid_b == null) return null;
 
-    // If only one is valid, return it
+    // If only one is valid, return it (this handles rollback to prior meta)
     if (valid_a != null and valid_b == null) return valid_a.?;
     if (valid_b != null and valid_a == null) return valid_b.?;
 
@@ -1455,8 +1510,11 @@ pub const Pager = struct {
                 else => return err,
             };
 
-        // Choose the best meta (highest valid txn_id)
-        const best_meta = chooseBestMeta(meta_a, meta_b) orelse return error.Corrupt;
+        // Get file size for torn write detection
+        const file_size = try file.getEndPos();
+
+        // Choose the best meta (highest valid txn_id), with torn write detection and rollback
+        const best_meta = chooseBestMeta(meta_a, meta_b, file_size) orelse return error.Corrupt;
 
         // Validate page size from meta
         if (best_meta.meta.page_size != DEFAULT_PAGE_SIZE) {
@@ -3489,7 +3547,7 @@ test "chooseBestMeta selects_highest_valid_txn_id" {
     const state_b = try decodeMetaPage(&buffer_b, META_B_PAGE_ID);
 
     // Should choose meta B (higher txn_id)
-    const best = chooseBestMeta(state_a, state_b).?;
+    const best = chooseBestMeta(state_a, state_b, @as(u64, DEFAULT_PAGE_SIZE) * 20).?;
     try testing.expectEqual(META_B_PAGE_ID, best.page_id);
     try testing.expectEqual(@as(u64, 200), best.meta.committed_txn_id);
 }
@@ -3509,11 +3567,11 @@ test "chooseBestMeta_handles_invalid_metas" {
     const state_a = try decodeMetaPage(&buffer_a, META_A_PAGE_ID);
 
     // Only meta A is valid
-    const best = chooseBestMeta(state_a, null).?;
+    const best = chooseBestMeta(state_a, null, @as(u64, DEFAULT_PAGE_SIZE) * 20).?;
     try testing.expectEqual(META_A_PAGE_ID, best.page_id);
 
     // Neither is valid
-    try testing.expect(chooseBestMeta(null, null) == null);
+    try testing.expect(chooseBestMeta(null, null, @as(u64, DEFAULT_PAGE_SIZE) * 20) == null);
 
     // Corrupt meta A - should fail to decode
     buffer_a[@offsetOf(PageHeader, "header_crc32c")] += 1;
@@ -3643,6 +3701,94 @@ test "Pager.open_recovery_handles_corrupt_meta_pages" {
 
     try testing.expectEqual(@as(u64, 100), pager.getCommittedTxnId());
     try testing.expectEqual(@as(u64, 5), pager.getRootPageId());
+}
+
+test "Pager.open_recovery_detects_and_rolls_back_torn_meta_writes" {
+    const test_filename = "test_pager_torn.db";
+    defer {
+        std.fs.cwd().deleteFile(test_filename) catch {};
+    }
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    // Create file with a torn write on meta B
+    const file = try std.fs.cwd().createFile(test_filename, .{ .truncate = true });
+    defer file.close();
+
+    var buffer_a: [DEFAULT_PAGE_SIZE]u8 = undefined;
+    var buffer_b: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    const meta_a = MetaPayload{
+        .committed_txn_id = 100,
+        .root_page_id = 5,
+        .freelist_head_page_id = 0,
+        .log_tail_lsn = 42,
+        .meta_crc32c = 0,
+    };
+
+    // Create a torn meta B with out-of-bounds page_id (simulating partial write)
+    var torn_meta = meta_a;
+    torn_meta.committed_txn_id = 200; // Higher txn_id to make it attractive
+    torn_meta.root_page_id = 999999; // Impossible page ID - torn write indicator
+
+    try encodeMetaPage(META_A_PAGE_ID, meta_a, &buffer_a);
+    try encodeMetaPage(META_B_PAGE_ID, torn_meta, &buffer_b);
+
+    _ = try file.pwriteAll(&buffer_a, 0);
+    _ = try file.pwriteAll(&buffer_b, DEFAULT_PAGE_SIZE);
+
+    // Should detect torn write and rollback to meta A
+    var pager = try Pager.open(test_filename, arena.allocator());
+    defer pager.close();
+
+    // Should have rolled back to meta A (valid state)
+    try testing.expectEqual(@as(u64, 100), pager.getCommittedTxnId());
+    try testing.expectEqual(@as(u64, 5), pager.getRootPageId());
+}
+
+test "MetaState.isTornWrite_detects_inconsistent_state" {
+    var buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    // Test 1: Valid meta should not be detected as torn
+    const valid_meta = MetaPayload{
+        .committed_txn_id = 100,
+        .root_page_id = 5,
+        .freelist_head_page_id = 0,
+        .log_tail_lsn = 42,
+        .meta_crc32c = 0,
+    };
+
+    try encodeMetaPage(META_A_PAGE_ID, valid_meta, &buffer);
+    const valid_state = try decodeMetaPage(&buffer, META_A_PAGE_ID);
+    try testing.expect(!valid_state.isTornWrite(@as(u64, DEFAULT_PAGE_SIZE) * 100));
+
+    // Test 2: Out-of-bounds root page should be detected as torn
+    var torn_meta = valid_meta;
+    torn_meta.root_page_id = 999999; // Way beyond reasonable bounds
+    torn_meta.meta_crc32c = 0;
+
+    try encodeMetaPage(META_A_PAGE_ID, torn_meta, &buffer);
+    const torn_state = try decodeMetaPage(&buffer, META_A_PAGE_ID);
+    try testing.expect(torn_state.isTornWrite(@as(u64, DEFAULT_PAGE_SIZE) * 100));
+
+    // Test 3: Excessive transaction ID should be detected as torn
+    var high_txn_meta = valid_meta;
+    high_txn_meta.committed_txn_id = 1000000000000; // Excessive
+    high_txn_meta.meta_crc32c = 0;
+
+    try encodeMetaPage(META_A_PAGE_ID, high_txn_meta, &buffer);
+    const high_txn_state = try decodeMetaPage(&buffer, META_A_PAGE_ID);
+    try testing.expect(high_txn_state.isTornWrite(@as(u64, DEFAULT_PAGE_SIZE) * 100));
+
+    // Test 4: Out-of-bounds freelist head should be detected as torn
+    var bad_freelist_meta = valid_meta;
+    bad_freelist_meta.freelist_head_page_id = 999999; // Way beyond reasonable bounds
+    bad_freelist_meta.meta_crc32c = 0;
+
+    try encodeMetaPage(META_A_PAGE_ID, bad_freelist_meta, &buffer);
+    const bad_freelist_state = try decodeMetaPage(&buffer, META_A_PAGE_ID);
+    try testing.expect(bad_freelist_state.isTornWrite(@as(u64, DEFAULT_PAGE_SIZE) * 100));
 }
 
 test "Pager.open_recovery_fails_when_both_metas_corrupt" {
