@@ -224,23 +224,60 @@ pub const BtreeLeafPayload = struct {
         return @as(usize, key_count) * @sizeOf(u16);
     }
 
-    // Get pointer to slot array (const version)
-    pub fn getSlotArray(_: *const Self, payload_bytes: []const u8) []const u16 {
+    // Get slot array values (const version) - reads safely without alignment issues
+    pub fn getSlotArray(self: *const Self, payload_bytes: []const u8, slot_buffer: []u16) []const u16 {
+        _ = self;
         const node_header = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
         const slot_array_size = Self.getSlotArraySize(node_header.key_count);
         const slot_bytes = payload_bytes[BtreeNodeHeader.SIZE..BtreeNodeHeader.SIZE + slot_array_size];
-        const slot_ptr = @as([*]const u16, @ptrCast(@alignCast(slot_bytes.ptr)));
-        return slot_ptr[0..node_header.key_count];
+
+        const num_slots = @min(node_header.key_count, @as(u16, @intCast(slot_buffer.len)));
+
+        for (0..num_slots) |i| {
+            const offset = i * @sizeOf(u16);
+            if (offset + @sizeOf(u16) <= slot_bytes.len) {
+                const bytes = slot_bytes[offset..offset + 2];
+                slot_buffer[i] = std.mem.readInt(u16, @as(*const [2]u8, @ptrCast(bytes.ptr)), .little);
+            }
+        }
+
+        return slot_buffer[0..num_slots];
     }
 
-    // Get pointer to slot array (mutable version)
-    pub fn getSlotArrayMut(_: *Self, payload_bytes: []u8) []u16 {
+    // Get mutable slot array - writes safely without alignment issues
+    pub fn getSlotArrayMut(self: *Self, payload_bytes: []u8, slot_buffer: []u16) []u16 {
+        _ = self;
         const node_header = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
         // Always allocate space for at least one more slot to allow for insertion
         const slot_array_size = Self.getSlotArraySize(node_header.key_count + 1);
         const slot_bytes = payload_bytes[BtreeNodeHeader.SIZE..BtreeNodeHeader.SIZE + slot_array_size];
-        const slot_ptr = @as([*]u16, @ptrCast(@alignCast(slot_bytes.ptr)));
-        return slot_ptr[0..@as(usize, @max(node_header.key_count + 1, slot_array_size / @sizeOf(u16)))];
+
+        const max_slots = @min(@as(u16, @intCast(slot_array_size / @sizeOf(u16))), @as(u16, @intCast(slot_buffer.len)));
+
+        // First, read existing slots
+        for (0..node_header.key_count) |i| {
+            const offset = i * @sizeOf(u16);
+            if (offset + @sizeOf(u16) <= slot_bytes.len) {
+                const bytes = slot_bytes[offset..offset + 2];
+                slot_buffer[i] = std.mem.readInt(u16, @as(*const [2]u8, @ptrCast(bytes.ptr)), .little);
+            }
+        }
+
+        return slot_buffer[0..max_slots];
+    }
+
+    // Helper to write slot values back to payload
+    pub fn writeSlotArray(self: *Self, payload_bytes: []u8, slot_values: []const u16) void {
+        _ = self;
+        const slot_bytes = payload_bytes[BtreeNodeHeader.SIZE..];
+
+        for (slot_values, 0..) |slot_val, i| {
+            const offset = i * @sizeOf(u16);
+            if (offset + @sizeOf(u16) <= slot_bytes.len) {
+                const bytes = slot_bytes[offset..offset + 2];
+                std.mem.writeInt(u16, @as(*[2]u8, @ptrCast(bytes.ptr)), slot_val, .little);
+            }
+        }
     }
 
     // Get entry at given slot index (const version)
@@ -248,7 +285,25 @@ pub const BtreeLeafPayload = struct {
         const node_header = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
         if (slot_idx >= node_header.key_count) return error.SlotIndexOutOfBounds;
 
-        const slot_array = self.getSlotArray(payload_bytes);
+        // Create buffer for slot array
+        var slot_buffer: [MAX_KEYS_PER_LEAF + 1]u16 = undefined;
+        const slot_array = self.getSlotArray(payload_bytes, &slot_buffer);
+        const entry_offset = slot_array[slot_idx];
+
+        if (entry_offset < BtreeNodeHeader.SIZE + Self.getSlotArraySize(node_header.key_count) or
+            entry_offset >= payload_bytes.len) {
+            return error.InvalidEntryOffset;
+        }
+
+        return BtreeLeafEntry.fromBytes(payload_bytes[entry_offset..]);
+    }
+
+    // Get entry at given slot index with pre-populated slot array (more efficient)
+    pub fn getEntryWithSlots(self: *const Self, payload_bytes: []const u8, slot_idx: u16, slot_array: []const u16) !BtreeLeafEntry {
+        _ = self;
+        const node_header = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
+        if (slot_idx >= node_header.key_count) return error.SlotIndexOutOfBounds;
+
         const entry_offset = slot_array[slot_idx];
 
         if (entry_offset < BtreeNodeHeader.SIZE + Self.getSlotArraySize(node_header.key_count) or
@@ -317,8 +372,9 @@ pub const BtreeLeafPayload = struct {
             }
         }
 
-        // Get the slot array
-        const slot_array = self.getSlotArrayMut(payload_bytes);
+        // Create buffer for slot array operations
+        var slot_buffer: [MAX_KEYS_PER_LEAF + 1]u16 = undefined;
+        const slot_array = self.getSlotArrayMut(payload_bytes, &slot_buffer);
 
         // Shift slots to make room - but only if we have existing slots
         if (insert_pos < node_header.key_count and node_header.key_count > 0) {
@@ -329,6 +385,9 @@ pub const BtreeLeafPayload = struct {
 
         // Insert new slot
         slot_array[insert_pos] = entry_offset_from_payload_start;
+
+        // Write the updated slot array back to payload
+        self.writeSlotArray(payload_bytes, slot_array[0..node_header.key_count + 1]);
 
         // Update key count
         const header_mut = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
@@ -352,7 +411,9 @@ pub const BtreeLeafPayload = struct {
             return error.SlotArrayOutOfBounds;
         }
 
-        const slot_array = self.getSlotArray(payload_bytes);
+        // Create buffer for slot array
+        var slot_buffer: [MAX_KEYS_PER_LEAF + 1]u16 = undefined;
+        const slot_array = self.getSlotArray(payload_bytes, &slot_buffer);
         const entry_data_start = BtreeNodeHeader.SIZE + slot_array_size;
 
         // Validate each slot and entry
@@ -387,7 +448,10 @@ pub const BtreeLeafPayload = struct {
     // Find key in leaf (returns slot index or null if not found)
     pub fn findKey(self: *const Self, payload_bytes: []const u8, key: []const u8) ?u16 {
         const node_header = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
-        const slot_array = self.getSlotArray(payload_bytes);
+
+        // Create buffer for slot array
+        var slot_buffer: [MAX_KEYS_PER_LEAF + 1]u16 = undefined;
+        const slot_array = self.getSlotArray(payload_bytes, &slot_buffer);
 
         // Binary search for key
         var left: u16 = 0;
@@ -395,7 +459,7 @@ pub const BtreeLeafPayload = struct {
 
         while (left < right) {
             const mid = left + (right - left) / 2;
-            const entry = self.getEntry(payload_bytes, slot_array[mid]) catch return null;
+            const entry = self.getEntryWithSlots(payload_bytes, mid, slot_array) catch return null;
 
             if (std.mem.eql(u8, key, entry.key)) {
                 return mid;
