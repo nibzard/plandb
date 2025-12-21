@@ -220,6 +220,26 @@ pub const TransactionContext = struct {
     pub fn hasMutations(self: *const Self) bool {
         return self.mutations.items.len > 0;
     }
+
+    /// Get the value for a key from pending mutations, if any
+    /// Returns: null if key not found in mutations, value if found, deleted_flag for delete operations
+    pub fn getPendingMutation(self: *const Self, key: []const u8) ?struct { value: ?[]const u8, is_deleted: bool } {
+        // Search mutations in reverse order to get the latest operation for this key
+        var i = self.mutations.items.len;
+        while (i > 0) {
+            i -= 1;
+            const mutation = self.mutations.items[i];
+
+            if (std.mem.eql(u8, mutation.getKey(), key)) {
+                return switch (mutation) {
+                    .put => |p| .{ .value = p.value, .is_deleted = false },
+                    .delete => .{ .value = null, .is_deleted = true },
+                };
+            }
+        }
+
+        return null;
+    }
 };
 
 test "TransactionContext tracks_mutations_correctly" {
@@ -333,6 +353,55 @@ test "CommitRecord_checksum_validation" {
     // Corrupt checksum
     record.checksum += 1;
     try testing.expect(!record.validateChecksum());
+}
+
+test "TransactionContext_getPendingMutation" {
+    var ctx = try TransactionContext.init(std.testing.allocator, 1, 0);
+    defer ctx.deinit();
+
+    // Initially no mutations
+    const result1 = ctx.getPendingMutation("key1");
+    try testing.expect(result1 == null);
+
+    // Add a put mutation
+    try ctx.put("key1", "value1");
+
+    // Should find the put mutation
+    const result2 = ctx.getPendingMutation("key1");
+    try testing.expect(result2 != null);
+    try testing.expect(!result2.?.is_deleted);
+    try testing.expectEqualStrings("value1", result2.?.value.?);
+
+    // Add another put mutation for same key (should override)
+    try ctx.put("key1", "value1_updated");
+
+    // Should find the latest put mutation
+    const result3 = ctx.getPendingMutation("key1");
+    try testing.expect(result3 != null);
+    try testing.expect(!result3.?.is_deleted);
+    try testing.expectEqualStrings("value1_updated", result3.?.value.?);
+
+    // Delete the key
+    try ctx.delete("key1");
+
+    // Should find the delete mutation
+    const result4 = ctx.getPendingMutation("key1");
+    try testing.expect(result4 != null);
+    try testing.expect(result4.?.is_deleted);
+    try testing.expect(result4.?.value == null);
+
+    // Add another key
+    try ctx.put("key2", "value2");
+
+    // key1 should still be deleted, key2 should have value
+    const result5 = ctx.getPendingMutation("key1");
+    try testing.expect(result5 != null);
+    try testing.expect(result5.?.is_deleted);
+
+    const result6 = ctx.getPendingMutation("key2");
+    try testing.expect(result6 != null);
+    try testing.expect(!result6.?.is_deleted);
+    try testing.expectEqualStrings("value2", result6.?.value.?);
 }
 
 const testing = std.testing;

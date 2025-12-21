@@ -367,6 +367,38 @@ pub const WriteTxn = struct {
         try self.inner.del(key);
     }
 
+    pub fn get(self: *WriteTxn, key: []const u8) ?[]const u8 {
+        // First check if there's a pending mutation for this key
+        if (self.txn_ctx.getPendingMutation(key)) |pending| {
+            // Key was mutated in this transaction
+            if (pending.is_deleted) {
+                return null; // Key was deleted in this transaction
+            } else {
+                return pending.value.?; // Return the updated value
+            }
+        }
+
+        // No pending mutation, check the database state
+        // For file-based databases, read from B+tree
+        if (self.db.pager) |*pager| {
+            // Use a stack-allocated buffer for the value
+            var buffer: [1024]u8 = undefined;
+            if (pager.getBtreeValue(key, &buffer)) |value| {
+                return value;
+            } else |_| {
+                return null;
+            }
+        }
+
+        // For in-memory databases, check the writes then the model
+        if (self.inner.writes.get(key)) |value| {
+            return value; // Return value from write set (may be null if deleted)
+        }
+        // Fall back to the current model state
+        const current_snapshot = self.inner.model.beginRead(self.inner.model.current_txn_id) catch return null;
+        return current_snapshot.get(key);
+    }
+
     pub fn commit(self: *WriteTxn) !u64 {
         defer {
             // Release writer lock regardless of outcome
@@ -677,4 +709,78 @@ test "Single_writer_with_abort_releases_lock" {
     var w2 = try db.beginWrite();
     defer w2.abort();
     try testing.expect(db.writer_active);
+}
+
+test "WriteTxn_read_your_writes" {
+    var db = try Db.open(std.testing.allocator);
+    defer db.close();
+
+    // Begin a write transaction
+    var w = try db.beginWrite();
+    defer w.abort();
+
+    // Should not find non-existent key
+    const non_existent = w.get("non_existent_key");
+    try testing.expect(non_existent == null);
+
+    // Put a new key
+    try w.put("new_key", "new_value");
+
+    // Should read own writes (core read-your-writes functionality)
+    const new_value = w.get("new_key");
+    try testing.expect(new_value != null);
+    try testing.expect(std.mem.eql(u8, "new_value", new_value.?));
+
+    // Update the same key
+    try w.put("new_key", "updated_value");
+
+    // Should read the updated value (latest write wins)
+    const updated_value = w.get("new_key");
+    try testing.expect(updated_value != null);
+    try testing.expect(std.mem.eql(u8, "updated_value", updated_value.?));
+
+    // Delete the key
+    try w.del("new_key");
+
+    // Should not find deleted key (even though it existed before)
+    const deleted_value = w.get("new_key");
+    try testing.expect(deleted_value == null);
+
+    // Put and delete the same key in same transaction
+    try w.put("temp_key", "temp_value");
+    const temp_value = w.get("temp_key");
+    try testing.expect(temp_value != null);
+    try testing.expect(std.mem.eql(u8, "temp_value", temp_value.?));
+
+    try w.del("temp_key");
+    const temp_after_delete = w.get("temp_key");
+    try testing.expect(temp_after_delete == null);
+
+    // Multiple operations on the same key should work correctly
+    try w.put("counter", "1");
+    try testing.expect(std.mem.eql(u8, "1", w.get("counter").?));
+
+    try w.put("counter", "2");
+    try testing.expect(std.mem.eql(u8, "2", w.get("counter").?));
+
+    try w.del("counter");
+    try testing.expect(w.get("counter") == null);
+
+    try w.put("counter", "3");
+    try testing.expect(std.mem.eql(u8, "3", w.get("counter").?));
+
+    // Test that multiple independent keys work
+    try w.put("key1", "value1");
+    try w.put("key2", "value2");
+    try w.put("key3", "value3");
+
+    try testing.expect(std.mem.eql(u8, "value1", w.get("key1").?));
+    try testing.expect(std.mem.eql(u8, "value2", w.get("key2").?));
+    try testing.expect(std.mem.eql(u8, "value3", w.get("key3").?));
+
+    // Delete one key and verify others still exist
+    try w.del("key2");
+    try testing.expect(std.mem.eql(u8, "value1", w.get("key1").?));
+    try testing.expect(w.get("key2") == null);
+    try testing.expect(std.mem.eql(u8, "value3", w.get("key3").?));
 }

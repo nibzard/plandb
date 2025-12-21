@@ -185,7 +185,13 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
 
 ## Phase 3 — MVCC
 - [ ] 🔴 Implement snapshot registry (TxnId ➜ root) and latest snapshot API
-- [ ] 🔴 Enforce single-writer lock with explicit `WriteBusy` error
+- [✅] 🔴 Enforce single-writer lock with explicit `WriteBusy` error
+  - **COMPLETED**: Added WriteBusy error type to DB error enum
+  - **COMPLETED**: Added writer_active field to track current writer state
+  - **COMPLETED**: Enhanced beginWrite() to enforce single-writer rule with WriteBusy error when writer already active
+  - **COMPLETED**: Updated commit() and abort() to properly release writer lock
+  - **COMPLETED**: Added comprehensive test suite covering concurrent write attempts, lock release on commit/abort, and error handling
+  - **COMPLETED**: All tests passing, single-writer semantics correctly enforced
 - [ ] 🟠 Ensure read-your-writes within a write txn
 - [ ] 🔴 Add microbench `bench/mvcc/snapshot_open_close`
 - [ ] 🟠 Add microbench `bench/mvcc/readers_256_point_get_hot` (parameterized N)
