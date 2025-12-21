@@ -390,7 +390,7 @@ pub const WriteAheadLog = struct {
             .txn_id = txn_id,
             .parent_txn_id = parent_txn_id,
             .timestamp_ns = timestamp_ns,
-            .mutations = try mutations.toOwnedSlice(),
+            .mutations = try mutations.toOwnedSlice(allocator),
             .checksum = 0,
         };
 
@@ -407,6 +407,7 @@ pub const WriteAheadLog = struct {
 /// Result of WAL replay
 pub const ReplayResult = struct {
     commit_records: std.ArrayList(txn.CommitRecord),
+    allocator: std.mem.Allocator,
     last_lsn: u64,
     last_checkpoint_txn_id: u64,
     truncate_lsn: ?u64,
@@ -416,6 +417,7 @@ pub const ReplayResult = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         return Self{
             .commit_records = std.ArrayList(txn.CommitRecord).initCapacity(allocator, 0) catch unreachable,
+            .allocator = allocator,
             .last_lsn = 0,
             .last_checkpoint_txn_id = 0,
             .truncate_lsn = null,
@@ -425,22 +427,22 @@ pub const ReplayResult = struct {
     pub fn deinit(self: *Self) void {
         // Free all commit records
         for (self.commit_records.items) |*record| {
-            self.commit_records.allocator.free(record.mutations);
+            self.allocator.free(record.mutations);
 
             // Free allocated strings in mutations
             for (record.mutations) |mutation| {
                 switch (mutation) {
                     .put => |p| {
-                        self.commit_records.allocator.free(p.key);
-                        self.commit_records.allocator.free(p.value);
+                        self.allocator.free(p.key);
+                        self.allocator.free(p.value);
                     },
                     .delete => |d| {
-                        self.commit_records.allocator.free(d.key);
+                        self.allocator.free(d.key);
                     },
                 }
             }
         }
-        self.commit_records.deinit();
+        self.commit_records.deinit(self.allocator);
     }
 };
 
@@ -543,7 +545,7 @@ test "WriteAheadLog.replay_reads_commit_records" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    const result = try wal.replayFrom(0, arena.allocator());
+    var result = try wal.replayFrom(0, arena.allocator());
     defer result.deinit();
 
     try testing.expectEqual(@as(u64, 1), result.last_lsn);

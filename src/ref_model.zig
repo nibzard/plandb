@@ -112,7 +112,7 @@ test "txn atomicity and abort" {
 
     var snap = try model.beginRead(id);
     defer snap.deinit();
-    const val = snap.get("k").?.*;
+    const val = snap.get("k") orelse unreachable;
     try std.testing.expect(std.mem.eql(u8, val, "v"));
 
     var w2 = model.beginWrite();
@@ -120,7 +120,7 @@ test "txn atomicity and abort" {
     w2.abort();
     var snap2 = try model.beginRead(id);
     defer snap2.deinit();
-    const val2 = snap2.get("k").?.*;
+    const val2 = snap2.get("k") orelse unreachable;
     try std.testing.expect(std.mem.eql(u8, val2, "v"));
 }
 
@@ -139,6 +139,6 @@ test "snapshot immutability" {
     try w2.put("a", "2");
     _ = try w2.commit();
 
-    const val = snap.get("a").?.*;
+    const val = snap.get("a") orelse unreachable;
     try std.testing.expect(std.mem.eql(u8, val, "1"));
 }

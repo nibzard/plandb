@@ -9,6 +9,7 @@ const ref_model = @import("ref_model.zig");
 const txn = @import("txn.zig");
 const wal = @import("wal.zig");
 const pager_mod = @import("pager.zig");
+const snapshot = @import("snapshot.zig");
 const testing = std.testing;
 
 pub const Db = struct {
@@ -17,6 +18,7 @@ pub const Db = struct {
     wal: ?wal.WriteAheadLog,
     pager: ?pager_mod.Pager,
     next_txn_id: u64,
+    snapshot_registry: ?snapshot.SnapshotRegistry,
 
     pub fn open(allocator: std.mem.Allocator) !Db {
         return .{
@@ -25,6 +27,7 @@ pub const Db = struct {
             .wal = null,
             .pager = null,
             .next_txn_id = 1,
+            .snapshot_registry = null, // In-memory databases don't need snapshot registry
         };
     }
 
@@ -35,8 +38,13 @@ pub const Db = struct {
         // Open WAL
         const wal_inst = try wal.WriteAheadLog.open(wal_path, allocator);
 
-        // Get next transaction ID from current state
-        const next_txn_id = pager.getCommittedTxnId() + 1;
+        // Get current state from pager
+        const committed_txn_id = pager.getCommittedTxnId();
+        const root_page_id = pager.getRootPageId();
+        const next_txn_id = committed_txn_id + 1;
+
+        // Initialize snapshot registry with current state
+        const snapshot_registry = try snapshot.SnapshotRegistry.init(allocator, committed_txn_id, root_page_id);
 
         return .{
             .allocator = allocator,
@@ -44,6 +52,7 @@ pub const Db = struct {
             .wal = wal_inst,
             .pager = pager,
             .next_txn_id = next_txn_id,
+            .snapshot_registry = snapshot_registry,
         };
     }
 
@@ -55,21 +64,57 @@ pub const Db = struct {
         if (self.pager) |*pager_inst| {
             pager_inst.close();
         }
+        if (self.snapshot_registry) |*registry| {
+            registry.deinit();
+        }
     }
 
     pub fn beginReadLatest(self: *Db) !ReadTxn {
+        // For file-based databases, use snapshot registry
+        if (self.snapshot_registry) |*registry| {
+            const latest_txn_id = registry.getCurrentTxnId();
+            const latest_root = registry.getLatestSnapshot();
+
+            return ReadTxn{
+                .snapshot = try self.model.beginRead(self.model.current_txn_id),
+                .allocator = self.allocator,
+                .db = self,
+                .txn_id = latest_txn_id,
+                .root_page_id = latest_root,
+            };
+        }
+
+        // For in-memory databases, use model
         return ReadTxn{
             .snapshot = try self.model.beginRead(self.model.current_txn_id),
             .allocator = self.allocator,
             .db = self,
+            .txn_id = self.model.current_txn_id,
+            .root_page_id = 0, // Not used for in-memory
         };
     }
 
     pub fn beginReadAt(self: *Db, txn_id: u64) !ReadTxn {
+        // For file-based databases, use snapshot registry
+        if (self.snapshot_registry) |*registry| {
+            const root_page_id = registry.getSnapshotRoot(txn_id) orelse return error.SnapshotNotFound;
+
+            return ReadTxn{
+                .snapshot = try self.model.beginRead(txn_id),
+                .allocator = self.allocator,
+                .db = self,
+                .txn_id = txn_id,
+                .root_page_id = root_page_id,
+            };
+        }
+
+        // For in-memory databases, use model
         return ReadTxn{
             .snapshot = try self.model.beginRead(txn_id),
             .allocator = self.allocator,
             .db = self,
+            .txn_id = txn_id,
+            .root_page_id = 0, // Not used for in-memory
         };
     }
 
@@ -131,6 +176,14 @@ pub const Db = struct {
         // Mark transaction as committed
         try txn_ctx.commit();
 
+        // Get new root page ID after commit (pager should have updated this)
+        const new_root_page_id = pager_inst.getRootPageId();
+
+        // Register new snapshot in snapshot registry
+        if (self.snapshot_registry) |*registry| {
+            try registry.registerSnapshot(commit_record.txn_id, new_root_page_id);
+        }
+
         return commit_lsn;
     }
 };
@@ -139,13 +192,17 @@ pub const ReadTxn = struct {
     snapshot: ref_model.SnapshotState,
     allocator: std.mem.Allocator,
     db: *Db,
+    txn_id: u64, // Transaction ID for this snapshot
+    root_page_id: u64, // Root page ID for this snapshot
 
     pub fn get(self: *ReadTxn, key: []const u8) ?[]const u8 {
-        // For file-based databases, use B+tree operations
+        // For file-based databases, use B+tree operations with snapshot root
         if (self.db.pager) |*pager| {
             // Use a temporary buffer for the value (would be allocated in real implementation)
             var value_buffer: [1024]u8 = undefined;
-            if (pager.getBtreeValue(key, &value_buffer) catch |err| switch (err) {
+
+            // Read from the snapshot's root page, not the current root
+            if (pager.getBtreeValueAtRoot(key, &value_buffer, self.root_page_id) catch |err| switch (err) {
                 error.CorruptBtree => return null,
                 error.BufferTooSmall => return null,
                 else => return null,
@@ -164,15 +221,99 @@ pub const ReadTxn = struct {
     }
 
     pub fn scan(self: *ReadTxn, prefix: []const u8) ![]const KV {
-        var items = std.ArrayList(KV).initCapacity(self.allocator, 0) catch unreachable;
+        // For file-based databases, use B+tree iterator
+        if (self.db.pager) |*pager| {
+            // Create range iterator for prefix scan
+            // Start with prefix, end with next character after prefix
+            const start_key = prefix;
+
+            // Calculate end_key by finding next string after prefix
+            var end_key_buffer: [256]u8 = undefined;
+            var end_key_len: usize = prefix.len;
+            if (prefix.len < end_key_buffer.len) {
+                @memcpy(end_key_buffer[0..prefix.len], prefix);
+
+                // Find last character and increment it (simple approach)
+                if (prefix.len > 0) {
+                    var last_char_idx = prefix.len - 1;
+                    while (true) {
+                        if (end_key_buffer[last_char_idx] == 255) {
+                            if (last_char_idx == 0) {
+                                // All characters were 255, set end_key to empty to get all keys
+                                end_key_len = 0;
+                                break;
+                            }
+                            end_key_buffer[last_char_idx] = 0;
+                            last_char_idx -= 1;
+                        } else {
+                            end_key_buffer[last_char_idx] += 1;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            const end_key = if (end_key_len > 0) end_key_buffer[0..end_key_len] else null;
+
+            var iter = try pager.createIteratorWithRangeAtRoot(self.allocator, start_key, end_key, self.root_page_id);
+
+            // First pass: count items to allocate exact size
+            var item_count: usize = 0;
+            var temp_iter = try pager.createIteratorWithRangeAtRoot(self.allocator, start_key, end_key, self.root_page_id);
+            while (try temp_iter.next()) |kv| {
+                if (std.mem.startsWith(u8, kv.key, prefix)) {
+                    item_count += 1;
+                }
+            }
+
+            // Allocate exact sized array
+            var items = try self.allocator.alloc(KV, item_count);
+            var current_index: usize = 0;
+
+            while (try iter.next()) |kv| {
+                // Double-check prefix match (in case our end_key calculation isn't perfect)
+                if (std.mem.startsWith(u8, kv.key, prefix)) {
+                    // Copy key and value (they're in temporary buffers)
+                    const key_copy = try self.allocator.alloc(u8, kv.key.len);
+                    @memcpy(key_copy, kv.key);
+
+                    const value_copy = try self.allocator.alloc(u8, kv.value.len);
+                    @memcpy(value_copy, kv.value);
+
+                    items[current_index] = .{ .key = key_copy, .value = value_copy };
+                    current_index += 1;
+                }
+            }
+
+            return items;
+        }
+
+        // For in-memory databases, use the reference model
+        // First pass: count matching items
+        var item_count: usize = 0;
         var it = self.snapshot.iterator();
         while (it.next()) |entry| {
             if (std.mem.startsWith(u8, entry.key_ptr.*, prefix)) {
-                try items.append(self.allocator, .{ .key = entry.key_ptr.*, .value = entry.value_ptr.* });
+                item_count += 1;
             }
         }
-        std.mem.sort(KV, items.items, {}, kvLess);
-        return items.toOwnedSlice(self.allocator);
+
+        // Allocate exact sized array
+        var items = try self.allocator.alloc(KV, item_count);
+        var current_index: usize = 0;
+
+        // Reset iterator and collect items
+        it = self.snapshot.iterator();
+        while (it.next()) |entry| {
+            if (std.mem.startsWith(u8, entry.key_ptr.*, prefix)) {
+                items[current_index] = .{ .key = entry.key_ptr.*, .value = entry.value_ptr.* };
+                current_index += 1;
+            }
+        }
+
+        // Sort the results
+        std.mem.sort(KV, items, {}, kvLess);
+        return items;
     }
 
     pub fn close(self: *ReadTxn) void {
@@ -252,7 +393,7 @@ test "range scan stable" {
     var db = try Db.open(std.testing.allocator);
     defer db.close();
 
-    var w = db.beginWrite();
+    var w = try db.beginWrite();
     try w.put("a1", "1");
     try w.put("a2", "2");
     const id = try w.commit();
@@ -393,4 +534,78 @@ test "Two-phase_commit_state_transitions" {
 
     // Cannot commit again
     try testing.expectError(error.TransactionNotPreparing, ctx.commit());
+}
+
+test "Snapshot_registry_functionality" {
+    const test_db = "test_snapshots.db";
+    const test_wal = "test_snapshots.wal";
+    defer {
+        std.fs.cwd().deleteFile(test_db) catch {};
+        std.fs.cwd().deleteFile(test_wal) catch {};
+    }
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var db = try Db.openWithFile(arena.allocator(), test_db, test_wal);
+    defer db.close();
+
+    // Should have snapshot registry initialized
+    try testing.expect(db.snapshot_registry != null);
+    var registry = &db.snapshot_registry.?;
+
+    // Initial state - should have genesis snapshot
+    try testing.expectEqual(@as(u64, 0), registry.getCurrentTxnId());
+    try testing.expect(registry.hasSnapshot(0));
+
+    // Write some data and commit
+    var w1 = try db.beginWrite();
+    try w1.put("key1", "value1");
+    const txn_id_1 = try w1.commit();
+
+    // Registry should be updated with new snapshot
+    try testing.expectEqual(txn_id_1, registry.getCurrentTxnId());
+    try testing.expect(registry.hasSnapshot(txn_id_1));
+
+    // Write more data
+    var w2 = try db.beginWrite();
+    try w2.put("key2", "value2");
+    const txn_id_2 = try w2.commit();
+
+    // Should have all snapshots
+    try testing.expectEqual(txn_id_2, registry.getCurrentTxnId());
+    try testing.expect(registry.hasSnapshot(0));
+    try testing.expect(registry.hasSnapshot(txn_id_1));
+    try testing.expect(registry.hasSnapshot(txn_id_2));
+
+    // Read from different snapshots
+    var r1 = try db.beginReadAt(txn_id_1);
+    defer r1.close();
+    try testing.expectEqual(txn_id_1, r1.txn_id);
+
+    var r_latest = try db.beginReadLatest();
+    defer r_latest.close();
+    try testing.expectEqual(txn_id_2, r_latest.txn_id);
+}
+
+test "Snapshot_registry_cleanup" {
+    var registry = try snapshot.SnapshotRegistry.init(std.testing.allocator, 0, 0);
+    defer registry.deinit();
+
+    // Add some snapshots
+    try registry.registerSnapshot(1, 5);
+    try registry.registerSnapshot(2, 6);
+    try registry.registerSnapshot(3, 7);
+    try registry.registerSnapshot(4, 8);
+    try registry.registerSnapshot(5, 9);
+
+    try testing.expectEqual(@as(usize, 6), registry.snapshots.count());
+
+    // Clean up keeping last 2 snapshots
+    const removed = try registry.cleanupOldSnapshots(100, 2);
+    try testing.expectEqual(@as(usize, 3), removed);
+    try testing.expectEqual(@as(usize, 3), registry.snapshots.count());
+    try testing.expect(!registry.hasSnapshot(3));
+    try testing.expect(registry.hasSnapshot(4));
+    try testing.expect(registry.hasSnapshot(5));
 }

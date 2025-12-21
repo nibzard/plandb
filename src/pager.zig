@@ -219,6 +219,9 @@ pub const BtreeLeafPayload = struct {
     // Maximum number of keys per leaf (conservative estimate)
     pub const MAX_KEYS_PER_LEAF: usize = 200;
 
+    // Minimum number of keys per leaf before considering merge (50% fill factor)
+    pub const MIN_KEYS_PER_LEAF: usize = MAX_KEYS_PER_LEAF / 2;
+
     // Get the slot array size in bytes for given key count
     pub fn getSlotArraySize(key_count: u16) usize {
         return @as(usize, key_count) * @sizeOf(u16);
@@ -286,7 +289,7 @@ pub const BtreeLeafPayload = struct {
         if (slot_idx >= node_header.key_count) return error.SlotIndexOutOfBounds;
 
         // Create buffer for slot array
-        var slot_buffer: [MAX_KEYS_PER_LEAF + 1]u16 = undefined;
+        var slot_buffer: [BtreeLeafPayload.MAX_KEYS_PER_LEAF + 1]u16 = undefined;
         const slot_array = self.getSlotArray(payload_bytes, &slot_buffer);
         const entry_offset = slot_array[slot_idx];
 
@@ -373,7 +376,7 @@ pub const BtreeLeafPayload = struct {
         }
 
         // Create buffer for slot array operations
-        var slot_buffer: [MAX_KEYS_PER_LEAF + 1]u16 = undefined;
+        var slot_buffer: [BtreeLeafPayload.MAX_KEYS_PER_LEAF + 1]u16 = undefined;
         const slot_array = self.getSlotArrayMut(payload_bytes, &slot_buffer);
 
         // Shift slots to make room - but only if we have existing slots
@@ -396,6 +399,89 @@ pub const BtreeLeafPayload = struct {
         return insert_pos;
     }
 
+    // Remove an entry from the leaf (returns true if removed, false if not found)
+    pub fn removeEntry(self: *Self, payload_bytes: []u8, key: []const u8) !bool {
+        const node_header = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
+
+        if (node_header.key_count == 0) return false; // Empty leaf
+
+        // Find the key in the leaf
+        var remove_pos: ?u16 = null;
+        var i: u16 = 0;
+        while (i < node_header.key_count) {
+            const entry = self.getEntry(payload_bytes, i) catch break;
+            if (std.mem.eql(u8, key, entry.key)) {
+                remove_pos = i;
+                break;
+            }
+            i += 1;
+        }
+
+        if (remove_pos == null) return false; // Key not found
+
+        // Create buffer for slot array operations
+        var slot_buffer: [MAX_KEYS_PER_LEAF]u16 = undefined;
+        const slot_array = self.getSlotArrayMut(payload_bytes, &slot_buffer);
+
+        // Shift slots down to remove the entry
+        const pos = remove_pos.?;
+        std.mem.copyForwards(u16,
+            slot_array[pos..node_header.key_count - 1],
+            slot_array[pos + 1..node_header.key_count]);
+
+        // Write the updated slot array back to payload
+        self.writeSlotArray(payload_bytes, slot_array[0..node_header.key_count - 1]);
+
+        // Update key count
+        const header_mut = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
+        header_mut.key_count -= 1;
+
+        return true;
+    }
+
+    // Check if leaf is underflowed (below minimum fill factor)
+    pub fn isUnderflowed(self: *const Self, payload_bytes: []const u8) bool {
+        _ = self;
+        const node_header = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
+        return node_header.key_count < MIN_KEYS_PER_LEAF;
+    }
+
+    // Check if two leaves can be merged (total keys <= MAX_KEYS_PER_LEAF)
+    pub fn canMergeWith(self: *const Self, left_payload: []const u8, right_payload: []const u8) bool {
+        _ = self;
+        const left_header = std.mem.bytesAsValue(BtreeNodeHeader, left_payload[0..BtreeNodeHeader.SIZE]);
+        const right_header = std.mem.bytesAsValue(BtreeNodeHeader, right_payload[0..BtreeNodeHeader.SIZE]);
+        return (left_header.key_count + right_header.key_count) <= MAX_KEYS_PER_LEAF;
+    }
+
+    // Merge two leaf nodes (right into left)
+    pub fn mergeWith(self: *Self, left_payload: []u8, right_payload: []const u8) !void {
+        const left_header = std.mem.bytesAsValue(BtreeNodeHeader, left_payload[0..BtreeNodeHeader.SIZE]);
+        const right_header = std.mem.bytesAsValue(BtreeNodeHeader, right_payload[0..BtreeNodeHeader.SIZE]);
+
+        if (!self.canMergeWith(left_payload, right_payload)) return error.CannotMerge;
+
+        // Create buffer for slot arrays
+        var slot_buffer: [MAX_KEYS_PER_LEAF * 2]u16 = undefined;
+
+        // Get existing slots from both leaves
+        _ = self.getSlotArray(left_payload, slot_buffer[0..]);
+        const right_slot_start = left_header.key_count;
+        const right_slot_array = self.getSlotArray(right_payload, slot_buffer[right_slot_start..]);
+
+        // Copy all entries from right leaf to left leaf
+        var i: u16 = 0;
+        while (i < right_header.key_count) {
+            const right_entry = self.getEntryWithSlots(right_payload, i, right_slot_array) catch break;
+            _ = try self.addEntry(left_payload, right_entry.key, right_entry.value);
+            i += 1;
+        }
+
+        // Update left key count
+        const left_header_mut = std.mem.bytesAsValue(BtreeNodeHeader, left_payload[0..BtreeNodeHeader.SIZE]);
+        left_header_mut.key_count += right_header.key_count;
+    }
+
     // Validate leaf structure and invariants
     pub fn validate(self: *const Self, payload_bytes: []const u8) !void {
         const node_header = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
@@ -412,7 +498,7 @@ pub const BtreeLeafPayload = struct {
         }
 
         // Create buffer for slot array
-        var slot_buffer: [MAX_KEYS_PER_LEAF + 1]u16 = undefined;
+        var slot_buffer: [BtreeLeafPayload.MAX_KEYS_PER_LEAF + 1]u16 = undefined;
         const slot_array = self.getSlotArray(payload_bytes, &slot_buffer);
         const entry_data_start = BtreeNodeHeader.SIZE + slot_array_size;
 
@@ -450,7 +536,7 @@ pub const BtreeLeafPayload = struct {
         const node_header = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
 
         // Create buffer for slot array
-        var slot_buffer: [MAX_KEYS_PER_LEAF + 1]u16 = undefined;
+        var slot_buffer: [BtreeLeafPayload.MAX_KEYS_PER_LEAF + 1]u16 = undefined;
         const slot_array = self.getSlotArray(payload_bytes, &slot_buffer);
 
         // Binary search for key
@@ -537,6 +623,9 @@ pub const BtreeInternalPayload = struct {
 
     // Maximum number of keys per internal node (conservative estimate)
     pub const MAX_KEYS_PER_INTERNAL: usize = 200;
+
+    // Minimum number of keys per internal node before considering merge (50% fill factor)
+    pub const MIN_KEYS_PER_INTERNAL: usize = MAX_KEYS_PER_INTERNAL / 2;
 
     // Get child page IDs array size in bytes for given key count
     pub fn getChildPageIdsSize(key_count: u16) usize {
@@ -780,6 +869,114 @@ pub const BtreeInternalPayload = struct {
             }
             prev_key = separator_key;
         }
+    }
+
+    // Check if internal node is underflowed (below minimum fill factor)
+    pub fn isUnderflowed(self: *const Self, payload_bytes: []const u8) bool {
+        _ = self;
+        const node_header = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
+        return node_header.key_count < MIN_KEYS_PER_INTERNAL;
+    }
+
+    // Check if two internal nodes can be merged (total keys <= MAX_KEYS_PER_INTERNAL)
+    pub fn canMergeWith(self: *const Self, left_payload: []const u8, right_payload: []const u8, separator_key: []const u8) bool {
+        _ = self;
+        _ = separator_key;
+        const left_header = std.mem.bytesAsValue(BtreeNodeHeader, left_payload[0..BtreeNodeHeader.SIZE]);
+        const right_header = std.mem.bytesAsValue(BtreeNodeHeader, right_payload[0..BtreeNodeHeader.SIZE]);
+        // Total keys = left_keys + right_keys + 1 (for separator key)
+        return (left_header.key_count + right_header.key_count + 1) <= MAX_KEYS_PER_INTERNAL;
+    }
+
+    // Merge two internal nodes (right into left) with separator key
+    pub fn mergeWith(self: *Self, left_payload: []u8, right_payload: []const u8, separator_key: []const u8) !void {
+        const left_header = std.mem.bytesAsValue(BtreeNodeHeader, left_payload[0..BtreeNodeHeader.SIZE]);
+        const right_header = std.mem.bytesAsValue(BtreeNodeHeader, right_payload[0..BtreeNodeHeader.SIZE]);
+
+        if (!self.canMergeWith(left_payload, right_payload, separator_key)) return error.CannotMerge;
+
+        var internal = BtreeInternalPayload{};
+
+        // Use stack buffers to avoid dynamic allocation
+        var left_children: [MAX_KEYS_PER_INTERNAL + 1]u64 = undefined;
+        var right_children: [MAX_KEYS_PER_INTERNAL + 1]u64 = undefined;
+
+        const left_child_count = left_header.key_count + 1;
+        const right_child_count = right_header.key_count + 1;
+
+        // Extract child pointers from both nodes
+        for (0..left_child_count) |i| {
+            left_children[i] = try internal.getChildPageId(left_payload, @intCast(i));
+        }
+        for (0..right_child_count) |i| {
+            right_children[i] = try internal.getChildPageId(right_payload, @intCast(i));
+        }
+
+        // Store all separator keys with their lengths to avoid reallocation
+        const max_keys = MAX_KEYS_PER_INTERNAL;
+        var separator_keys: [max_keys][]const u8 = undefined;
+        var separator_lens: [max_keys]u16 = undefined;
+        var total_keys: u16 = 0;
+
+        // Copy left separator keys
+        for (0..left_header.key_count) |i| {
+            const key = try internal.getSeparatorKey(left_payload, @intCast(i));
+            separator_keys[total_keys] = key;
+            separator_lens[total_keys] = @intCast(key.len);
+            total_keys += 1;
+        }
+
+        // Add the separator key that was between the nodes
+        separator_keys[total_keys] = separator_key;
+        separator_lens[total_keys] = @intCast(separator_key.len);
+        total_keys += 1;
+
+        // Copy right separator keys
+        for (0..right_header.key_count) |i| {
+            const key = try internal.getSeparatorKey(right_payload, @intCast(i));
+            separator_keys[total_keys] = key;
+            separator_lens[total_keys] = @intCast(key.len);
+            total_keys += 1;
+        }
+
+        // Clear left node payload completely
+        @memset(left_payload[BtreeNodeHeader.SIZE..], 0);
+
+        // Update left node key count
+        const left_header_mut = std.mem.bytesAsValue(BtreeNodeHeader, left_payload[0..BtreeNodeHeader.SIZE]);
+        left_header_mut.key_count = total_keys;
+
+        // Copy all child pointers to left node
+        const total_children = left_child_count + right_child_count;
+        for (0..total_children) |i| {
+            if (i < left_child_count) {
+                try internal.setChildPageId(left_payload, @intCast(i), left_children[i]);
+            } else {
+                try internal.setChildPageId(left_payload, @intCast(i), right_children[i - left_child_count]);
+            }
+        }
+
+        // Build separator keys area (in reverse order since we build from the end)
+        var separator_area = internal.getSeparatorKeyArea(left_payload);
+        var separator_offset: usize = separator_area.len;
+
+        // Copy separator keys in reverse order (rightmost first)
+        var i: u16 = total_keys;
+        while (i > 0) {
+            i -= 1;
+            const key = separator_keys[i];
+            const key_len = separator_lens[i];
+            const entry_size = @sizeOf(u16) + key_len;
+            separator_offset -= entry_size;
+
+            const separator_bytes = separator_area[separator_offset..separator_offset + entry_size];
+            const separator_len_ptr = @as(*[2]u8, @ptrCast(@alignCast(@constCast(separator_bytes).ptr)));
+            std.mem.writeInt(u16, separator_len_ptr, key_len, .little);
+            @memcpy(@constCast(separator_bytes[2..][0..key_len]), key);
+        }
+
+        // Clear right sibling pointer in left node (since we're merging)
+        left_header_mut.right_sibling = 0;
     }
 };
 
@@ -1419,6 +1616,21 @@ pub const Pager = struct {
         return self.current_meta.meta.log_tail_lsn;
     }
 
+    // Create a B+tree iterator for range scans
+    pub fn createIterator(self: *Self, allocator: std.mem.Allocator) !BtreeIterator {
+        return BtreeIterator.init(self, allocator);
+    }
+
+    // Create a B+tree iterator with range bounds
+    pub fn createIteratorWithRange(self: *Self, allocator: std.mem.Allocator, start_key: ?[]const u8, end_key: ?[]const u8) !BtreeIterator {
+        return BtreeIterator.initWithRange(self, allocator, start_key, end_key);
+    }
+
+    // Create iterator with range at specific root page (for snapshots)
+    pub fn createIteratorWithRangeAtRoot(self: *Self, allocator: std.mem.Allocator, start_key: ?[]const u8, end_key: ?[]const u8, root_page_id: u64) !BtreeIterator {
+        return BtreeIterator.initWithRangeAtRoot(self, allocator, start_key, end_key, root_page_id);
+    }
+
     // Page allocator convenience methods
     pub fn allocatePage(self: *Self) !u64 {
         if (self.page_allocator) |*alloc| {
@@ -1484,6 +1696,38 @@ pub const Pager = struct {
     // Find a key-value pair in the B+tree (read operation)
     pub fn getBtreeValue(self: *Self, key: []const u8, buffer: []u8) !?[]const u8 {
         const root_page_id = self.getRootPageId();
+        if (root_page_id == 0) return null; // Empty tree
+
+        var current_page_id = root_page_id;
+
+        while (true) {
+            var page_buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+            try self.readPage(current_page_id, &page_buffer);
+
+            const header = try validatePage(&page_buffer);
+            if (header.page_type == .btree_leaf) {
+                // Found leaf - search for key
+                const value = getValueFromBtreeLeaf(&page_buffer, key);
+                if (value) |val| {
+                    if (val.len > buffer.len) return error.BufferTooSmall;
+                    @memcpy(buffer[0..val.len], val);
+                    return buffer[0..val.len];
+                }
+                return null;
+            } else if (header.page_type == .btree_internal) {
+                // Find child to traverse
+                const child_page_id = findChildInBtreeInternal(&page_buffer, key) orelse return error.CorruptBtree;
+                if (child_page_id == 0) return error.CorruptBtree;
+
+                current_page_id = child_page_id;
+            } else {
+                return error.InvalidPageType;
+            }
+        }
+    }
+
+    // Find a key-value pair in the B+tree at a specific root page (for snapshots)
+    pub fn getBtreeValueAtRoot(self: *Self, key: []const u8, buffer: []u8, root_page_id: u64) !?[]const u8 {
         if (root_page_id == 0) return null; // Empty tree
 
         var current_page_id = root_page_id;
@@ -1838,12 +2082,7 @@ pub const Pager = struct {
             var cow_buffer = try self.copyOnWritePage(page_info.buffer, txn_id);
 
             if (i == path.len() - 1) {
-                // This is the leaf page - mark as modified
-                // For simplicity, we're not implementing actual deletion yet
-                // In a full implementation, we'd:
-                // 1. Remove the key from the leaf slot array
-                // 2. Handle underflow and potential merges
-                // 3. Update parent nodes if needed
+                // This is the leaf page - actually remove the key
                 const header = try PageHeader.decode(cow_buffer[0..PageHeader.SIZE]);
                 if (header.page_type != .btree_leaf) return error.InvalidPageType;
 
@@ -1857,6 +2096,37 @@ pub const Pager = struct {
                     std.debug.print("Leaf validation error during delete: {}\n", .{validation_err});
                     return validation_err;
                 };
+
+                // Remove the key from the leaf
+                const removed = try leaf.removeEntry(payload_bytes, key);
+                if (!removed) return false; // Should not happen as we checked earlier
+
+                // Update payload length in header - after removal, the payload may be smaller
+                // TODO: Implement entry data area compaction to reclaim space
+                // For now, we keep the original payload length since we're not compacting the entry data area
+
+                var header_mut = std.mem.bytesAsValue(PageHeader, cow_buffer[0..PageHeader.SIZE]);
+                header_mut.payload_len = @intCast(payload_end - payload_start);
+
+                // Handle underflow and potential merges
+                const node_header = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
+                if (leaf.isUnderflowed(payload_bytes) and path.len() > 1) {
+                    // Leaf is underflowed, try to merge with sibling
+                    _ = path.pageAt(path.len() - 2);
+
+                    // For now, just log that underflow was detected
+                    // Full merge implementation would:
+                    // 1. Find left/right sibling through parent
+                    // 2. Try to borrow or merge with sibling
+                    // 3. Update parent pointers if merged
+                    // 4. Handle recursive underflow up the tree
+                    std.debug.print("Leaf underflow detected: {d} keys (min: {d})\n", .{ node_header.key_count, BtreeLeafPayload.MIN_KEYS_PER_LEAF });
+                }
+
+                // Recalculate checksums
+                header_mut.header_crc32c = header_mut.calculateHeaderChecksum();
+                const page_data = cow_buffer[0 .. PageHeader.SIZE + header_mut.payload_len];
+                header_mut.page_crc32c = calculatePageChecksum(page_data);
             }
 
             // Write the modified page
@@ -2315,6 +2585,35 @@ pub fn addEntryToBtreeLeaf(page_buffer: []u8, key: []const u8, value: []const u8
     header_mut.page_crc32c = calculatePageChecksum(page_data);
 }
 
+// Remove a key-value pair from a B+tree leaf page
+pub fn removeEntryFromBtreeLeaf(page_buffer: []u8, key: []const u8) !bool {
+    if (page_buffer.len < PageHeader.SIZE) return error.BufferTooSmall;
+
+    // Validate this is a btree leaf page
+    const header = try PageHeader.decode(page_buffer[0..PageHeader.SIZE]);
+    if (header.page_type != .btree_leaf) return error.InvalidPageType;
+
+    const payload_start = PageHeader.SIZE;
+    const payload_end = payload_start + header.payload_len;
+    const payload_bytes = page_buffer[payload_start..payload_end];
+
+    // Remove the entry
+    var leaf = BtreeLeafPayload{};
+    const removed = try leaf.removeEntry(payload_bytes, key);
+    if (!removed) return false;
+
+    // Update payload length in header
+    var header_mut = std.mem.bytesAsValue(PageHeader, page_buffer[0..PageHeader.SIZE]);
+    header_mut.payload_len = @intCast(payload_end - payload_start);
+
+    // Recalculate checksums
+    header_mut.header_crc32c = header_mut.calculateHeaderChecksum();
+    const page_data = page_buffer[0 .. PageHeader.SIZE + header_mut.payload_len];
+    header_mut.page_crc32c = calculatePageChecksum(page_data);
+
+    return true;
+}
+
 // Get a value from a B+tree leaf page
 pub fn getValueFromBtreeLeaf(page_buffer: []const u8, key: []const u8) ?[]const u8 {
     if (page_buffer.len < PageHeader.SIZE) return null;
@@ -2729,6 +3028,298 @@ pub const BtreePath = struct {
 
     pub fn pageAt(self: *const BtreePath, index: usize) struct { page_id: u64, buffer: []const u8 } {
         return .{ .page_id = self.page_ids.items[index], .buffer = &self.buffers.items[index] };
+    }
+};
+
+// B+tree iterator for efficient range scans
+pub const BtreeIterator = struct {
+    pager: *Pager,
+    allocator: std.mem.Allocator,
+
+    // Current position state
+    current_page_id: u64,
+    current_page_buffer: [DEFAULT_PAGE_SIZE]u8,
+    current_slot_index: u16,
+
+    // Range bounds (both optional)
+    start_key: ?[]const u8 = null,  // inclusive
+    end_key: ?[]const u8 = null,    // exclusive
+
+    // Iteration state
+    at_end: bool = false,
+
+    // Temporary storage for key/value pairs
+    key_buffer: [256]u8 = undefined,   // Maximum key length
+    value_buffer: [1024]u8 = undefined, // Maximum value length
+
+    const Self = @This();
+
+    pub fn init(pager: *Pager, allocator: std.mem.Allocator) !Self {
+        const root_page_id = pager.getRootPageId();
+        if (root_page_id == 0) return error.TreeEmpty;
+
+        var iterator = Self{
+            .pager = pager,
+            .allocator = allocator,
+            .current_page_id = 0,
+            .current_page_buffer = std.mem.zeroes([DEFAULT_PAGE_SIZE]u8),
+            .current_slot_index = 0,
+        };
+
+        // Find the leftmost leaf page
+        try iterator.seekToFirstLeaf(root_page_id);
+
+        return iterator;
+    }
+
+    pub fn initWithRange(pager: *Pager, allocator: std.mem.Allocator, start_key: ?[]const u8, end_key: ?[]const u8) !Self {
+        const root_page_id = pager.getRootPageId();
+        if (root_page_id == 0) return error.TreeEmpty;
+
+        var iterator = Self{
+            .pager = pager,
+            .allocator = allocator,
+            .current_page_id = 0,
+            .current_page_buffer = std.mem.zeroes([DEFAULT_PAGE_SIZE]u8),
+            .current_slot_index = 0,
+            .start_key = start_key,
+            .end_key = end_key,
+        };
+
+        // Position at the first key >= start_key
+        if (start_key) |key| {
+            try iterator.seekToKey(key);
+        } else {
+            try iterator.seekToFirstLeaf(root_page_id);
+        }
+
+        return iterator;
+    }
+
+    pub fn initWithRangeAtRoot(pager: *Pager, allocator: std.mem.Allocator, start_key: ?[]const u8, end_key: ?[]const u8, root_page_id: u64) !Self {
+        if (root_page_id == 0) return error.TreeEmpty;
+
+        var iterator = Self{
+            .pager = pager,
+            .allocator = allocator,
+            .current_page_id = 0,
+            .current_page_buffer = std.mem.zeroes([DEFAULT_PAGE_SIZE]u8),
+            .current_slot_index = 0,
+            .start_key = start_key,
+            .end_key = end_key,
+        };
+
+        // Position at the first key >= start_key
+        if (start_key) |key| {
+            try iterator.seekToKeyAtRoot(key, root_page_id);
+        } else {
+            try iterator.seekToFirstLeaf(root_page_id);
+        }
+
+        return iterator;
+    }
+
+    // Seek to the first leaf page in the tree
+    fn seekToFirstLeaf(self: *Self, root_page_id: u64) !void {
+        var current_page_id = root_page_id;
+
+        while (true) {
+            try self.pager.readPage(current_page_id, &self.current_page_buffer);
+            const header = try validatePage(&self.current_page_buffer);
+
+            if (header.page_type == .btree_leaf) {
+                // Found leaf page
+                self.current_page_id = current_page_id;
+                self.current_slot_index = 0;
+
+                // If we have a start_key, find the first slot >= start_key
+                if (self.start_key) |start_key| {
+                    const leaf_payload = BtreeLeafPayload{};
+                    if (leaf_payload.findKey(&self.current_page_buffer, start_key)) |slot_idx| {
+                        self.current_slot_index = slot_idx;
+                    } else {
+                        // Key not found, find insertion point
+                        try self.findInsertPosition(&self.current_page_buffer, start_key);
+                    }
+                }
+                return;
+            } else if (header.page_type == .btree_internal) {
+                // Navigate to leftmost child
+                const internal_payload = BtreeInternalPayload{};
+                current_page_id = try internal_payload.getChildPageId(&self.current_page_buffer, 0);
+            } else {
+                return error.InvalidPageType;
+            }
+        }
+    }
+
+    // Seek to the leaf containing the given key (or the next greater key)
+    fn seekToKey(self: *Self, key: []const u8) !void {
+        const root_page_id = self.pager.getRootPageId();
+        var current_page_id = root_page_id;
+
+        while (true) {
+            try self.pager.readPage(current_page_id, &self.current_page_buffer);
+            const header = try validatePage(&self.current_page_buffer);
+
+            if (header.page_type == .btree_leaf) {
+                // Found leaf page
+                self.current_page_id = current_page_id;
+
+                // Find the first key >= target key
+                if (getValueFromBtreeLeaf(&self.current_page_buffer, key) != null) {
+                    // Key found, get its slot index
+                    const leaf_payload = BtreeLeafPayload{};
+                    const slot_idx = leaf_payload.findKey(&self.current_page_buffer, key);
+                    self.current_slot_index = slot_idx orelse 0;
+                } else {
+                    try self.findInsertPosition(&self.current_page_buffer, key);
+                }
+                return;
+            } else if (header.page_type == .btree_internal) {
+                // Find appropriate child
+                const child_page_id = findChildInBtreeInternal(&self.current_page_buffer, key) orelse return error.CorruptBtree;
+                current_page_id = child_page_id;
+            } else {
+                return error.InvalidPageType;
+            }
+        }
+    }
+
+    fn seekToKeyAtRoot(self: *Self, key: []const u8, root_page_id: u64) !void {
+        var current_page_id = root_page_id;
+
+        while (true) {
+            try self.pager.readPage(current_page_id, &self.current_page_buffer);
+            const header = try validatePage(&self.current_page_buffer);
+
+            if (header.page_type == .btree_leaf) {
+                // Found leaf page
+                self.current_page_id = current_page_id;
+
+                // Find the first key >= target key
+                if (getValueFromBtreeLeaf(&self.current_page_buffer, key) != null) {
+                    // Key found, get its slot index
+                    const leaf_payload = BtreeLeafPayload{};
+                    const slot_idx = leaf_payload.findKey(&self.current_page_buffer, key);
+                    self.current_slot_index = slot_idx orelse 0;
+                } else {
+                    try self.findInsertPosition(&self.current_page_buffer, key);
+                }
+                return;
+            } else if (header.page_type == .btree_internal) {
+                // Find appropriate child
+                const child_page_id = findChildInBtreeInternal(&self.current_page_buffer, key) orelse return error.CorruptBtree;
+                current_page_id = child_page_id;
+            } else {
+                return error.InvalidPageType;
+            }
+        }
+    }
+
+    // Find the insertion position for a key in a leaf (first key > target)
+    fn findInsertPosition(self: *Self, page_buffer: []const u8, key: []const u8) !void {
+        const leaf_payload = BtreeLeafPayload{};
+        const header = std.mem.bytesAsValue(BtreeNodeHeader, page_buffer[0..BtreeNodeHeader.SIZE]);
+
+        var slot_buffer: [BtreeLeafPayload.MAX_KEYS_PER_LEAF + 1]u16 = undefined;
+        const slot_array = leaf_payload.getSlotArray(page_buffer, &slot_buffer);
+
+        // Binary search for insertion point
+        var left: u16 = 0;
+        var right: u16 = header.key_count;
+
+        while (left < right) {
+            const mid = left + (right - left) / 2;
+            const entry = try leaf_payload.getEntryWithSlots(page_buffer, mid, slot_array);
+
+            if (std.mem.lessThan(u8, entry.key, key)) {
+                left = mid + 1;
+            } else {
+                right = mid;
+            }
+        }
+
+        self.current_slot_index = left;
+
+        // If we're past the end of this page, move to right sibling
+        if (self.current_slot_index >= header.key_count) {
+            try self.moveToNextPage();
+        }
+    }
+
+    // Move to the right sibling page
+    fn moveToNextPage(self: *Self) !void {
+        const header = std.mem.bytesAsValue(BtreeNodeHeader, self.current_page_buffer[0..BtreeNodeHeader.SIZE]);
+
+        if (header.right_sibling == 0) {
+            // No more pages
+            self.at_end = true;
+            return;
+        }
+
+        try self.pager.readPage(header.right_sibling, &self.current_page_buffer);
+        self.current_page_id = header.right_sibling;
+        self.current_slot_index = 0;
+    }
+
+    // Get the next key-value pair (returns null when iteration is complete)
+    pub fn next(self: *Self) !?struct { key: []const u8, value: []const u8 } {
+        if (self.at_end) return null;
+
+        const header = std.mem.bytesAsValue(BtreeNodeHeader, self.current_page_buffer[0..BtreeNodeHeader.SIZE]);
+
+        // If we're at the end of current page, try to move to next page
+        while (self.current_slot_index >= header.key_count) {
+            try self.moveToNextPage();
+            if (self.at_end) return null;
+
+            // Update header for new page
+            const new_header = std.mem.bytesAsValue(BtreeNodeHeader, self.current_page_buffer[0..BtreeNodeHeader.SIZE]);
+            header.* = new_header.*;
+        }
+
+        // Get current entry
+        const leaf_payload = BtreeLeafPayload{};
+        const entry = try leaf_payload.getEntry(&self.current_page_buffer, self.current_slot_index);
+
+        // Check if we've exceeded the end_key
+        if (self.end_key) |end_key| {
+            if (std.mem.lessThan(u8, end_key, entry.key)) {
+                self.at_end = true;
+                return null;
+            }
+        }
+
+        // Copy key to buffer
+        if (entry.key.len > self.key_buffer.len) return error.KeyTooLong;
+        @memcpy(self.key_buffer[0..entry.key.len], entry.key);
+        const key_slice = self.key_buffer[0..entry.key.len];
+
+        // Copy value to buffer
+        if (entry.value.len > self.value_buffer.len) return error.ValueTooLong;
+        @memcpy(self.value_buffer[0..entry.value.len], entry.value);
+        const value_slice = self.value_buffer[0..entry.value.len];
+
+        self.current_slot_index += 1;
+
+        return .{ .key = key_slice, .value = value_slice };
+    }
+
+    // Reset iterator to beginning
+    pub fn reset(self: *Self) !void {
+        self.at_end = false;
+        const root_page_id = self.pager.getRootPageId();
+        if (self.start_key) |key| {
+            try self.seekToKey(key);
+        } else {
+            try self.seekToFirstLeaf(root_page_id);
+        }
+    }
+
+    // Check if iterator is valid (not at end)
+    pub fn valid(self: *const Self) bool {
+        return !self.at_end;
     }
 };
 
@@ -4468,8 +5059,117 @@ test "deleteBtreeValue_returns_true_for_existing_key" {
     const deleted = try pager.deleteBtreeValue(key, 2);
     try testing.expect(deleted);
 
-    // Note: Due to our simplified implementation, the key might still exist
-    // In a full implementation, we'd verify it's actually deleted
+    // Verify key is actually deleted
+    var value_buffer: [256]u8 = undefined;
+    const retrieved_value = pager.getBtreeValue(key, &value_buffer) catch null;
+    try testing.expect(retrieved_value == null);
+}
+
+test "btree_growth_and_shrinkage_basic_operations" {
+    var pager = try Pager.open(":memory:", testing.allocator);
+    defer pager.close();
+
+    // Insert enough keys to potentially cause splits
+    var keys = std.ArrayList([]const u8).initCapacity(testing.allocator, 0) catch unreachable;
+    defer {
+        for (keys.items) |key| testing.allocator.free(key);
+    }
+
+    const num_keys = 50;
+    var i: usize = 0;
+    while (i < num_keys) : (i += 1) {
+        const key = try std.fmt.allocPrint(testing.allocator, "key{d:0>3}", .{i});
+        const value = try std.fmt.allocPrint(testing.allocator, "value{d}", .{i});
+        defer testing.allocator.free(value);
+
+        try keys.append(testing.allocator, key);
+        try pager.putBtreeValue(key, value, @intCast(i + 1));
+    }
+
+    // Verify all keys exist after inserts (tree growth)
+    for (keys.items, 0..) |key, idx| {
+        const expected_value = try std.fmt.allocPrint(testing.allocator, "value{d}", .{idx});
+        defer testing.allocator.free(expected_value);
+
+        var value_buffer: [256]u8 = undefined;
+        const retrieved_value = try pager.getBtreeValue(key, &value_buffer);
+        try testing.expect(retrieved_value != null);
+        try testing.expectEqualStrings(expected_value, retrieved_value.?);
+    }
+
+    // Delete every other key (tree shrinkage)
+    i = 0;
+    while (i < keys.items.len) {
+        if (i % 2 == 0) {
+            const deleted = try pager.deleteBtreeValue(keys.items[i], @intCast(num_keys + i + 1));
+            try testing.expect(deleted);
+        }
+        i += 1;
+    }
+
+    // Verify remaining keys still exist
+    i = 0;
+    while (i < keys.items.len) {
+        if (i % 2 == 1) {
+            const expected_value = try std.fmt.allocPrint(testing.allocator, "value{d}", .{i});
+            defer testing.allocator.free(expected_value);
+
+            var value_buffer: [256]u8 = undefined;
+            const retrieved_value = try pager.getBtreeValue(keys.items[i], &value_buffer);
+            try testing.expect(retrieved_value != null);
+            try testing.expectEqualStrings(expected_value, retrieved_value.?);
+        }
+        i += 1;
+    }
+}
+
+test "btree_leaf_merge_functionality" {
+    var pager = try Pager.open(":memory:", testing.allocator);
+    defer pager.close();
+
+    // Test leaf merge operations directly
+    var buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+
+    // Create first leaf with some entries
+    try createEmptyBtreeLeaf(1, 1, 0, &buffer);
+    try addEntryToBtreeLeaf(&buffer, "key1", "value1");
+    try addEntryToBtreeLeaf(&buffer, "key3", "value3");
+
+    // Create second leaf
+    var buffer2: [DEFAULT_PAGE_SIZE]u8 = undefined;
+    try createEmptyBtreeLeaf(2, 1, 0, &buffer2);
+    try addEntryToBtreeLeaf(&buffer2, "key5", "value5");
+
+    // Test merge capability
+    const payload1 = buffer[PageHeader.SIZE..PageHeader.SIZE + @as(usize, @intCast(std.mem.bytesAsValue(PageHeader, buffer[0..PageHeader.SIZE]).payload_len))];
+    const payload2 = buffer2[PageHeader.SIZE..PageHeader.SIZE + @as(usize, @intCast(std.mem.bytesAsValue(PageHeader, buffer2[0..PageHeader.SIZE]).payload_len))];
+
+    var leaf = BtreeLeafPayload{};
+    try testing.expect(leaf.canMergeWith(payload1, payload2));
+
+    // Test merge
+    try leaf.mergeWith(payload1, payload2);
+
+    // Verify merged content
+    try testing.expect(leaf.getValue(payload1, "key1") != null);
+    try testing.expect(leaf.getValue(payload1, "key3") != null);
+    try testing.expect(leaf.getValue(payload1, "key5") != null);
+}
+
+test "btree_underflow_detection" {
+    var pager = try Pager.open(":memory:", testing.allocator);
+    defer pager.close();
+
+    // Create a leaf with minimal entries
+    var buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+    try createEmptyBtreeLeaf(1, 1, 0, &buffer);
+    try addEntryToBtreeLeaf(&buffer, "key1", "value1");
+
+    const payload = buffer[PageHeader.SIZE..PageHeader.SIZE + @as(usize, @intCast(std.mem.bytesAsValue(PageHeader, buffer[0..PageHeader.SIZE]).payload_len))];
+
+    var leaf = BtreeLeafPayload{};
+    // With only 1 key and MIN_KEYS_PER_LEAF = 100, this should be underflowed
+    try testing.expect(leaf.isUnderflowed(payload));
 }
 
 test "copyOnWritePage_creates_new_version_with_updated_txn_id" {
@@ -4526,4 +5226,144 @@ test "Btree_operations_with_large_keys_and_values" {
     try testing.expect(retrieved != null);
     try testing.expectEqual(@as(usize, 500), retrieved.?.len);
     try testing.expect(std.mem.eql(u8, &large_value, retrieved.?));
+}
+
+test "BtreeIterator_basic_functionality" {
+    const test_db = "test_iterator_basic.db";
+    defer std.fs.cwd().deleteFile(test_db) catch {};
+
+    // Create the database file first
+    _ = try Pager.create(test_db, testing.allocator);
+
+    var pager = try Pager.open(test_db, testing.allocator);
+    defer pager.close();
+
+    // Insert test data
+    try pager.putBtreeValue("apple", "red", 1);
+    try pager.putBtreeValue("banana", "yellow", 1);
+    try pager.putBtreeValue("cherry", "red", 1);
+    try pager.putBtreeValue("date", "brown", 1);
+
+    // Test basic iteration
+    var iter = try pager.createIterator(testing.allocator);
+
+    var count: usize = 0;
+    var last_key: []const u8 = "";
+
+    while (try iter.next()) |kv| {
+        count += 1;
+        last_key = kv.key;
+
+        // Should be in sorted order
+        if (count > 1) {
+            try testing.expect(std.mem.lessThan(u8, last_key, kv.key) or std.mem.eql(u8, last_key, kv.key));
+        }
+    }
+
+    // Verify we got all items
+    try testing.expectEqual(@as(usize, 4), count);
+}
+
+test "BtreeIterator_range_scan" {
+    const test_db = "test_iterator_range.db";
+    defer std.fs.cwd().deleteFile(test_db) catch {};
+
+    // Create the database file first
+    _ = try Pager.create(test_db, testing.allocator);
+
+    var pager = try Pager.open(test_db, testing.allocator);
+    defer pager.close();
+
+    // Insert test data
+    try pager.putBtreeValue("aardvark", "animal", 1);
+    try pager.putBtreeValue("apple", "fruit", 1);
+    try pager.putBtreeValue("apricot", "fruit", 1);
+    try pager.putBtreeValue("avocado", "fruit", 1);
+    try pager.putBtreeValue("banana", "fruit", 1);
+    try pager.putBtreeValue("blueberry", "fruit", 1);
+    try pager.putBtreeValue("cherry", "fruit", 1);
+
+    // Test range scan from "ap" to "b"
+    var iter = try pager.createIteratorWithRange(testing.allocator, "ap", "b");
+
+    var count: usize = 0;
+    var keys: [3][]const u8 = undefined;
+
+    while (try iter.next()) |kv| {
+        if (count < 3) {
+            keys[count] = kv.key;
+        }
+        count += 1;
+    }
+
+    // Should get: apple, apricot, avocado
+    try testing.expectEqual(@as(usize, 3), count);
+    try testing.expectEqualStrings("apple", keys[0]);
+    try testing.expectEqualStrings("apricot", keys[1]);
+    try testing.expectEqualStrings("avocado", keys[2]);
+}
+
+test "BtreeIterator_empty_tree" {
+    const test_db = "test_iterator_empty.db";
+    defer std.fs.cwd().deleteFile(test_db) catch {};
+
+    // Create the database file first
+    _ = try Pager.create(test_db, testing.allocator);
+
+    var pager = try Pager.open(test_db, testing.allocator);
+    defer pager.close();
+
+    // Should fail to create iterator on empty tree
+    try testing.expectError(error.TreeEmpty, pager.createIterator(testing.allocator));
+}
+
+test "BtreeIterator_reset_functionality" {
+    const test_db = "test_iterator_reset.db";
+    defer std.fs.cwd().deleteFile(test_db) catch {};
+
+    // Create the database file first
+    _ = try Pager.create(test_db, testing.allocator);
+
+    var pager = try Pager.open(test_db, testing.allocator);
+    defer pager.close();
+
+    // Insert test data
+    try pager.putBtreeValue("key1", "value1", 1);
+    try pager.putBtreeValue("key2", "value2", 1);
+    try pager.putBtreeValue("key3", "value3", 1);
+
+    var iter = try pager.createIterator(testing.allocator);
+
+    // Read first item
+    const first = (try iter.next()).?;
+    try testing.expectEqualStrings("key1", first.key);
+
+    // Reset and read again
+    try iter.reset();
+    const first_again = (try iter.next()).?;
+    try testing.expectEqualStrings("key1", first_again.key);
+}
+
+test "BtreeIterator_single_item_tree" {
+    const test_db = "test_iterator_single.db";
+    defer std.fs.cwd().deleteFile(test_db) catch {};
+
+    // Create the database file first
+    _ = try Pager.create(test_db, testing.allocator);
+
+    var pager = try Pager.open(test_db, testing.allocator);
+    defer pager.close();
+
+    // Insert single item
+    try pager.putBtreeValue("solo", "alone", 1);
+
+    var iter = try pager.createIterator(testing.allocator);
+
+    const item = (try iter.next()).?;
+    try testing.expectEqualStrings("solo", item.key);
+    try testing.expectEqualStrings("alone", item.value);
+
+    // Should be done after one item
+    const result = try iter.next();
+    try testing.expect(result == null);
 }
