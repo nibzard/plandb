@@ -2022,13 +2022,15 @@ pub const Pager = struct {
                         try self.writePage(parent_info.page_id, &parent_cow_buffer);
 
                         // Apply COW up the tree for any remaining parents
-                        var i: isize = @intCast(leaf_index - 2);
-                        while (i >= 0) {
-                            const path_index = @as(usize, @intCast(i));
-                            const page_info = path.pageAt(path_index);
-                            var cow_buffer = try self.copyOnWritePage(page_info.buffer, txn_id);
-                            try self.writePage(page_info.page_id, &cow_buffer);
-                            i -= 1;
+                        if (leaf_index >= 2) {
+                            var i: isize = @intCast(leaf_index - 2);
+                            while (i >= 0) {
+                                const path_index = @as(usize, @intCast(i));
+                                const page_info = path.pageAt(path_index);
+                                var cow_buffer = try self.copyOnWritePage(page_info.buffer, txn_id);
+                                try self.writePage(page_info.page_id, &cow_buffer);
+                                i -= 1;
+                            }
                         }
                     }
                 }
@@ -2041,13 +2043,15 @@ pub const Pager = struct {
         try self.writePage(leaf_info.page_id, &leaf_cow_buffer);
 
         // Apply COW to remaining parent nodes
-        var i: isize = @intCast(leaf_index - 1);
-        while (i >= 0) {
-            const path_index = @as(usize, @intCast(i));
-            const page_info = path.pageAt(path_index);
-            var cow_buffer = try self.copyOnWritePage(page_info.buffer, txn_id);
-            try self.writePage(page_info.page_id, &cow_buffer);
-            i -= 1;
+        if (leaf_index >= 1) {
+            var i: isize = @intCast(leaf_index - 1);
+            while (i >= 0) {
+                const path_index = @as(usize, @intCast(i));
+                const page_info = path.pageAt(path_index);
+                var cow_buffer = try self.copyOnWritePage(page_info.buffer, txn_id);
+                try self.writePage(page_info.page_id, &cow_buffer);
+                i -= 1;
+            }
         }
     }
 
