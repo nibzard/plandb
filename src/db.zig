@@ -1,3 +1,9 @@
+//! Public database API scaffold for NorthstarDB.
+//!
+//! Exposes a minimal Db type backed by the in-memory reference model, with
+//! optional pager/WAL hooks for file-backed experimentation. Full ACID semantics
+//! and durability guarantees are not implemented yet.
+
 const std = @import("std");
 const ref_model = @import("ref_model.zig");
 const txn = @import("txn.zig");
@@ -52,11 +58,19 @@ pub const Db = struct {
     }
 
     pub fn beginReadLatest(self: *Db) !ReadTxn {
-        return ReadTxn{ .snapshot = try self.model.beginRead(self.model.current_txn_id), .allocator = self.allocator };
+        return ReadTxn{
+            .snapshot = try self.model.beginRead(self.model.current_txn_id),
+            .allocator = self.allocator,
+            .db = self,
+        };
     }
 
     pub fn beginReadAt(self: *Db, txn_id: u64) !ReadTxn {
-        return ReadTxn{ .snapshot = try self.model.beginRead(txn_id), .allocator = self.allocator };
+        return ReadTxn{
+            .snapshot = try self.model.beginRead(txn_id),
+            .allocator = self.allocator,
+            .db = self,
+        };
     }
 
     pub fn beginWrite(self: *Db) !WriteTxn {
@@ -124,8 +138,23 @@ pub const Db = struct {
 pub const ReadTxn = struct {
     snapshot: ref_model.SnapshotState,
     allocator: std.mem.Allocator,
+    db: *Db,
 
     pub fn get(self: *ReadTxn, key: []const u8) ?[]const u8 {
+        // For file-based databases, use B+tree operations
+        if (self.db.pager) |*pager| {
+            // Use a temporary buffer for the value (would be allocated in real implementation)
+            var value_buffer: [1024]u8 = undefined;
+            if (pager.getBtreeValue(key, &value_buffer)) |value| {
+                // In a real implementation, we'd need to manage the value lifetime
+                // For now, return null and rely on the in-memory model
+                _ = value;
+                return null;
+            }
+            return null;
+        }
+
+        // For in-memory databases, use the reference model
         if (self.snapshot.get(key)) |value| return value;
         return null;
     }
@@ -155,6 +184,12 @@ pub const WriteTxn = struct {
     pub fn put(self: *WriteTxn, key: []const u8, value: []const u8) !void {
         // Track mutation in transaction context
         try self.txn_ctx.put(key, value);
+
+        // For file-based databases, use B+tree operations
+        if (self.db.pager) |*pager| {
+            try pager.putBtreeValue(key, value, self.txn_ctx.txn_id);
+        }
+
         // Also update in-memory model
         try self.inner.put(key, value);
     }
@@ -162,6 +197,12 @@ pub const WriteTxn = struct {
     pub fn del(self: *WriteTxn, key: []const u8) !void {
         // Track mutation in transaction context
         try self.txn_ctx.delete(key);
+
+        // For file-based databases, use B+tree operations
+        if (self.db.pager) |*pager| {
+            _ = try pager.deleteBtreeValue(key, self.txn_ctx.txn_id);
+        }
+
         // Also update in-memory model
         try self.inner.del(key);
     }

@@ -1,3 +1,8 @@
+//! Write-Ahead Log (WAL) scaffolding for commit logging.
+//!
+//! Provides a minimal append-only log structure with simple record framing.
+//! Checkpointing, replay, and full crash-recovery guarantees are not implemented yet.
+
 const std = @import("std");
 const txn = @import("txn.zig");
 const pager = @import("pager.zig");

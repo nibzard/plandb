@@ -1,3 +1,8 @@
+//! Simplified in-memory reference model used for tests.
+//!
+//! Currently provides basic snapshot bookkeeping; full MVCC semantics and history
+//! cloning are stubbed out and will be expanded alongside the B+tree/MVCC work.
+
 const std = @import("std");
 
 pub const SnapshotState = std.StringHashMap([]const u8);

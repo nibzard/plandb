@@ -1,3 +1,8 @@
+//! Common types and data structures for benchmark framework.
+//!
+//! Defines the core data structures used throughout the benchmark system
+//! including results, profiles, configurations, and metrics collection.
+
 const std = @import("std");
 
 pub const BenchmarkResult = struct {

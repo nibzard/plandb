@@ -419,7 +419,7 @@ Planned structure:
 Milestones
 
 Milestone 0 — North Star scaffolding
-	•	benchmark runner + JSON schema
+	•	benchmark runner + JSON schema stub
 	•	baseline compare + CI gating
 	•	reference in-memory model for correctness
 	•	crash harness subprocess killer
@@ -513,4 +513,3 @@ Precomputed, versioned artifacts derived from the commit stream that make specif
 License
 
 TBD. Pick early and keep it simple (MIT or Apache-2.0 are typical for systems projects).
-

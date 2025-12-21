@@ -1,3 +1,8 @@
+//! Crash recovery and consistency management.
+//!
+//! Provides database recovery after crashes by reconciling WAL and database state.
+//! Implements consistency checking and checkpointing for maintenance operations.
+
 const std = @import("std");
 const pager_mod = @import("pager.zig");
 const wal = @import("wal.zig");

@@ -1,3 +1,8 @@
+//! Benchmark suite registration (current stub coverage).
+//!
+//! Registers the available micro benchmarks used by the harness today.
+//! Macro and hardening suites are placeholders until their implementations land.
+
 const std = @import("std");
 const runner = @import("runner.zig");
 const types = @import("types.zig");

@@ -1,3 +1,8 @@
+//! Baseline comparison and regression detection logic.
+//!
+//! Compares benchmark results against baselines to detect performance regressions.
+//! Enforces thresholds for throughput, latency, and other critical metrics.
+
 const std = @import("std");
 const types = @import("types.zig");
 

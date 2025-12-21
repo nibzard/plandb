@@ -152,4 +152,9 @@ The project uses Zig's build system (`build.zig`) which creates:
 - Test targets for unit tests
 - No external dependencies currently
 
+Adding //! documentation at the top of each file would be valuable for:
+  1. Quickly understanding each module's purpose          
+  2. Generating documentation (Zig has built-in docs generation)
+  3. Helping new contributors navigate the codebase
+
 You're allowed to implement the DB only if the benchmarks and tests are green

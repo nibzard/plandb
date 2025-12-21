@@ -1,3 +1,8 @@
+//! Benchmark runner framework for executing and measuring performance tests.
+//!
+//! Provides the core runner that executes benchmarks with configurable repeats,
+//! collects metrics, and enforces gating thresholds for CI/CD regression detection.
+
 const std = @import("std");
 const types = @import("types.zig");
 

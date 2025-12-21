@@ -1,3 +1,8 @@
+//! NorthstarDB benchmark harness CLI.
+//!
+//! Entry point for running benchmarks, comparing results, and gating CI.
+//! Supports micro, macro, and hardening benchmark suites with configurable options.
+
 const std = @import("std");
 const bench = @import("bench/runner.zig");
 const suite = @import("bench/suite.zig");

@@ -1,3 +1,8 @@
+//! Transaction scaffolding and basic two-phase commit plumbing.
+//!
+//! Tracks mutations and commit context for experimentation; full ACID semantics
+//! (durable logging, recovery, and isolation guarantees) are not implemented yet.
+
 const std = @import("std");
 const pager = @import("pager.zig");
 

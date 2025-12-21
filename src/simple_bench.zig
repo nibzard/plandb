@@ -1,3 +1,8 @@
+//! Simple benchmark stub for early development.
+//!
+//! Temporary benchmark implementation for testing the benchmark harness
+//! before real database benchmarks are implemented.
+
 const std = @import("std");
 
 pub fn main() !void {
