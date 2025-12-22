@@ -776,23 +776,23 @@ test "dependency analyzer correctly identifies independent transactions" {
     const allocator = std.testing.allocator;
 
     // Create operations for testing
-    var ops1 = std.ArrayList(ref_model.Operation).init(allocator);
-    defer ops1.deinit();
-    try ops1.append(.{ .op_type = .put, .key = "key1", .value = "value1" });
-    try ops1.append(.{ .op_type = .put, .key = "key2", .value = "value2" });
+    const ops1 = [_]ref_model.Operation{
+        .{ .op_type = .put, .key = "key1", .value = "value1" },
+        .{ .op_type = .put, .key = "key2", .value = "value2" },
+    };
 
-    var ops2 = std.ArrayList(ref_model.Operation).init(allocator);
-    defer ops2.deinit();
-    try ops2.append(.{ .op_type = .put, .key = "key3", .value = "value3" });
+    const ops2 = [_]ref_model.Operation{
+        .{ .op_type = .put, .key = "key3", .value = "value3" },
+    };
 
-    var ops3 = std.ArrayList(ref_model.Operation).init(allocator);
-    defer ops3.deinit();
-    try ops3.append(.{ .op_type = .put, .key = "key1", .value = "new_value" }); // Overlaps with ops1
+    const ops3 = [_]ref_model.Operation{
+        .{ .op_type = .put, .key = "key1", .value = "new_value" }, // Overlaps with ops1
+    };
 
     // Test independence detection
-    try std.testing.expect(DependencyAnalyzer.areIndependent(ops1.items, ops2.items)); // No overlap
-    try std.testing.expect(!DependencyAnalyzer.areIndependent(ops1.items, ops3.items)); // Overlap on key1
-    try std.testing.expect(DependencyAnalyzer.areIndependent(ops2.items, ops3.items)); // No overlap
+    try std.testing.expect(DependencyAnalyzer.areIndependent(&ops1, &ops2)); // No overlap
+    try std.testing.expect(!DependencyAnalyzer.areIndependent(&ops1, &ops3)); // Overlap on key1
+    try std.testing.expect(DependencyAnalyzer.areIndependent(&ops2, &ops3)); // No overlap
 }
 
 test "property test runner integration" {
