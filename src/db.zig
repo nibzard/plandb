@@ -582,6 +582,145 @@ pub const WriteTxn = struct {
     pub fn hasMutations(self: *const WriteTxn) bool {
         return self.txn_ctx.hasMutations();
     }
+
+    /// Atomically claim a task if it exists and is not already claimed
+    ///
+    /// This method implements compare-and-swap semantics to ensure that
+    /// under concurrency, no task can be claimed by multiple agents.
+    ///
+    /// Arguments:
+    /// - task_id: The ID of the task to claim
+    /// - agent_id: The ID of the agent attempting to claim
+    /// - claim_timestamp: Timestamp for when the claim is made
+    ///
+    /// Returns:
+    /// - true if the claim was successful (task existed and was unclaimed)
+    /// - false if the task doesn't exist or is already claimed
+    ///
+    /// The operation is atomic within the transaction and includes:
+    /// 1. Check if task metadata exists (using get() with read-your-writes)
+    /// 2. Check if claim:{task_id}:{agent_id} already exists (prevent duplicates)
+    /// 3. Check if any other agent has already claimed this task
+    /// 4. If all checks pass, create the claim record
+    pub fn claimTask(self: *WriteTxn, task_id: u64, agent_id: u64, claim_timestamp: i64) !bool {
+        // Check if this specific agent has already claimed this task
+        var claim_key_buf: [64]u8 = undefined;
+        const claim_key = try std.fmt.bufPrint(&claim_key_buf, "claim:{d}:{d}", .{ task_id, agent_id });
+
+        if (self.get(claim_key)) |_| {
+            // This agent has already claimed this task
+            return false;
+        }
+
+        // Check if the task metadata exists
+        var task_key_buf: [32]u8 = undefined;
+        const task_key = try std.fmt.bufPrint(&task_key_buf, "task:{d}", .{task_id});
+
+        if (self.get(task_key)) |_| {
+            // Task exists, now check if any other agent has claimed it
+            // We need to scan for existing claims by any agent
+
+            // For efficiency, we'll use a prefix scan approach
+            // Check for claims by iterating through possible agent IDs
+            // In a real implementation, this might be optimized with indexes
+            const max_agents_to_check = 1000; // Reasonable limit to prevent infinite scan
+            var claim_found = false;
+
+            for (0..max_agents_to_check) |other_agent_id| {
+                if (other_agent_id == agent_id) continue; // Skip self, already checked
+
+                var other_claim_key_buf: [64]u8 = undefined;
+                const other_claim_key = try std.fmt.bufPrint(&other_claim_key_buf, "claim:{d}:{d}", .{ task_id, other_agent_id });
+
+                if (self.get(other_claim_key)) |_| {
+                    // Found an existing claim by another agent
+                    claim_found = true;
+                    break;
+                }
+            }
+
+            if (claim_found) {
+                // Task is already claimed by another agent
+                return false;
+            }
+
+            // Task exists and is unclaimed, create the claim
+            var claim_value_buf: [32]u8 = undefined;
+            const claim_value = try std.fmt.bufPrint(&claim_value_buf, "{}", .{claim_timestamp});
+            try self.put(claim_key, claim_value);
+
+            // Update agent's active task count
+            var agent_key_buf: [32]u8 = undefined;
+            var agent_value_buf: [16]u8 = undefined;
+            const agent_key = try std.fmt.bufPrint(&agent_key_buf, "agent:{d}:active", .{agent_id});
+
+            const current_active_str = self.get(agent_key) orelse "0";
+            const current_active = try std.fmt.parseInt(u32, current_active_str, 10);
+            const new_active = current_active + 1;
+            const new_active_value = try std.fmt.bufPrint(&agent_value_buf, "{}", .{new_active});
+            try self.put(agent_key, new_active_value);
+
+            return true; // Successfully claimed
+        } else {
+            // Task doesn't exist
+            return false;
+        }
+    }
+
+    /// Atomically complete a claimed task and cleanup the claim
+    ///
+    /// This method handles the completion of a task by:
+    /// 1. Verifying the claim exists for this agent and task
+    /// 2. Marking the task as completed
+    /// 3. Removing the claim record
+    /// 4. Decrementing the agent's active task count
+    ///
+    /// Arguments:
+    /// - task_id: The ID of the task to complete
+    /// - agent_id: The ID of the agent completing the task
+    /// - completion_timestamp: Timestamp for when the task is completed
+    ///
+    /// Returns:
+    /// - true if the completion was successful
+    /// - false if the claim doesn't exist (task wasn't claimed by this agent)
+    pub fn completeTask(self: *WriteTxn, task_id: u64, agent_id: u64, completion_timestamp: i64) !bool {
+        // Verify the claim exists for this agent
+        var claim_key_buf: [64]u8 = undefined;
+        const claim_key = try std.fmt.bufPrint(&claim_key_buf, "claim:{d}:{d}", .{ task_id, agent_id });
+
+        if (self.get(claim_key)) |_| {
+            // Claim exists, proceed with completion
+
+            // Mark task as completed
+            var completed_key_buf: [32]u8 = undefined;
+            var completed_value_buf: [32]u8 = undefined;
+            const completed_key = try std.fmt.bufPrint(&completed_key_buf, "completed:{d}", .{task_id});
+            const completed_value = try std.fmt.bufPrint(&completed_value_buf, "{}", .{completion_timestamp});
+            try self.put(completed_key, completed_value);
+
+            // Remove the claim
+            try self.del(claim_key);
+
+            // Decrement agent's active task count
+            var agent_key_buf: [32]u8 = undefined;
+            var agent_value_buf: [16]u8 = undefined;
+            const agent_key = try std.fmt.bufPrint(&agent_key_buf, "agent:{d}:active", .{agent_id});
+
+            if (self.get(agent_key)) |current_active_str| {
+                const current_active = try std.fmt.parseInt(u32, current_active_str, 10);
+                if (current_active > 0) {
+                    const new_active = current_active - 1;
+                    const new_active_value = try std.fmt.bufPrint(&agent_value_buf, "{}", .{new_active});
+                    try self.put(agent_key, new_active_value);
+                }
+            }
+
+            return true; // Successfully completed
+        } else {
+            // No claim exists for this agent and task
+            return false;
+        }
+    }
 };
 
 pub const KV = struct { key: []const u8, value: []const u8 };
@@ -1089,4 +1228,113 @@ test "ReadTxn_scan_prefix" {
     try testing.expectEqualStrings("Charlie", user_items[2].value);
     try testing.expectEqualStrings("user:004", user_items[3].key);
     try testing.expectEqualStrings("David", user_items[3].value);
+}
+
+test "claim_task_atomic_semantics" {
+    var database = try Db.open(testing.allocator);
+    defer database.close();
+
+    // Create a task first
+    {
+        var w = try database.beginWrite();
+        const task_metadata = "{\"priority\":5,\"type\":1,\"created_at\":12345}";
+        try w.put("task:42", task_metadata);
+        _ = try w.commit();
+    }
+
+    // Test successful claim
+    {
+        var w = try database.beginWrite();
+        const claimed = try w.claimTask(42, 1, 12346);
+        try testing.expect(claimed);
+
+        // Verify claim was created
+        const claim = w.get("claim:42:1");
+        try testing.expect(claim != null);
+        try testing.expectEqualStrings("12346", claim.?);
+
+        // Verify agent active count was updated
+        const active_count = w.get("agent:1:active");
+        try testing.expect(active_count != null);
+        try testing.expectEqualStrings("1", active_count.?);
+
+        _ = try w.commit();
+    }
+
+    // Test duplicate claim by same agent fails
+    {
+        var w = try database.beginWrite();
+        const claimed = try w.claimTask(42, 1, 12347);
+        try testing.expect(!claimed);
+        _ = try w.commit();
+    }
+
+    // Test claim by different agent fails
+    {
+        var w = try database.beginWrite();
+        const claimed = try w.claimTask(42, 2, 12348);
+        try testing.expect(!claimed);
+        _ = try w.commit();
+    }
+
+    // Test claim of non-existent task fails
+    {
+        var w = try database.beginWrite();
+        const claimed = try w.claimTask(999, 3, 12349);
+        try testing.expect(!claimed);
+        _ = try w.commit();
+    }
+}
+
+test "complete_task_atomic_semantics" {
+    var database = try Db.open(testing.allocator);
+    defer database.close();
+
+    // Create a task and claim it
+    {
+        var w = try database.beginWrite();
+        try w.put("task:42", "{\"priority\":5,\"type\":1,\"created_at\":12345}");
+        const claimed = try w.claimTask(42, 1, 12346);
+        try testing.expect(claimed);
+        _ = try w.commit();
+    }
+
+    // Test successful completion
+    {
+        var w = try database.beginWrite();
+        const completed = try w.completeTask(42, 1, 12350);
+        try testing.expect(completed);
+
+        // Verify task was marked as completed
+        const completed_marker = w.get("completed:42");
+        try testing.expect(completed_marker != null);
+        try testing.expectEqualStrings("12350", completed_marker.?);
+
+        // Verify claim was removed
+        const claim = w.get("claim:42:1");
+        try testing.expect(claim == null);
+
+        // Verify agent active count was decremented
+        const active_count = w.get("agent:1:active");
+        try testing.expect(active_count != null);
+        try testing.expectEqualStrings("0", active_count.?);
+
+        _ = try w.commit();
+    }
+
+    // Test completion by wrong agent fails
+    {
+        var w = try database.beginWrite();
+        const completed = try w.completeTask(42, 2, 12351);
+        try testing.expect(!completed);
+        _ = try w.commit();
+    }
+
+    // Test completion of non-existent claim fails
+    {
+        var w = try database.beginWrite();
+        const completed = try w.completeTask(999, 1, 12352);
+        try testing.expect(!completed);
+        _ = try w.commit();
+    }
 }

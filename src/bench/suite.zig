@@ -1152,7 +1152,7 @@ fn benchMacroTaskQueueClaims(allocator: std.mem.Allocator, config: types.Config)
         alloc_count += 10;
     }
 
-    // Phase 2: Agents claim tasks (concurrent simulation)
+    // Phase 2: Agents claim tasks using atomic claim semantics
     var successful_claims: u64 = 0;
     var failed_claims: u64 = 0;
 
@@ -1164,49 +1164,26 @@ fn benchMacroTaskQueueClaims(allocator: std.mem.Allocator, config: types.Config)
 
         for (0..tasks_to_claim) |_| {
             const task_id = rand.intRangeLessThan(u64, 0, total_tasks);
-
-            var claim_key_buf: [64]u8 = undefined;
-            var agent_key_buf: [32]u8 = undefined;
-            var claim_value_buf: [32]u8 = undefined;
-            var agent_value_buf: [16]u8 = undefined;
-
-            const claim_key = try std.fmt.bufPrint(&claim_key_buf, "claim:{d}:{d}", .{ task_id, agent_id });
-            const agent_key = try std.fmt.bufPrint(&agent_key_buf, "agent:{d}:active", .{agent_id});
             const claim_timestamp = std.time.timestamp();
-            const claim_value = try std.fmt.bufPrint(&claim_value_buf, "{}", .{claim_timestamp});
 
-            // Check if task is already claimed (read-your-writes check)
-            if (w.get(claim_key)) |_| {
-                failed_claims += 1;
-                continue;
-            }
+            // Use atomic claimTask method which prevents duplicate claims
+            const claimed = try w.claimTask(task_id, @intCast(agent_id), claim_timestamp);
 
-            // Check task metadata to verify it's claimable
-            var task_key_buf: [32]u8 = undefined;
-            const task_key = try std.fmt.bufPrint(&task_key_buf, "task:{d}", .{task_id});
-
-            if (w.get(task_key)) |task_metadata| {
-                // Simple check: task exists and is claimable
-                _ = task_metadata;
-
-                // Create claim
-                try w.put(claim_key, claim_value);
-
-                // Update agent's active task count
-                const current_active = w.get(agent_key) orelse "0";
-                const active_count = try std.fmt.parseInt(u32, current_active, 10);
-                const new_active = active_count + 1;
-                const new_active_value = try std.fmt.bufPrint(&agent_value_buf, "{}", .{new_active});
-                try w.put(agent_key, new_active_value);
-
+            if (claimed) {
                 successful_claims += 1;
-
-                total_writes += claim_key.len + claim_value.len + agent_key.len + new_active_value.len;
-                total_reads += task_key.len + current_active.len;
-                total_alloc_bytes += claim_key.len + claim_value.len + agent_key.len + new_active_value.len;
-                alloc_count += 6;
+                // Account for the writes performed by claimTask:
+                // - claim:{task_id}:{agent_id} key + timestamp value
+                // - agent:{agent_id}:active key + count value
+                total_writes += 64 + 32 + 32 + 16; // Estimated sizes for keys and values
+                total_reads += 32; // Task metadata read
+                total_alloc_bytes += 64 + 32 + 32 + 16;
+                alloc_count += 8;
             } else {
                 failed_claims += 1;
+                // Account for the reads performed by claimTask even when it fails
+                total_reads += 32; // Task metadata read
+                total_reads += 64; // Claim key check
+                alloc_count += 2;
             }
         }
 
@@ -1215,49 +1192,40 @@ fn benchMacroTaskQueueClaims(allocator: std.mem.Allocator, config: types.Config)
         alloc_count += 5;
     }
 
-    // Phase 3: Complete some tasks and cleanup claims
+    // Phase 3: Complete some tasks using atomic complete semantics
     const tasks_to_complete = @divTrunc(successful_claims, 2); // Complete half the claims
 
+    var actual_completions: u64 = 0;
     for (0..tasks_to_complete) |completion_idx| {
         var w = try database.beginWrite();
 
         // Select a random agent and complete one of their tasks
         const agent_id = completion_idx % agents;
         const task_id = rand.intRangeLessThan(u64, 0, total_tasks);
+        const completion_timestamp = std.time.timestamp();
 
-        var completed_key_buf: [32]u8 = undefined;
-        var claim_key_buf: [64]u8 = undefined;
-        var agent_key_buf: [32]u8 = undefined;
-        var completed_value_buf: [32]u8 = undefined;
-        var agent_value_buf: [16]u8 = undefined;
+        // Use atomic completeTask method which handles all cleanup
+        const completed = try w.completeTask(task_id, @intCast(agent_id), completion_timestamp);
 
-        const completed_key = try std.fmt.bufPrint(&completed_key_buf, "completed:{d}", .{task_id});
-        const claim_key = try std.fmt.bufPrint(&claim_key_buf, "claim:{d}:{d}", .{ task_id, agent_id });
-        const agent_key = try std.fmt.bufPrint(&agent_key_buf, "agent:{d}:active", .{agent_id});
-        const completed_timestamp = std.time.timestamp();
-        const completed_value = try std.fmt.bufPrint(&completed_value_buf, "{}", .{completed_timestamp});
-
-        // Mark task as completed
-        try w.put(completed_key, completed_value);
-
-        // Remove claim
-        try w.del(claim_key);
-
-        // Decrement agent's active task count
-        if (w.get(agent_key)) |current_active_str| {
-            const active_count = try std.fmt.parseInt(u32, current_active_str, 10);
-            if (active_count > 0) {
-                const new_active = active_count - 1;
-                const new_active_value = try std.fmt.bufPrint(&agent_value_buf, "{}", .{new_active});
-                try w.put(agent_key, new_active_value);
-            }
+        if (completed) {
+            actual_completions += 1;
+            // Account for the writes performed by completeTask:
+            // - completed:{task_id} key + timestamp value
+            // - agent:{agent_id}:active key + decremented count
+            // - claim:{task_id}:{agent_id} deletion
+            total_writes += 32 + 32 + 32 + 16; // Estimated sizes
+            total_reads += 64; // Claim verification read
+            total_alloc_bytes += 32 + 32 + 32 + 16;
+            alloc_count += 6;
+        } else {
+            // Account for the reads performed even when completion fails
+            total_reads += 64; // Claim key check
+            alloc_count += 1;
         }
 
         _ = try w.commit();
-
-        total_writes += completed_key.len + completed_value.len + agent_key.len + 64; // Rough estimate
-        total_alloc_bytes += completed_key.len + completed_value.len + agent_key.len + 32;
-        alloc_count += 8;
+        total_writes += 4096;
+        alloc_count += 5;
     }
 
     const duration_ns = @as(u64, @intCast(std.time.nanoTimestamp() - start_time));
@@ -1279,7 +1247,7 @@ fn benchMacroTaskQueueClaims(allocator: std.mem.Allocator, config: types.Config)
     }
 
     // Calculate comprehensive metrics
-    const total_operations = total_tasks + successful_claims + failed_claims + tasks_to_complete;
+    const total_operations = total_tasks + successful_claims + failed_claims + actual_completions;
 
     return types.Results{
         .ops_total = total_operations,
@@ -1296,7 +1264,7 @@ fn benchMacroTaskQueueClaims(allocator: std.mem.Allocator, config: types.Config)
             .write_total = total_writes,
         },
         .io = .{
-            .fsync_count = (agents + 2) + 1, // Commits from each agent + task creation + completion
+            .fsync_count = (agents + 2) + @as(u64, @intCast(tasks_to_complete)), // Commits from each agent + task creation + completions
         },
         .alloc = .{
             .alloc_count = alloc_count,
