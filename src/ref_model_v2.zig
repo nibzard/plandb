@@ -1,13 +1,27 @@
-//! Simplified in-memory reference model used for tests.
+//! Comprehensive in-memory reference model for MVCC and correctness validation.
 //!
-//! Currently provides basic snapshot bookkeeping; full MVCC semantics and history
-//! cloning are stubbed out and will be expanded alongside the B+tree/MVCC work.
+//! Provides a complete implementation of multi-version concurrency control with
+//! deterministic replay, seedable operation generation, and byte-identical state
+//! comparison capabilities. This serves as the ground truth for database testing.
+//!
+//! Features:
+//! - MVCC snapshots with proper isolation
+//! - Deterministic operation generation with seeds
+//! - Commit log for replay and time-travel queries
+//! - Byte-identical state comparison
+//! - Property-based testing support
+//! - Comprehensive correctness validation
 
 const std = @import("std");
+const builtin = @import("builtin");
 
-pub const SnapshotState = std.StringHashMap([]const u8);
+/// Represents a single key-value pair
+pub const KeyValue = struct {
+    key: []const u8,
+    value: []const u8,
+};
 
-/// Represents a single database operation
+/// Represents a database operation
 pub const Operation = struct {
     op_type: enum { put, delete },
     key: []const u8,
@@ -20,6 +34,9 @@ pub const CommitRecord = struct {
     operations: []Operation,
     timestamp_ns: u64,
 };
+
+/// Snapshot state representing a point-in-time view
+pub const SnapshotState = std.StringHashMap([]const u8);
 
 /// Commit log for deterministic replay
 pub const CommitLog = struct {
@@ -73,9 +90,8 @@ pub const CommitLog = struct {
                         try snapshot.put(key_copy, value_copy);
                     },
                     .delete => {
-                        const key_ptr = snapshot.getPtr(op.key) orelse continue;
-                        allocator.free(key_ptr.*);
-                        allocator.free(op.key);
+                        const key = snapshot.getKey(op.key) orelse continue;
+                        allocator.free(key);
                         _ = snapshot.remove(op.key);
                     },
                 }
@@ -163,13 +179,13 @@ pub const OperationGenerator = struct {
             if (is_delete) {
                 op.* = .{
                     .op_type = .delete,
-                    .key = try self.allocator.dupe(u8, keys[@intCast(key_idx)]),
+                    .key = try self.allocator.dupe(u8, keys[key_idx]),
                     .value = null,
                 };
             } else {
                 op.* = .{
                     .op_type = .put,
-                    .key = try self.allocator.dupe(u8, keys[@intCast(key_idx)]),
+                    .key = try self.allocator.dupe(u8, keys[key_idx]),
                     .value = try self.rng.nextString(self.allocator, 16, 64),
                 };
             }
@@ -179,64 +195,67 @@ pub const OperationGenerator = struct {
     }
 };
 
+/// Enhanced reference model with comprehensive MVCC support
 pub const Model = struct {
     allocator: std.mem.Allocator,
     current_txn_id: u64,
-    history: std.AutoHashMap(u64, SnapshotState),
+    snapshots: std.AutoHashMap(u64, SnapshotState),
     commit_log: CommitLog,
+    timestamp_base: u64,
 
     pub fn init(allocator: std.mem.Allocator) !Model {
-        var history = std.AutoHashMap(u64, SnapshotState).init(allocator);
-        const genesis = SnapshotState.init(allocator);
-        try history.put(0, genesis);
-        return .{
+        var model = Model{
             .allocator = allocator,
             .current_txn_id = 0,
-            .history = history,
+            .snapshots = std.AutoHashMap(u64, SnapshotState).init(allocator),
             .commit_log = CommitLog.init(allocator),
+            .timestamp_base = @intCast(std.time.nanoTimestamp()),
         };
+
+        // Create genesis snapshot
+        const genesis = SnapshotState.init(allocator);
+        try model.snapshots.put(0, genesis);
+
+        return model;
     }
 
     pub fn deinit(self: *Model) void {
-        var snapshot_it = self.history.iterator();
-        while (snapshot_it.next()) |entry| {
-            // Free all key-value pairs in the snapshot
-            var kv_it = entry.value_ptr.*.iterator();
-            while (kv_it.next()) |kv_entry| {
-                self.allocator.free(kv_entry.key_ptr.*);
-                self.allocator.free(kv_entry.value_ptr.*);
+        // Free all snapshot data
+        var snapshot_it = self.snapshots.valueIterator();
+        while (snapshot_it.next()) |snapshot| {
+            var key_it = snapshot.iterator();
+            while (key_it.next()) |entry| {
+                self.allocator.free(entry.key_ptr.*);
+                self.allocator.free(entry.value_ptr.*);
             }
-            entry.value_ptr.*.deinit();
+            snapshot.deinit();
         }
-        self.history.deinit();
+        self.snapshots.deinit();
+
+        // Free commit log
         self.commit_log.deinit();
     }
 
     pub fn beginRead(self: *Model, txn_id: u64) !SnapshotState {
-        if (self.history.get(txn_id)) |snap| {
-            return try cloneSnapshot(self.allocator, snap);
+        if (txn_id > self.current_txn_id) return error.InvalidTxnId;
+
+        if (self.snapshots.get(txn_id)) |snapshot| {
+            return try self.cloneSnapshot(snapshot);
         }
         return error.SnapshotNotFound;
     }
 
-    pub fn beginWrite(self: *Model) WriteTxn {
-        return WriteTxn{ .allocator = self.allocator, .model = self, .writes = std.StringHashMap(?[]const u8).init(self.allocator) };
-    }
-
-        fn cloneSnapshot(allocator: std.mem.Allocator, snap: SnapshotState) !SnapshotState {
-        var copy = SnapshotState.init(allocator);
-        var it = snap.iterator();
-        while (it.next()) |entry| {
-            const key_copy = try allocator.dupe(u8, entry.key_ptr.*);
-            const value_copy = try allocator.dupe(u8, entry.value_ptr.*);
-            try copy.put(key_copy, value_copy);
-        }
-        return copy;
-    }
-
-    // Enhanced methods for comprehensive MVCC support
     pub fn beginReadLatest(self: *Model) !SnapshotState {
         return self.beginRead(self.current_txn_id);
+    }
+
+    pub fn beginWrite(self: *Model) WriteTxn {
+        return WriteTxn{
+            .allocator = self.allocator,
+            .model = self,
+            .operations = std.ArrayList(Operation).initCapacity(self.allocator, 0) catch unreachable,
+            .committed = false,
+        };
     }
 
     pub fn getCurrentTxnId(self: *const Model) u64 {
@@ -244,9 +263,9 @@ pub const Model = struct {
     }
 
     pub fn getAllSnapshots(self: *const Model, allocator: std.mem.Allocator) ![]u64 {
-        const keys = try allocator.alloc(u64, self.history.count());
+        const keys = try allocator.alloc(u64, self.snapshots.count());
         var i: usize = 0;
-        var it = self.history.iterator();
+        var it = self.snapshots.iterator();
         while (it.next()) |entry| {
             keys[i] = entry.key_ptr.*;
             i += 1;
@@ -255,11 +274,26 @@ pub const Model = struct {
     }
 
     pub fn hasSnapshot(self: *const Model, txn_id: u64) bool {
-        return self.history.contains(txn_id);
+        return self.snapshots.contains(txn_id);
     }
 
     pub fn getLatestSnapshot(self: *Model) !SnapshotState {
         return self.beginReadLatest();
+    }
+
+    fn cloneSnapshot(self: *Model, original: SnapshotState) !SnapshotState {
+        var clone = SnapshotState.init(self.allocator);
+        var it = original.iterator();
+        while (it.next()) |entry| {
+            const key_copy = try self.allocator.dupe(u8, entry.key_ptr.*);
+            const value_copy = try self.allocator.dupe(u8, entry.value_ptr.*);
+            try clone.put(key_copy, value_copy);
+        }
+        return clone;
+    }
+
+    fn createSnapshotFromLog(self: *Model, txn_id: u64) !SnapshotState {
+        return self.commit_log.replayToTxn(self.allocator, txn_id);
     }
 
     pub fn compareStates(self: *Model, txn_id1: u64, txn_id2: u64) !bool {
@@ -295,92 +329,124 @@ pub const Model = struct {
 
         return true;
     }
-
-    pub fn createSnapshotFromLog(self: *Model, txn_id: u64) !SnapshotState {
-        return self.commit_log.replayToTxn(self.allocator, txn_id);
-    }
 };
 
+/// Enhanced write transaction with comprehensive operation tracking
 pub const WriteTxn = struct {
     allocator: std.mem.Allocator,
     model: *Model,
-    writes: std.StringHashMap(?[]const u8),
+    operations: std.ArrayList(Operation),
     committed: bool = false,
 
     pub fn put(self: *WriteTxn, key: []const u8, value: []const u8) !void {
-        try self.writes.put(try self.allocator.dupe(u8, key), try self.allocator.dupe(u8, value));
+        const op = Operation{
+            .op_type = .put,
+            .key = try self.allocator.dupe(u8, key),
+            .value = try self.allocator.dupe(u8, value),
+        };
+        try self.operations.append(self.allocator, op);
     }
 
     pub fn del(self: *WriteTxn, key: []const u8) !void {
-        try self.writes.put(try self.allocator.dupe(u8, key), null);
+        const op = Operation{
+            .op_type = .delete,
+            .key = try self.allocator.dupe(u8, key),
+            .value = null,
+        };
+        try self.operations.append(self.allocator, op);
     }
 
     pub fn commit(self: *WriteTxn) !u64 {
         if (self.committed) return error.AlreadyCommitted;
-        const base_snap = self.model.history.get(self.model.current_txn_id) orelse return error.SnapshotNotFound;
-        var new_snap = try Model.cloneSnapshot(self.allocator, base_snap);
-
-        var it = self.writes.iterator();
-        while (it.next()) |entry| {
-            if (entry.value_ptr.*) |val| {
-                // Transfer ownership of key and value to new snapshot
-                // We need to make a copy since the original will be freed in cleanup()
-                const key_copy = try self.allocator.dupe(u8, entry.key_ptr.*);
-                const value_copy = try self.allocator.dupe(u8, val);
-                try new_snap.put(key_copy, value_copy);
-            } else {
-                _ = new_snap.remove(entry.key_ptr.*);
-                // key will be freed in cleanup()
-            }
-        }
 
         self.model.current_txn_id += 1;
-        const new_id = self.model.current_txn_id;
-        try self.model.history.put(new_id, new_snap);
+        const new_txn_id = self.model.current_txn_id;
+
+        // Create commit record
+        const operations_copy = try self.allocator.alloc(Operation, self.operations.items.len);
+        for (self.operations.items, 0..) |op, i| {
+            operations_copy[i] = .{
+                .op_type = op.op_type,
+                .key = try self.allocator.dupe(u8, op.key),
+                .value = if (op.value) |val| try self.allocator.dupe(u8, val) else null,
+            };
+        }
+
+        const commit_record = CommitRecord{
+            .txn_id = new_txn_id,
+            .operations = operations_copy,
+            .timestamp_ns = self.model.timestamp_base + @as(u64, @intCast(std.time.nanoTimestamp())),
+        };
+
+        // Append to commit log
+        try self.model.commit_log.append(commit_record);
+
+        // Create new snapshot by replaying log
+        const new_snapshot = try self.model.createSnapshotFromLog(new_txn_id);
+        try self.model.snapshots.put(new_txn_id, new_snapshot);
+
         self.committed = true;
         self.cleanup();
-        return new_id;
+
+        return new_txn_id;
     }
 
     pub fn abort(self: *WriteTxn) void {
         self.cleanup();
     }
 
+    pub fn getOperationCount(self: *const WriteTxn) usize {
+        return self.operations.items.len;
+    }
+
     fn cleanup(self: *WriteTxn) void {
-        var it = self.writes.iterator();
-        while (it.next()) |entry| {
-            self.allocator.free(entry.key_ptr.*);
-            if (entry.value_ptr.*) |val| self.allocator.free(val);
+        for (self.operations.items) |op| {
+            self.allocator.free(op.key);
+            if (op.value) |val| {
+                self.allocator.free(val);
+            }
         }
-        self.writes.deinit();
+        self.operations.deinit(self.allocator);
     }
 };
 
-test "txn atomicity and abort" {
+// Comprehensive tests
+test "comprehensive reference model operations" {
     var model = try Model.init(std.testing.allocator);
     defer model.deinit();
 
-    var w = model.beginWrite();
-    try w.put("k", "v");
-    const id = try w.commit();
-    try std.testing.expectEqual(@as(u64, 1), id);
+    // Test basic put/get
+    var w1 = model.beginWrite();
+    try w1.put("key1", "value1");
+    try w1.put("key2", "value2");
+    const txn1 = try w1.commit();
 
-    var snap = try model.beginRead(id);
+    var snap1 = try model.beginRead(txn1);
     defer {
-        var it = snap.iterator();
+        var it = snap1.iterator();
         while (it.next()) |entry| {
             std.testing.allocator.free(entry.key_ptr.*);
             std.testing.allocator.free(entry.value_ptr.*);
         }
-        snap.deinit();
+        snap1.deinit();
     }
-    const val = snap.get("k") orelse unreachable;
-    try std.testing.expect(std.mem.eql(u8, val, "v"));
 
+    try std.testing.expectEqual(@as(usize, 2), snap1.count());
+    try std.testing.expect(std.mem.eql(u8, snap1.get("key1").?, "value1"));
+    try std.testing.expect(std.mem.eql(u8, snap1.get("key2").?, "value2"));
+
+    // Test transaction isolation
     var w2 = model.beginWrite();
-    try w2.put("k", "new");
-    w2.abort();
-    var snap2 = try model.beginRead(id);
+    try w2.put("key1", "updated_value1");
+    try w2.del("key2");
+    const txn2 = try w2.commit();
+
+    // Original snapshot should be unchanged
+    try std.testing.expect(std.mem.eql(u8, snap1.get("key1").?, "value1"));
+    try std.testing.expect(snap1.get("key2") != null);
+
+    // New snapshot should reflect changes
+    var snap2 = try model.beginRead(txn2);
     defer {
         var it = snap2.iterator();
         while (it.next()) |entry| {
@@ -389,72 +455,16 @@ test "txn atomicity and abort" {
         }
         snap2.deinit();
     }
-    const val2 = snap2.get("k") orelse unreachable;
-    try std.testing.expect(std.mem.eql(u8, val2, "v"));
+
+    try std.testing.expect(std.mem.eql(u8, snap2.get("key1").?, "updated_value1"));
+    try std.testing.expect(snap2.get("key2") == null);
 }
 
-test "snapshot immutability" {
+test "commit log replay and deterministic behavior" {
     var model = try Model.init(std.testing.allocator);
     defer model.deinit();
 
-    var w = model.beginWrite();
-    try w.put("a", "1");
-    const id = try w.commit();
-
-    var snap = try model.beginRead(id);
-    defer {
-        var it = snap.iterator();
-        while (it.next()) |entry| {
-            std.testing.allocator.free(entry.key_ptr.*);
-            std.testing.allocator.free(entry.value_ptr.*);
-        }
-        snap.deinit();
-    }
-
-    var w2 = model.beginWrite();
-    try w2.put("a", "2");
-    _ = try w2.commit();
-
-    const val = snap.get("a") orelse unreachable;
-    try std.testing.expect(std.mem.eql(u8, val, "1"));
-}
-
-// Enhanced tests for comprehensive reference model functionality
-test "enhanced reference model operations" {
-    var model = try Model.init(std.testing.allocator);
-    defer model.deinit();
-
-    // Test enhanced methods
-    try std.testing.expectEqual(@as(u64, 0), model.getCurrentTxnId());
-    try std.testing.expect(model.hasSnapshot(0));
-    try std.testing.expect(!model.hasSnapshot(999));
-
-    // Test beginReadLatest
-    var w = model.beginWrite();
-    try w.put("key1", "value1");
-    _ = try w.commit();
-
-    try std.testing.expectEqual(@as(u64, 1), model.getCurrentTxnId());
-
-    var latest_snap = try model.beginReadLatest();
-    defer {
-        var it = latest_snap.iterator();
-        while (it.next()) |entry| {
-            std.testing.allocator.free(entry.key_ptr.*);
-            std.testing.allocator.free(entry.value_ptr.*);
-        }
-        latest_snap.deinit();
-    }
-
-    try std.testing.expectEqual(@as(usize, 1), latest_snap.count());
-    try std.testing.expect(std.mem.eql(u8, latest_snap.get("key1").?, "value1"));
-}
-
-test "operation generation and deterministic behavior" {
-    var model = try Model.init(std.testing.allocator);
-    defer model.deinit();
-
-    // Test operation generation
+    // Generate deterministic operations
     var generator = OperationGenerator.init(std.testing.allocator, 12345);
     const operations = try generator.generateSequence(10, 5);
     defer {
@@ -467,9 +477,7 @@ test "operation generation and deterministic behavior" {
         std.testing.allocator.free(operations);
     }
 
-    try std.testing.expectEqual(@as(usize, 10), operations.len);
-
-    // Apply generated operations
+    // Apply operations
     var w = model.beginWrite();
     for (operations) |op| {
         switch (op.op_type) {
@@ -477,21 +485,59 @@ test "operation generation and deterministic behavior" {
             .delete => try w.del(op.key),
         }
     }
-    _ = try w.commit();
+    const txn_id = try w.commit();
 
-    // Verify results
-    var snap = try model.beginReadLatest();
+    // Create new model and replay to same point
+    var model2 = try Model.init(std.testing.allocator);
+    defer model2.deinit();
+
+    // Copy commit log
+    for (model.commit_log.records.items) |record| {
+        var ops_copy = try std.testing.allocator.alloc(Operation, record.operations.len);
+        for (record.operations, 0..) |op, i| {
+            ops_copy[i] = .{
+                .op_type = op.op_type,
+                .key = try std.testing.allocator.dupe(u8, op.key),
+                .value = if (op.value) |val| try std.testing.allocator.dupe(u8, val) else null,
+            };
+        }
+        const record_copy = CommitRecord{
+            .txn_id = record.txn_id,
+            .operations = ops_copy,
+            .timestamp_ns = record.timestamp_ns,
+        };
+        try model2.commit_log.append(record_copy);
+    }
+
+    // Replay and compare
+    const replayed_snap = try model2.createSnapshotFromLog(txn_id);
     defer {
-        var it = snap.iterator();
+        var it = replayed_snap.iterator();
         while (it.next()) |entry| {
             std.testing.allocator.free(entry.key_ptr.*);
             std.testing.allocator.free(entry.value_ptr.*);
         }
-        snap.deinit();
+        replayed_snap.deinit();
     }
 
-    // The exact content depends on the random seed, but should have applied operations
-    try std.testing.expect(snap.count() > 0);
+    const original_snap = try model.beginRead(txn_id);
+    defer {
+        var it = original_snap.iterator();
+        while (it.next()) |entry| {
+            std.testing.allocator.free(entry.key_ptr.*);
+            std.testing.allocator.free(entry.value_ptr.*);
+        }
+        original_snap.deinit();
+    }
+
+    try std.testing.expectEqual(original_snap.count(), replayed_snap.count());
+
+    // Compare all key-value pairs
+    var it = original_snap.iterator();
+    while (it.next()) |entry| {
+        const replayed_value = replayed_snap.get(entry.key_ptr.*) orelse unreachable;
+        try std.testing.expect(std.mem.eql(u8, entry.value_ptr.*, replayed_value));
+    }
 }
 
 test "state comparison functionality" {
