@@ -1,0 +1,57 @@
+name: Nightly
+
+on:
+  schedule:
+    # Run at 2 AM UTC every day
+    - cron: '0 2 * * *'
+  workflow_dispatch: # Allow manual trigger
+
+env:
+  ZIG_VERSION: 0.15.2
+
+jobs:
+  hardening:
+    name: Hardening Suite
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Zig
+      uses: goto-bus-stop/setup-zig@v2
+      with:
+        version: ${{ env.ZIG_VERSION }}
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y jq
+
+    - name: Build benchmark harness
+      run: |
+        zig build
+
+    - name: Run hardening suite
+      run: |
+        ./zig-cache/bin/bench run --suite hardening --repeats 3
+
+    - name: Upload hardening results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: hardening-results-${{ github.run_number }}
+        path: bench/results/
+        retention-days: 90
+
+    - name: Check hardening test passes
+      run: |
+        # Ensure all hardening tests passed (errors_total should be 0)
+        for file in bench/results/bench/hardening/*.json; do
+          if [ -f "$file" ]; then
+            errors=$(jq '.errors_total // 0' "$file")
+            if [ "$errors" -ne 0 ]; then
+              echo "FAIL: Hardening test failed with $errors errors in $file"
+              exit 1
+            fi
+          fi
+        done
+        echo "PASS: All hardening tests completed successfully"
