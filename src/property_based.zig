@@ -101,9 +101,9 @@ pub const PerformanceStats = struct {
 
 /// Dependency analyzer for determining transaction independence
 pub const DependencyAnalyzer = struct {
-    pub fn areIndependent(txn1_ops: []const ref_model.Operation, txn2_ops: []const ref_model.Operation) bool {
+    pub fn areIndependent(txn1_ops: []const ref_model.Operation, txn2_ops: []const ref_model.Operation, allocator: std.mem.Allocator) bool {
         // Two transactions are independent if they operate on disjoint key sets
-        var key_set = std.StringHashMap(void).init(std.testing.allocator);
+        var key_set = std.StringHashMap(void).init(allocator);
         defer key_set.deinit();
 
         // Add all keys from first transaction
@@ -128,8 +128,8 @@ pub const DependencyAnalyzer = struct {
         // First, count independent pairs
         var count: usize = 0;
         for (transactions, 0..) |txn1, i| {
-            for (transactions[i + 1 ..], i + 1..) |txn2, j| {
-                if (areIndependent(txn1, txn2)) {
+            for (transactions[i + 1 ..]) |txn2| {
+                if (areIndependent(txn1, txn2, allocator)) {
                     count += 1;
                 }
             }
@@ -141,11 +141,13 @@ pub const DependencyAnalyzer = struct {
 
         // Fill result array
         for (transactions, 0..) |txn1, i| {
-            for (transactions[i + 1 ..], i + 1..) |txn2, j| {
-                if (areIndependent(txn1, txn2)) {
-                    pairs[idx] = [2]usize{ i, j };
+            var j_idx: usize = i + 1;
+            for (transactions[i + 1 ..]) |txn2| {
+                if (areIndependent(txn1, txn2, allocator)) {
+                    pairs[idx] = [2]usize{ i, j_idx };
                     idx += 1;
                 }
+                j_idx += 1;
             }
         }
 
@@ -192,8 +194,8 @@ pub const CommutativityProperty = struct {
             var generator = ref_model.OperationGenerator.init(self.allocator, self.config.random_seed + @as(u64, @intCast(iteration)));
             for (0..4) |i| {
                 const ops = try generator.generateSequence(
-                    self.config.rng.nextRange(1, self.config.max_keys_per_txn),
-                    self.config.rng.nextRange(5, self.config.max_total_keys),
+                    generator.rng.nextRange(1, self.config.max_keys_per_txn),
+                    generator.rng.nextRange(5, self.config.max_total_keys),
                 );
                 transactions[i] = ops;
             }
@@ -210,8 +212,8 @@ pub const CommutativityProperty = struct {
 
             // Test commutativity on the first independent pair
             const pair = independent_pairs[0];
-            const txn_a = transactions.items[pair[0]];
-            const txn_b = transactions.items[pair[1]];
+            const txn_a = transactions[pair[0]];
+            const txn_b = transactions[pair[1]];
 
             // Create reference models for both orderings
             var model_ab = try ref_model.Model.init(self.allocator);
@@ -263,28 +265,28 @@ pub const CommutativityProperty = struct {
             }
 
             // Compare final states
-            const final_state_ab = try model_ab.beginReadLatest();
-            defer {
-                var it = final_state_ab.iterator();
-                while (it.next()) |entry| {
-                    self.allocator.free(entry.key_ptr.*);
-                    self.allocator.free(entry.value_ptr.*);
-                }
-                final_state_ab.deinit();
-            }
-
-            const final_state_ba = try model_ba.beginReadLatest();
-            defer {
-                var it = final_state_ba.iterator();
-                while (it.next()) |entry| {
-                    self.allocator.free(entry.key_ptr.*);
-                    self.allocator.free(entry.value_ptr.*);
-                }
-                final_state_ba.deinit();
-            }
+            var final_state_ab = try model_ab.beginReadLatest();
+            var final_state_ba = try model_ba.beginReadLatest();
 
             // States should be identical for independent transactions
             if (final_state_ab.count() != final_state_ba.count()) {
+                // Cleanup before error return
+                {
+                    var it = final_state_ab.iterator();
+                    while (it.next()) |entry| {
+                        self.allocator.free(entry.key_ptr.*);
+                        self.allocator.free(entry.value_ptr.*);
+                    }
+                    final_state_ab.deinit();
+                }
+                {
+                    var it = final_state_ba.iterator();
+                    while (it.next()) |entry| {
+                        self.allocator.free(entry.key_ptr.*);
+                        self.allocator.free(entry.value_ptr.*);
+                    }
+                    final_state_ba.deinit();
+                }
                 test_passed = false;
                 err_msg = try std.fmt.allocPrint(self.allocator, "Iteration {}: Different key counts: {} vs {}", .{ iteration, final_state_ab.count(), final_state_ba.count() });
             } else {
@@ -301,6 +303,24 @@ pub const CommutativityProperty = struct {
                         break;
                     }
                 }
+            }
+
+            // Cleanup states
+            {
+                var it = final_state_ab.iterator();
+                while (it.next()) |entry| {
+                    self.allocator.free(entry.key_ptr.*);
+                    self.allocator.free(entry.value_ptr.*);
+                }
+                final_state_ab.deinit();
+            }
+            {
+                var it = final_state_ba.iterator();
+                while (it.next()) |entry| {
+                    self.allocator.free(entry.key_ptr.*);
+                    self.allocator.free(entry.value_ptr.*);
+                }
+                final_state_ba.deinit();
             }
 
             if (test_passed) {
@@ -499,8 +519,8 @@ pub const CrashEquivalenceProperty = struct {
             // Generate transactions
             for (0..num_txns) |i| {
                 const ops = try generator.generateSequence(
-                    self.config.rng.nextRange(1, 10), // Small transactions for crash testing
-                    self.config.rng.nextRange(10, 50),
+                    generator.rng.nextRange(1, 10), // Small transactions for crash testing
+                    generator.rng.nextRange(10, 50),
                 );
                 transactions[i] = ops;
             }
@@ -773,7 +793,7 @@ test "crash equivalence property basic functionality" {
 }
 
 test "dependency analyzer correctly identifies independent transactions" {
-    const allocator = std.testing.allocator;
+    _ = std.testing.allocator;
 
     // Create operations for testing
     const ops1 = [_]ref_model.Operation{
@@ -790,9 +810,9 @@ test "dependency analyzer correctly identifies independent transactions" {
     };
 
     // Test independence detection
-    try std.testing.expect(DependencyAnalyzer.areIndependent(&ops1, &ops2)); // No overlap
-    try std.testing.expect(!DependencyAnalyzer.areIndependent(&ops1, &ops3)); // Overlap on key1
-    try std.testing.expect(DependencyAnalyzer.areIndependent(&ops2, &ops3)); // No overlap
+    try std.testing.expect(DependencyAnalyzer.areIndependent(&ops1, &ops2, std.testing.allocator)); // No overlap
+    try std.testing.expect(!DependencyAnalyzer.areIndependent(&ops1, &ops3, std.testing.allocator)); // Overlap on key1
+    try std.testing.expect(DependencyAnalyzer.areIndependent(&ops2, &ops3, std.testing.allocator)); // No overlap
 }
 
 test "property test runner integration" {
