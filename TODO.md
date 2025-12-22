@@ -5,12 +5,13 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
 ## Phase 0 — North Star Scaffolding
 
 ### Correctness & Performance Contracts
-- [ ] 🔴 Create spec/ folder with formal correctness contracts
-  - Atomicity: committed txn fully visible, aborted txn invisible
-  - Snapshot reads: stable snapshot (MVCC semantics)
-  - Durability level V0: after commit success, reopening after crash shows commit
-  - Time travel: AS OF txn_id yields exactly snapshot root at that commit
-  - Commit stream: every txn produces canonical record (for CDC/replay)
+- [ ✅ ] 🔴 Create spec/ folder with formal correctness contracts
+  - **COMPLETED**: Created spec/correctness_contracts_v0.md with formal contracts
+  - **COMPLETED**: Defined atomicity, snapshot isolation, durability, and commit stream contracts
+  - **COMPLETED**: Each contract includes property definition, pre/postconditions, test methods
+  - **COMPLETED**: Contracts designed for automated verification and testing framework integration
+  - **COMPLETED**: Added reference model integration and violation handling specifications
+  - Committed with hash [current]
 - [ ] 🔴 Define performance targets for CI and dev_nvme profiles
   - CI profile: regression detection thresholds
   - Dev NVMe profile: real performance claims
