@@ -263,7 +263,7 @@ pub const Model = struct {
     }
 
     pub fn compareStates(self: *Model, txn_id1: u64, txn_id2: u64) !bool {
-        const snap1 = try self.beginRead(txn_id1);
+        var snap1 = try self.beginRead(txn_id1);
         defer {
             var it = snap1.iterator();
             while (it.next()) |entry| {
@@ -273,7 +273,7 @@ pub const Model = struct {
             snap1.deinit();
         }
 
-        const snap2 = try self.beginRead(txn_id2);
+        var snap2 = try self.beginRead(txn_id2);
         defer {
             var it = snap2.iterator();
             while (it.next()) |entry| {

@@ -7,6 +7,7 @@ const std = @import("std");
 const wal = @import("wal.zig");
 const replay = @import("replay.zig");
 const txn = @import("txn.zig");
+const ref_model = @import("ref_model.zig");
 
 /// Fault injector for simulating various corruption scenarios
 pub const FaultInjector = struct {
@@ -437,6 +438,246 @@ pub const TestResult = struct {
     }
 };
 
+/// Crash harness for task queue workload with prefix-check verification
+/// Simulates random crashes during task queue operations and verifies recovery
+pub fn crashHarnessTaskQueue(db_path: []const u8, allocator: std.mem.Allocator, seed: u64, crash_at_txn: ?u64) !TestResult {
+    const test_name = if (crash_at_txn) |target_txn| try std.fmt.allocPrint(allocator, "crash_task_queue_at_txn_{d}", .{target_txn}) else "crash_task_queue_random";
+    defer {
+        if (crash_at_txn != null) allocator.free(test_name);
+    }
+    var result = TestResult.init(test_name, allocator);
+
+    // Delete existing files if present
+    std.fs.cwd().deleteFile(db_path) catch {};
+    const wal_path = try std.fmt.allocPrint(allocator, "{s}.log", .{std.fs.path.stem(db_path)});
+    defer allocator.free(wal_path);
+    std.fs.cwd().deleteFile(wal_path) catch {};
+
+    // Create reference model for verification
+    var reference = try ref_model.Model.init(allocator);
+    defer reference.deinit();
+
+    // Create WAL for commit log
+    var test_wal = try wal.WriteAheadLog.create(wal_path, allocator);
+    defer test_wal.deinit();
+
+    // Parameters for task queue workload
+    const total_tasks: u64 = 50;
+    const agents: usize = 5;
+    const claim_attempts_per_agent: usize = 3;
+    const completion_rate: f64 = 0.7;
+
+    var prng = std.Random.DefaultPrng.init(seed);
+    const rand = prng.random();
+
+    var committed_txns: u64 = 0;
+    var crash_txn: u64 = 0;
+
+    // Phase 1: Create tasks
+    for (0..total_tasks) |task_id| {
+        var task_key_buf: [32]u8 = undefined;
+        const task_key = try std.fmt.bufPrint(&task_key_buf, "task:{d}", .{task_id});
+
+        const priority = rand.intRangeLessThan(u8, 1, 10);
+        const task_type = rand.intRangeLessThan(u8, 1, 8);
+        const created_at = std.time.timestamp();
+
+        var task_value_buf: [128]u8 = undefined;
+        const task_value = try std.fmt.bufPrint(&task_value_buf,
+            "{{\"priority\":{},\"type\":{},\"created_at\":{},\"status\":\"pending\"}}",
+            .{ priority, task_type, created_at });
+
+        // Add to reference model
+        var write_txn = reference.beginWrite();
+        try write_txn.put(task_key, task_value);
+        _ = try write_txn.commit();
+
+        committed_txns += 1;
+
+        // Commit to WAL
+        const mutations = &[_]txn.Mutation{
+            txn.Mutation{ .put = .{ .key = task_key, .value = task_value } },
+        };
+        var record = txn.CommitRecord{
+            .txn_id = committed_txns,
+            .root_page_id = 0,
+            .mutations = mutations,
+            .checksum = 0,
+        };
+        record.checksum = record.calculatePayloadChecksum();
+        _ = try test_wal.appendCommitRecord(record);
+        try test_wal.flush();
+
+        // Check if we should crash here
+        if (crash_at_txn) |target| {
+            if (committed_txns == target) {
+                crash_txn = committed_txns;
+                break;
+            }
+        } else if (rand.float(f64) < 0.05) { // 5% chance to crash after each task creation
+            crash_txn = committed_txns;
+            break;
+        }
+    }
+
+    // Phase 2: Agent claims (simulate crash at various points)
+    if (crash_txn == 0) {
+        for (0..agents) |agent_id| {
+            var w = reference.beginWrite();
+
+            for (0..claim_attempts_per_agent) |_| {
+                const task_id = rand.intRangeLessThan(u64, 0, total_tasks);
+                const claim_timestamp = std.time.timestamp();
+
+                // Create claim key
+                var claim_key_buf: [64]u8 = undefined;
+                const claim_key = try std.fmt.bufPrint(&claim_key_buf, "claim:{d}:{d}", .{ task_id, agent_id });
+                var claim_val_buf: [32]u8 = undefined;
+                const claim_val = try std.fmt.bufPrint(&claim_val_buf, "{d}", .{claim_timestamp});
+
+                // Add to reference model
+                try w.put(claim_key, claim_val);
+
+                committed_txns += 1;
+
+                // Commit to WAL
+                const mutations = &[_]txn.Mutation{
+                    txn.Mutation{ .put = .{ .key = claim_key, .value = claim_val } },
+                };
+                var record = txn.CommitRecord{
+                    .txn_id = committed_txns,
+                    .root_page_id = 0,
+                    .mutations = mutations,
+                    .checksum = 0,
+                };
+                record.checksum = record.calculatePayloadChecksum();
+                _ = try test_wal.appendCommitRecord(record);
+                try test_wal.flush();
+
+                // Check if we should crash
+                if (crash_at_txn) |target| {
+                    if (committed_txns == target) {
+                        crash_txn = committed_txns;
+                        break;
+                    }
+                } else if (rand.float(f64) < 0.08) { // 8% chance to crash during claims
+                    crash_txn = committed_txns;
+                    break;
+                }
+            }
+
+            _ = try w.commit();
+
+            if (crash_txn > 0) break;
+        }
+    }
+
+    // Phase 3: Task completions (if no crash yet)
+    if (crash_txn == 0) {
+        const tasks_to_complete = @as(u64, @intFromFloat(@as(f64, @floatFromInt(total_tasks)) * completion_rate));
+
+        for (0..tasks_to_complete) |_| {
+            const task_id = rand.intRangeLessThan(u64, 0, total_tasks);
+            const completion_timestamp = std.time.timestamp();
+
+            var completed_key_buf: [32]u8 = undefined;
+            const completed_key = try std.fmt.bufPrint(&completed_key_buf, "completed:{d}", .{task_id});
+            var completed_val_buf: [32]u8 = undefined;
+            const completed_val = try std.fmt.bufPrint(&completed_val_buf, "{d}", .{completion_timestamp});
+
+            var w = reference.beginWrite();
+            try w.put(completed_key, completed_val);
+            _ = try w.commit();
+
+            committed_txns += 1;
+
+            // Commit to WAL
+            const mutations = &[_]txn.Mutation{
+                txn.Mutation{ .put = .{ .key = completed_key, .value = completed_val } },
+            };
+            var record = txn.CommitRecord{
+                .txn_id = committed_txns,
+                .root_page_id = 0,
+                .mutations = mutations,
+                .checksum = 0,
+            };
+            record.checksum = record.calculatePayloadChecksum();
+            _ = try test_wal.appendCommitRecord(record);
+            try test_wal.flush();
+
+            // Check if we should crash
+            if (crash_at_txn) |target| {
+                if (committed_txns == target) {
+                    crash_txn = committed_txns;
+                    break;
+                }
+            } else if (rand.float(f64) < 0.1) { // 10% chance to crash during completions
+                crash_txn = committed_txns;
+                break;
+            }
+
+            if (crash_txn > 0) break;
+        }
+    }
+
+    // If no crash triggered, use the last committed txn
+    if (crash_txn == 0) {
+        crash_txn = committed_txns;
+    }
+
+    // Now simulate crash by reopening with replay engine
+    // The replay engine should only see transactions up to crash_txn
+    var engine = try replay.ReplayEngine.init(allocator, wal_path);
+    defer engine.deinit();
+
+    var replay_result = try engine.rebuildAll();
+    defer replay_result.deinit();
+
+    // Prefix-check: replayed state should match reference model at crash_txn
+    // Use reference.beginRead to get the snapshot at crash_txn
+    var ref_snapshot = try reference.beginRead(crash_txn);
+    defer {
+        var it = ref_snapshot.iterator();
+        while (it.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            allocator.free(entry.value_ptr.*);
+        }
+        ref_snapshot.deinit();
+    }
+
+    // Verify that replayed state matches reference model
+    var ref_it = ref_snapshot.iterator();
+    while (ref_it.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const expected_value = entry.value_ptr.*;
+
+        const actual_value = engine.get(key) orelse {
+            result.fail("Key '{s}' exists in reference model but not in replayed state", .{key});
+            return result;
+        };
+
+        if (!std.mem.eql(u8, expected_value, actual_value)) {
+            result.fail("Value mismatch for key '{s}': expected '{s}', got '{s}'", .{ key, expected_value, actual_value });
+            return result;
+        }
+    }
+
+    // Verify that replay processed the correct number of transactions
+    if (replay_result.processed_txns > crash_txn) {
+        result.fail("Processed {} transactions but should only have processed up to txn {}", .{ replay_result.processed_txns, crash_txn });
+        return result;
+    }
+
+    // Verify last_txn_id matches or is less than crash_txn
+    if (replay_result.last_txn_id > crash_txn) {
+        result.fail("last_txn_id {} exceeds crash_txn {}", .{ replay_result.last_txn_id, crash_txn });
+        return result;
+    }
+
+    result.pass();
+    return result;
+}
+
 /// Run all hardening tests
 pub fn runAllHardeningTests(allocator: std.mem.Allocator) ![]TestResult {
     const test_log_prefix = "hardening_test";
@@ -504,6 +745,51 @@ pub fn runAllHardeningTests(allocator: std.mem.Allocator) ![]TestResult {
         try results.append(result);
     }
 
+    // Test 7: Crash harness task queue (random crash)
+    {
+        const db_path = "hardening_crash_task_queue_test.db";
+        defer std.fs.cwd().deleteFile(db_path) catch {};
+
+        const result = try crashHarnessTaskQueue(db_path, allocator, 12345, null);
+        try results.append(result);
+    }
+
+    // Test 8: Crash harness task queue (crash at txn 10)
+    {
+        const db_path = "hardening_crash_task_queue_txn10.db";
+        defer std.fs.cwd().deleteFile(db_path) catch {};
+
+        const result = try crashHarnessTaskQueue(db_path, allocator, 54321, 10);
+        try results.append(result);
+    }
+
     return results.toOwnedSlice();
 }
 
+// ==================== Unit Tests ====================
+
+test "crash harness task queue - random crash" {
+    const db_path = "test_crash_task_queue_random.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var result = try crashHarnessTaskQueue(db_path, std.testing.allocator, 42, null);
+    defer result.deinit();
+
+    try std.testing.expect(result.passed);
+    if (result.failure_reason) |reason| {
+        std.debug.print("Test failed: {s}\n", .{reason});
+    }
+}
+
+test "crash harness task queue - crash at txn 5" {
+    const db_path = "test_crash_task_queue_txn5.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+
+    var result = try crashHarnessTaskQueue(db_path, std.testing.allocator, 999, 5);
+    defer result.deinit();
+
+    try std.testing.expect(result.passed);
+    if (result.failure_reason) |reason| {
+        std.debug.print("Test failed: {s}\n", .{reason});
+    }
+}
