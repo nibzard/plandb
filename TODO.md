@@ -410,6 +410,59 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
 - [ ] 🟠 Macrobench demonstrating latency improvement vs baseline scan
 - [ ] 🟡 Add rebuild triggers and admin introspection API
 
+## Phase 7 — Living Database: AI Intelligence Layer
+
+*See [PLAN-LIVING-DB.md](./PLAN-LIVING-DB.md) for detailed 6-month implementation plan, architecture, and success metrics*
+
+### AI Plugin Foundation
+- [ ] 🔴 Design `src/llm/` module architecture with provider-agnostic interface
+- [ ] 🔴 Implement OpenAI-compatible client interface with function calling
+- [ ] 🔴 Design plugin lifecycle system (init, on_commit, on_query, cleanup)
+- [ ] 🔴 Extend commit record processing with plugin hooks
+- [ ] 🟠 Add Anthropic and local model provider support
+- [ ] 🟠 Implement asynchronous plugin execution with error isolation
+- [ ] 🟡 Add plugin development framework and debugging tools
+
+### Structured Memory Cartridges
+- [ ] 🔴 Design entity-topic-relationship cartridge storage format
+- [ ] 🔴 Implement entity extraction plugin with function calling
+- [ ] 🔴 Create inverted index for fast term lookup with back-pointers
+- [ ] 🔴 Add relationship graph storage and traversal operations
+- [ ] 🟠 Implement topic-based query interface with scope expressions
+- [ ] 🟠 Add natural language to structured query conversion
+- [ ] 🟡 Implement cartridge versioning and migration support
+
+### Intelligent Query System
+- [ ] 🔴 Implement LLM-powered natural language query planning
+- [ ] 🔴 Add query optimization for entity/topic access patterns
+- [ ] 🔴 Implement query routing to optimal cartridges
+- [ ] 🟠 Add predictive cartridge building based on query patterns
+- [ ] 🟠 Implement smart cache warming and prefetch strategies
+- [ ] 🟡 Add query result summarization and relevance ranking
+
+### Autonomous Database Operations
+- [ ] 🔴 Implement usage pattern detection and analysis
+- [ ] 🔴 Add self-optimizing cartridge building and maintenance
+- [ ] 🔴 Implement automatic data archival and compression
+- [ ] 🟠 Add tiered storage management and cost optimization
+- [ ] 🟠 Implement performance regression detection and auto-tuning
+- [ ] 🟡 Add comprehensive AI operation observability and debugging
+
+### Advanced AI Plugins
+- [ ] 🔴 Context summarization plugin (prevents context explosion)
+- [ ] 🔴 Code relationship extraction plugin (discovers hidden connections)
+- [ ] 🔴 Performance bottleneck detection plugin
+- [ ] 🟠 Security vulnerability detection plugin
+- [ ] 🟠 Custom plugin marketplace and sharing platform
+- [ ] 🟡 Multi-model orchestration for task-specific optimization
+
+### Production Readiness
+- [ ] 🔴 Implement comprehensive AI security and privacy controls
+- [ ] 🔴 Add cost management and optimization for LLM operations
+- [ ] 🔴 Create migration tools from vanilla NorthstarDB installations
+- [ ] 🟠 Add AI feature toggle and gradual rollout capabilities
+- [ ] 🟡 Implement compliance and audit logging for AI operations
+
 ## Infrastructure & CI
 - [ ✅ ] 🔴 CI: run unit/property + microbenches (trimmed) and gate regressions
   - **COMPLETED**: Full GitHub Actions CI workflow with automated benchmark regression gating

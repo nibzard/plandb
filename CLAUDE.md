@@ -4,14 +4,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-NorthstarDB is a database built from scratch in Zig, designed for massive read concurrency and deterministic replay. The project follows a strict principle: **benchmarks and tests are the source of truth**. No DB implementation changes are allowed unless all benchmarks and hardening tests pass.
+NorthstarDB is a database built from scratch in Zig, designed for massive read concurrency and deterministic replay. The project follows a strict principle: **benchmarks and tests are the source of truth**.
+
+**Vision**: Transform from a traditional embedded database into a **"Living Database"** with AI-driven intelligence that autonomously maintains, optimizes, and understands its own data using structured memory cartridges.
+
+*See [PLAN-LIVING-DB.md](./PLAN-LIVING-DB.md) for the complete AI intelligence roadmap*
 
 ## Core Architecture
 
 - **Language**: Zig (explicit memory, explicit errors, explicit performance)
 - **Storage**: Single file format with pager system
-- **Core components**: Pager (page allocation, IO), B+tree (ordered KV), MVCC snapshots, Commit stream
-- **Design goal**: Many readers, single writer (initially) with crash safety
+- **Core components**: Pager (page allocation, IO), B+tree (ordered KV), MVCC snapshots, Commit stream, AI Plugin System
+- **Design goal**: Many readers, single writer (initially) with crash safety and AI-powered optimization
+- **Target workload**: Orchestrated AI coding agents with massive concurrent access and semantic understanding
 
 ## Common Commands
 
@@ -64,6 +69,11 @@ zig test src/ref_model.zig
   - `suite.zig` - Benchmark definitions
   - `types.zig` - Common benchmark types
   - `compare.zig` - Baseline comparison logic
+- **AI Intelligence Layer (Phase 7)**:
+  - `src/llm/` - Provider-agnostic LLM interface with function calling
+  - `src/plugins/` - AI plugin system and hook management
+  - `src/cartridges/` - Structured memory cartridges (entities, topics, relationships)
+  - `src/queries/` - Natural language query planning and optimization
 
 ### Specifications
 All critical specifications are in `spec/`:
@@ -71,11 +81,20 @@ All critical specifications are in `spec/`:
 - `hardening_v0.md` - Crash consistency and fuzz tests
 - `semantics_v0.md` - MVCC and transaction semantics
 - `file_format_v0.md` - On-disk format specification
+- **AI Intelligence Specifications**:
+  - `PLAN-LIVING-DB.md` - Complete AI intelligence architecture and roadmap
+  - Future: `ai_plugins_v1.md` - AI plugin API and function calling specifications
+  - Future: `structured_memory_v1.md` - Entity-topic-relationship cartridge formats
 
 ### Baselines
 Benchmark baselines stored in `bench/baselines/`:
 - `ci/` - CI baselines (regression gates)
 - `dev_nvme/` - Development baselines
+
+### Planning Documents
+- `TODO.md` - Comprehensive task tracking across all phases (0-7)
+- `benchmark-plan.md` - Original benchmark specification and methodology
+- `PLAN-LIVING-DB.md` - Detailed 6-month AI intelligence implementation plan
 
 ## Development Workflow
 
@@ -100,6 +119,13 @@ Benchmark baselines stored in `bench/baselines/`:
 - **Suite C**: MVCC snapshots (readers scaling, conflict detection)
 - **Suite D**: Time-travel/commit stream (record append, replay, snapshot by txn)
 
+### AI Intelligence Benchmarks (Phase 7)
+
+- **Entity/Topic Extraction**: LLM function calling performance and accuracy
+- **Natural Language Queries**: Semantic search vs structured query performance
+- **Autonomous Optimization**: Cartridge building and maintenance efficiency
+- **Memory Efficiency**: Structured memory vs vector embedding storage comparison
+
 ## Key Constraints
 
 - No DB implementation changes unless benchmarks and tests are green
@@ -107,17 +133,22 @@ Benchmark baselines stored in `bench/baselines/`:
 - Correctness first, proven continuously with property tests
 - State is derived; the log is truth
 - Pay coordination at commit, not on every read
+- **AI Operations**: Deterministic function calling, no black-box embeddings
+- **Provider Agnostic**: Support OpenAI, Anthropic, local models interchangeably
+- **Autonomous Intelligence**: Database should understand and optimize itself
 
 ## Design Principles
 
 ### Domain-Driven Design (DDD)
-- **Ubiquitous Language**: Use consistent terminology across code and specs (TxnId, PageId, Lsn, Snapshot)
+- **Ubiquitous Language**: Use consistent terminology across code and specs (TxnId, PageId, Lsn, Snapshot, Entity, Topic, Relationship)
 - **Bounded Contexts**: Each module has clear responsibility:
   - Pager: Physical storage and page management
   - B+tree: Logical ordering and tree operations
   - MVCC: Concurrency control and versioning
   - Log: Commit stream and replay semantics
+  - **AI Layer**: Plugin system, structured memory, intelligent queries
 - **Domain Isolation**: Core domain logic independent of infrastructure concerns
+- **Intelligence Integration**: AI capabilities enhance rather than replace core database functionality
 
 ### Modularity
 - **Explicit Dependencies**: Each module imports only what it needs
@@ -152,9 +183,25 @@ The project uses Zig's build system (`build.zig`) which creates:
 - Test targets for unit tests
 - No external dependencies currently
 
-Adding //! documentation at the top of each file would be valuable for:
-  1. Quickly understanding each module's purpose          
-  2. Generating documentation (Zig has built-in docs generation)
-  3. Helping new contributors navigate the codebase
+**Phase 7 Dependencies**: AI intelligence layer will add:
+- HTTP client libraries for LLM API communication
+- JSON schema validation for function calling
+- Optional: Local model runtime dependencies
+
+## Working with AI Features
+
+When implementing AI intelligence (Phase 7):
+- Always prefer **function calling** over embeddings for deterministic results
+- Maintain **provider agnosticism** - support OpenAI, Anthropic, local models
+- **Performance isolation** - AI operations must not degrade core database performance
+- **Graceful degradation** - Database remains functional even when AI services are unavailable
+
+## Documentation Standards
+
+Adding `//!` documentation at the top of each file is critical for:
+1. Quickly understanding each module's purpose
+2. Generating documentation (Zig has built-in docs generation)
+3. Helping new contributors navigate the codebase
+4. **AI documentation** - Plugin interfaces and function schemas require thorough documentation
 
 You're allowed to implement the DB only if the benchmarks and tests are green

@@ -2,15 +2,17 @@
 
 A database built from scratch in **Zig** as a step-by-step educational project — with a hard constraint: **benchmarks and hardening tests are the source of truth**.
 
-We start with a minimal, real database kernel (pager + B+tree + MVCC snapshots + crash safety). We grow it into a “database for the future” optimized for:
+We start with a minimal, real database kernel (pager + B+tree + MVCC snapshots + crash safety). We grow it into a **"Living Database"** that autonomously maintains, optimizes, and understands its own data using AI intelligence.
 
+**Core Capabilities:**
 - **Massive read concurrency** (orchestrated AI coding agents, swarms, IDE copilots)
 - **Deterministic replay** (commit stream as an audit log)
 - **Time travel** (query historical snapshots cheaply)
 - **Cartridges** (offline-built, hot-path artifacts that make graph/vector queries fast)
+- **🆕 AI Intelligence** (structured memory cartridges, natural language queries, autonomous optimization)
 - **Cloud reality** (durability and coordination move to replicated logs over time)
 
-This repo is deliberately designed so you can learn database internals by building one — and then keep going until it becomes production-quality.
+This repo is deliberately designed so you can learn database internals by building one — and then keep going until it becomes the intelligent database foundation for AI agent orchestration.
 
 ---
 
@@ -36,7 +38,10 @@ Existing databases each miss important pieces:
 2. **Commit stream** as the durable audit log (CDC + replay)
 3. **Time travel** as a first-class query mode
 4. **Cartridges** for precomputed hot paths (graph adjacency, HNSW, transitive closure)
-5. A growth path from **embedded → replicated/distributed**
+5. **🆕 Structured Memory** - AI-extracted entities, topics, and relationships for semantic understanding
+6. **🆕 Natural Language Queries** - Ask "what performance optimizations did niko make to the btree?"
+7. **🆕 Autonomous Optimization** - Database maintains and optimizes itself based on usage patterns
+8. A growth path from **embedded → replicated/distributed → intelligent**
 
 ---
 
@@ -93,6 +98,21 @@ Cartridges are “read-optimized materializations” with explicit invalidation 
 - leader commits to a replicated log
 - replicas materialize state from the log
 - reads served locally, coordination paid at commit
+
+### Phase 5 — Living Database: AI Intelligence (Month 7-12)
+**Transform into an intelligent database that understands and optimizes itself:**
+
+- **Structured Memory Cartridges** - AI-extracted entities, topics, relationships from commit stream
+- **Natural Language Interface** - Query by intent: "show me all database corruption fixes"
+- **Autonomous Maintenance** - Automatic context summarization, relationship discovery, optimization
+- **Plugin Ecosystem** - Extensible AI functions for domain-specific intelligence
+- **Provider Agnostic** - OpenAI, Anthropic, local models with deterministic function calling
+
+*See [PLAN-LIVING-DB.md](./PLAN-LIVING-DB.md) for complete architecture and implementation roadmap*
+
+**Timeline:**
+- **Months 1-6**: Core database functionality (kernel, time travel, cartridges)
+- **Months 7-12**: AI intelligence layer (structured memory, intelligent queries, autonomy)
 
 ---
 

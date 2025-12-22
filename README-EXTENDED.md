@@ -4,12 +4,19 @@ A database built from scratch in **Zig** as a step-by-step educational project �
 
 > **Benchmarks and hardening tests are the source of truth.**
 
-We start with a minimal, real database kernel (pager + B+tree + MVCC snapshots + crash safety). We grow it into a database designed for the next decade: **SSD-first**, **network-aware**, **replayable**, and able to serve **orchestrated AI coding agents** at scale.
+We start with a minimal, real database kernel (pager + B+tree + MVCC snapshots + crash safety). We grow it into a **"Living Database"** designed for the next decade: **intelligent**, **SSD-first**, **network-aware**, **replayable**, and able to serve **orchestrated AI coding agents** at scale.
+
+**Revolutionary Addition: AI Intelligence Layer (Phase 5)**
+The database transforms from passive storage into an active partner that:
+- **Understands** its own data through structured memory extraction
+- **Speaks natural language** - query by intent instead of syntax
+- **Optimizes itself** based on usage patterns and domain knowledge
+- **Learns relationships** and maintains them automatically
 
 This repository is meant to be both:
 
 - a rigorous, learn-by-building database curriculum, and
-- the seed of a future database that can replace duct-taped stacks (Redis + Postgres + S3 + vector DB + graph DB + custom glue).
+- the seed of an **intelligent database** that can replace duct-taped stacks (Redis + Postgres + S3 + vector DB + graph DB + custom glue + manual optimization).
 
 ---
 
@@ -24,8 +31,10 @@ This repository is meant to be both:
   - [V1: time travel + commit stream](#v1-time-travel--commit-stream)
   - [V2: cartridges](#v2-cartridges)
   - [V3: distributed durability](#v3-distributed-durability)
+  - [V4: Living Database - AI Intelligence](#v4-living-database---ai-intelligence)
 - [Correctness model](#correctness-model)
 - [Performance model](#performance-model)
+- [AI Intelligence Model](#ai-intelligence-model)
 - [Benchmarks: how we measure and gate](#benchmarks-how-we-measure-and-gate)
 - [Hardening: how we break it on purpose](#hardening-how-we-break-it-on-purpose)
 - [File format and compatibility](#file-format-and-compatibility)
@@ -173,6 +182,34 @@ The kernel is designed so the transition is evolutionary:
 - embedded mode: log records exist but are local
 - distributed mode: the same log records flow through replication
 
+### V4: Living Database - AI Intelligence
+
+**Vision**: Database that autonomously maintains, optimizes, and understands its own data using deterministic AI function calling.
+
+**Core Innovation**: Structured Memory Cartridges that extract and maintain semantic understanding rather than storing opaque embeddings.
+
+**AI Intelligence Components:**
+
+1. **Plugin System**: Provider-agnostic LLM interface (OpenAI, Anthropic, local models)
+2. **Structured Memory**: Entity-topic-relationship cartridges extracted from commit stream
+3. **Natural Language Interface**: Query by intent - "what performance optimizations did niko make?"
+4. **Autonomous Operations**: Self-optimization based on usage patterns
+5. **Function Calling Framework**: Deterministic operations, not black-box similarity
+
+**Architecture Integration:**
+```
+Commit Stream → LLM Function Calling → Structured Memory Cartridges → Intelligent Queries
+```
+
+**Key Benefits:**
+- **10x smaller storage** vs vector embeddings (inverted index vs 4K vectors per message)
+- **Deterministic queries** vs fuzzy similarity matching
+- **Semantic understanding** with exact relationship tracking
+- **Autonomous optimization** - database maintains itself
+- **Provider agnostic** - switch LLM providers without retraining
+
+*See [PLAN-LIVING-DB.md](./PLAN-LIVING-DB.md) for complete 6-month implementation roadmap*
+
 ---
 
 ## Correctness model
@@ -215,6 +252,58 @@ We explicitly distinguish:
 - **hot path**: data in memory / page cache warm
 - **cold path**: data on SSD / OS cache dropped
 - **commit path**: includes fsync or durability boundary
+
+---
+
+## AI Intelligence Model
+
+The Living Database adds a new dimension of performance and capability measurement beyond traditional database metrics.
+
+### Intelligence Metrics
+
+**Semantic Understanding:**
+- Entity extraction accuracy (>95% for structured data)
+- Relationship inference precision (>90% for code/workflow relationships)
+- Topic relevance ranking for query results
+
+**Autonomous Operations:**
+- Pattern detection time (<1s for 1M operations)
+- Optimization effectiveness (>50% improvement in hot paths)
+- Storage efficiency gains (10x vs vector embeddings)
+
+**Query Intelligence:**
+- Natural language to structured query conversion accuracy
+- Intent recognition rate (>95% for common domain queries)
+- Result relevance scoring precision
+
+### Function Calling Performance
+
+**Deterministic Operations:**
+- Function call latency (<500ms including LLM response)
+- Success rate (>99% for well-defined schema operations)
+- Provider switching overhead (<100ms between different LLMs)
+
+**Structured Memory Efficiency:**
+- Entity lookup speed (<1ms for 1M entities in RAM)
+- Relationship traversal time (<100ms for 3-hop queries)
+- Topic index compression ratio (10x vs raw text)
+
+**Autonomous Maintenance:**
+- Usage pattern analysis time (<1s for 1K operations)
+- Cartridge building speed (<10s for 100K entities)
+- Memory cleanup efficiency (>95% reclaimed for unused data)
+
+### Cost Optimization
+
+**LLM Usage Efficiency:**
+- Caching hit rate for repetitive queries (>80%)
+- Batch operation optimization (5x reduction in API calls)
+- Smart query routing to optimal models (cost vs quality tradeoffs)
+
+**Storage Economics:**
+- Structured memory vs vector storage cost comparison
+- Hot vs cold data tiering effectiveness
+- Autonomous compression and archival impact
 
 ---
 
