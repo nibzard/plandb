@@ -17,8 +17,10 @@ pub const BenchmarkResult = struct {
     git: Git,
 };
 
+pub const ProfileName = enum { ci, dev_nvme, custom };
+
 pub const Profile = struct {
-    name: enum { ci, dev_nvme, custom },
+    name: ProfileName,
     cpu_model: ?[]const u8 = null,
     core_count: u32,
     ram_gb: f64,

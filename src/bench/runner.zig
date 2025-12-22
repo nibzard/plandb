@@ -694,9 +694,12 @@ pub const Runner = struct {
         // Store cleanup info
         self.profile_cleanup = sys_info;
 
+        // Determine profile based on hardware capabilities
+        const profile_name = determineProfile(sys_info);
+
         // Create and cache the profile
         const profile = types.Profile{
-            .name = .ci,
+            .name = profile_name,
             .cpu_model = sys_info.cpu_model,
             .core_count = sys_info.core_count,
             .ram_gb = sys_info.ram_gb,
@@ -706,6 +709,32 @@ pub const Runner = struct {
 
         self.cached_profile = profile;
         return profile;
+    }
+
+    /// Determine profile based on system capabilities according to spec/machine_specs_v0.md
+    fn determineProfile(sys_info: system_info.SystemInfo) types.ProfileName {
+        // Check for dev_nvme profile requirements
+        if (sys_info.core_count >= 8 and sys_info.ram_gb >= 16.0) {
+            // Additional heuristics for NVMe detection
+            if (isHighPerformanceStorage(sys_info.fs_type)) {
+                return .dev_nvme;
+            }
+        }
+
+        // Default to CI profile
+        return .ci;
+    }
+
+    /// Heuristic detection of high-performance storage
+    fn isHighPerformanceStorage(fs_type: ?[]const u8) bool {
+        if (fs_type) |fs| {
+            // Check for common indicators of high-performance storage
+            if (std.mem.indexOf(u8, fs, "ext4") != null or
+                std.mem.indexOf(u8, fs, "xfs") != null) {
+                return true;
+            }
+        }
+        return false;
     }
 
     fn detectBuild(self: *Runner) !types.Build {

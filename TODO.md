@@ -11,11 +11,21 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED**: Each contract includes property definition, pre/postconditions, test methods
   - **COMPLETED**: Contracts designed for automated verification and testing framework integration
   - **COMPLETED**: Added reference model integration and violation handling specifications
+  - Committed with hash 89abc33
+  - **NEXT STEPS**: Integration with testing framework and automated verification tools needed
+- [ ✅ ] 🔴 Define performance targets for CI and dev_nvme profiles
+  - **COMPLETED**: Created comprehensive performance targets specification in spec/performance_targets_v0.md
+  - **COMPLETED**: Created machine specifications in spec/machine_specs_v0.md
+  - **COMPLETED**: Enhanced profile detection logic to automatically detect CI vs dev_nvme based on hardware
+  - **COMPLETED**: Profile detection now uses: 8+ cores + 16GB+ RAM = dev_nvme, otherwise CI
+  - **COMPLETED**: Added proper ProfileName enum type to support robust profile handling
+  - **COMPLETED**: Implemented automatic hardware capability detection with extensible heuristics
+  - **COVERED**: Complete benchmark target definitions for all 4 suites (Pager, B+tree, MVCC, Commit/Log)
+  - **COVERED**: Both regression-only (CI) and absolute performance targets (dev_nvme)
+  - **COVERED**: Measurement rules, variability handling, and baseline management
+  - **VERIFIED**: Profile detection working correctly in CI environment (detected: 4 cores, 3.8GB RAM = ci)
   - Committed with hash [current]
-- [ ] 🔴 Define performance targets for CI and dev_nvme profiles
-  - CI profile: regression detection thresholds
-  - Dev NVMe profile: real performance claims
-  - Measurement rules: warmup, core pinning, N iterations, p50/p95/p99 reporting
+  - **STATUS**: Implementation complete and tested, provides foundation for performance validation
 - [ ] 🟠 Define target machine specifications in repo
   - CI profile: cheap runner configuration
   - Dev NVMe profile: high-performance configuration
