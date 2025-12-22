@@ -3,6 +3,21 @@
 Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · 🟢 P3 (low)
 
 ## Phase 0 — North Star Scaffolding
+
+### Correctness & Performance Contracts
+- [ ] 🔴 Create spec/ folder with formal correctness contracts
+  - Atomicity: committed txn fully visible, aborted txn invisible
+  - Snapshot reads: stable snapshot (MVCC semantics)
+  - Durability level V0: after commit success, reopening after crash shows commit
+  - Time travel: AS OF txn_id yields exactly snapshot root at that commit
+  - Commit stream: every txn produces canonical record (for CDC/replay)
+- [ ] 🔴 Define performance targets for CI and dev_nvme profiles
+  - CI profile: regression detection thresholds
+  - Dev NVMe profile: real performance claims
+  - Measurement rules: warmup, core pinning, N iterations, p50/p95/p99 reporting
+- [ ] 🟠 Define target machine specifications in repo
+  - CI profile: cheap runner configuration
+  - Dev NVMe profile: high-performance configuration
 - [ ✅ ] 🔴 Emit per-repeat JSON files (no aggregation) with stable filenames
   - **COMPLETED**: Implemented per-repeat JSON output with zero-padded stable filenames
   - **COMPLETED**: Files now use format `benchmark_r000.json`, `benchmark_r001.json`, etc.
@@ -46,6 +61,21 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - Committed with hash 73892ba
 - [ ] 🟡 Baseline discovery: compare entire output dir vs baseline dir
 - [ ] 🟡 Document harness usage, filters, baselines, and JSON layout
+
+### Reference Model Testing Framework
+- [ ] 🔴 Build comprehensive in-memory reference model with MVCC snapshots
+  - Map state + MVCC snapshots + commit log
+  - Seedable random operation sequence generation
+  - Byte-identical state comparison between reference and DB
+- [ ] 🔴 Implement property-based testing framework
+  - Commutativity checks (reorder independent txns → same final state)
+  - Batch vs single-op equivalence (100 keys in one txn vs 100 txns)
+  - Crash equivalence (crash at any point ≡ some prefix of commits applied)
+- [ ] 🟠 Concurrency schedule torture testing
+  - Many readers + one writer validation
+  - Snapshot isolation invariants
+  - Forced yields at lock/page cache boundaries
+- [ ] 🟡 Add metamorphic test generators for all API operations
 
 ## Phase 1 — Pager (V0)
 - [✅] 🔴 Define page header and meta structs per `spec/file_format_v0.md`
@@ -343,13 +373,35 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED**: Built successfully with proper Zig module imports and dependencies
   - Committed with hash ef2c00c
 
-## Phase 5 — Macrobench: Task Queue
+## Phase 5 — Macrobench Scenarios
+
+### Macrobench 1: Task Queue + Claims
 - [ ] 🔴 Define key layout and invariants for tasks and claims
 - [ ] 🔴 Implement claim txn semantics (no duplicates under concurrency)
-- [ ] 🟠 Build workload driver with M “agents” issuing claims
+- [ ] 🟠 Build workload driver with M "agents" issuing claims
 - [ ] 🟠 Add macrobench scenario + baselines (ci/dev_nvme)
 - [ ] 🟠 Crash harness: prefix-check vs reference model after reopen
 - [ ] 🟡 Export scenario metrics (p50/p99 claim latency, dup rate, fsyncs/op)
+
+### Macrobench 2: Code Knowledge Graph
+- [ ] 🔴 Define synthetic repo schema (files, functions, call/import edges)
+- [ ] 🔴 Implement ingestion workload for N files, functions, edges
+- [ ] 🟠 Build query mix: "callers of X", "deps of module", "range scans by path"
+- [ ] 🟠 Add macrobench scenario with steady-state query latency metrics
+- [ ] 🟡 Measure index build time and hot memory footprint
+
+### Macrobench 3: Time-Travel + Deterministic Replay
+- [ ] 🔴 Implement 1M small txn workload (edits/actions)
+- [ ] 🔴 Add random AS OF txn_id queries vs reference model comparison
+- [ ] 🟠 Measure snapshot open time and replay performance
+- [ ] 🟡 Validate byte-identical results vs reference model
+
+### Macrobench 4: Cartridge Template (pending_tasks_by_type)
+- [ ] 🟡 Define cartridge artifact format and invalidation policy
+- [ ] 🟡 Build offline cartridge from commit stream
+- [ ] 🟡 Memory-map artifact for hot lookups (<1ms target)
+- [ ] 🟡 Measure lookup latency improvement vs baseline scan
+- [ ] 🟡 Quantify rebuild cost vs query savings
 
 ## Phase 6 — Cartridge 1: `pending_tasks_by_type`
 - [ ] 🔴 Define cartridge format/versioning and invalidation policy
@@ -368,13 +420,29 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **IMPACT**: Ensures performance consistency and prevents regressions in development workflow
   - **IMPACT**: Provides automated quality gates with clear failure diagnostics
   - Completed 2025-12-21
-- [ ] 🔴 Thresholds: throughput (-5%), p99 (+10%), alloc/op (+5%), fsync/op (no increase)
-- [ ] 🟠 Nightly: hardening suite + macrobenches + baseline refresh
-- [ ] 🟠 Command: `bench capture-baseline --profile ci|dev_nvme`
+- [ ✅ ] 🔴 Thresholds: throughput (-5%), p99 (+10%), alloc/op (+5%), fsync/op (no increase)
+  - **COMPLETED**: Threshold enforcement implemented and working correctly
+  - **COMPLETED**: Exact values enforced in src/bench/compare.zig:976-979
+  - **COMPLETED**: CI integration with proper regression detection
+  - **COMPLETED**: All threshold checks: throughput, p99 latency, allocations, fsync
+  - **IMPACT**: Automated regression prevention in CI workflow
+- [ ] 🔴 Nightly: hardening suite execution (automated)
+- [ ] 🔴 Nightly: macrobenches execution (blocked by Phase 5)
+- [ ] 🔴 Nightly: automated baseline refresh
+- [ ✅ ] 🟠 Command: `bench capture-baseline --profile ci|dev_nvme`
+  - **COMPLETED**: Implemented via scripts/manage_baselines.sh
+  - **COMPLETED**: Supports both ci and dev_nvme profiles
+  - **COMPLETED**: Baseline capture and management functionality working
+  - **NOTE**: Currently in shell script, could be integrated into main CLI if needed
 - [ ] 🟡 Contributor guide: "tests + bench evidence" requirements
 - [ ] 🟡 Docs: cross-link specs and invariants to code validators
 
 ## Output & Reporting
-- [ ] 🟠 Emit per-benchmark JSON under `bench/<name>.json` (done) — add tests
+- [ ✅ ] 🟠 Emit per-benchmark JSON under `bench/<name>.json`
+  - **COMPLETED**: Per-benchmark JSON output implemented and working
+  - **COMPLETED**: Schema validation implemented and tested
+  - **COMPLETED**: All benchmarks emit proper JSON files with metrics
+  - **COMPLETED**: Stable filename format with repeat indexing
+  - **IMPACT**: Enables automated comparison and regression detection
 - [ ] 🟠 Implement suite summary report and pass/fail counts
 - [ ] 🟡 Optional CSV export for quick spreadsheet analysis

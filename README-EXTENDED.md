@@ -362,6 +362,7 @@ wtxn = db.begin_write()
 wtxn.put(key, value)
 wtxn.del(key)
 wtxn.commit()   # durable commit + canonical commit record
+```
 
 Design constraints implied by the API
 	•	Read txns must be cheap to open.

@@ -34,3 +34,5 @@ bench/output/
 
 # Test artifacts
 test/
+test_output*/
+

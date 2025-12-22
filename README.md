@@ -224,6 +224,7 @@ wtxn = db.begin_write()
 wtxn.put(key, val)
 wtxn.del(key)
 wtxn.commit()  # emits commit record, updates meta root atomically
+```
 
 Internally, everything is designed so:
 	•	readers are lock-free snapshots
