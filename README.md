@@ -305,5 +305,19 @@ If you’re new to databases or Zig: start by improving one benchmark, one invar
 
 License
 
-TBD (choose early; MIT/Apache-2.0 are common for systems projects).
+NorthstarDB is released under a custom restrictive license (see [LICENSE](./LICENSE)).
+
+**Permitted Uses:**
+- ✅ Educational and research use
+- ✅ Internal business applications
+- ✅ Open source contribution
+- ✅ Non-AI commercial applications
+
+**Prohibited Uses:**
+- ❌ AI model training and development
+- ❌ Commercial AI training services
+- ❌ Military and government applications
+- ❌ Use in competing AI database systems
+
+**Why this license?** These restrictions protect NorthstarDB's unique AI intelligence innovations while allowing legitimate educational, research, and traditional database uses.
 

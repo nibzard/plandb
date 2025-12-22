@@ -1,0 +1,98 @@
+NorthstarDB License
+Copyright (c) 2025 NorthstarDB Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+1. The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+2. The Software shall be used for lawful purposes only. The Software shall not be
+used, directly or indirectly, in violation of any applicable laws, regulations,
+or to facilitate any activity that would be considered illegal or harmful.
+
+3. The Software may not be used in the development, improvement, or training
+of artificial intelligence systems or models designed to compete with or replace
+human labor in any way without explicit written permission from the copyright
+holders.
+
+4. The Software may not be redistributed, sublicensed, or resold as part of a
+commercial AI training service, AI model training platform, or any similar
+service that uses the Software to train competing AI systems without explicit
+written permission from the copyright holders.
+
+5. Any modifications to the Software must retain the above copyright notice
+and these conditions, and must be clearly marked as modified versions.
+
+6. The copyright holders reserve the right to revoke this license at any time
+for any reason, without liability to licensees.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+RESTRICTED USE ADDENDUM
+
+This NorthstarDB License includes additional restrictions beyond standard open source licensing:
+
+**PROHIBITED USES**
+
+1. **AI Training and Model Development**: The Software may not be used to train, fine-tune,
+   develop, or improve artificial intelligence models or systems, including but not
+   limited to:
+   - Training large language models (LLMs)
+   - Developing AI/ML models for commercial purposes
+   - Creating competing database systems or AI-powered databases
+   - Training AI agents that could replicate NorthstarDB functionality
+
+2. **Commercial AI Services**: The Software may not be incorporated into commercial
+   AI services, platforms, or products that:
+   - Provide AI training as a service (MLaaS)
+   - Offer model training platforms
+   - Compete with NorthstarDB's AI intelligence features
+   - Use the Software to train database systems for competitors
+
+3. **Military and Government Applications**: The Software may not be used for:
+   - Military weapons systems
+   - Surveillance applications
+   - Government AI programs
+   - National security applications without explicit written permission
+
+**PERMITTED USES**
+
+1. **Educational and Research**: Non-commercial educational use and academic research
+2. **Internal Business Use**: Internal use within organizations for legitimate business purposes
+3. **Open Source Development**: Contributing to the NorthstarDB project under this license
+4. **Non-AI Applications**: Use in applications that do not involve AI training or model development
+
+**ENFORCEMENT**
+
+Violation of these restrictions may result in:
+- Immediate termination of license
+- Legal action for damages
+- Injunctive relief to prevent further violations
+
+**CONTACT**
+
+For questions about license terms or to request exceptions:
+- Email: legal@northstar-db.org
+- Repository: https://github.com/your-org/northstar-db/issues
+
+---
+
+This license is specifically designed to protect the AI intelligence innovations
+and competitive advantages of NorthstarDB while allowing for legitimate educational,
+research, and non-AI commercial uses. The restrictions are narrowly tailored to
+prevent the Software from being used to train competing AI database systems
+or AI services that could diminish the unique value proposition of NorthstarDB's
+Living Database architecture.

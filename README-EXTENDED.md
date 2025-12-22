@@ -602,4 +602,25 @@ Precomputed, versioned artifacts derived from the commit stream that make specif
 
 License
 
-TBD. Pick early and keep it simple (MIT or Apache-2.0 are typical for systems projects).
+NorthstarDB is released under a custom restrictive license designed to protect our AI intelligence innovations while allowing legitimate use.
+
+**Key License Provisions:**
+
+**Permitted:**
+- Educational and research purposes
+- Internal business applications
+- Open source contribution to the project
+- Traditional database uses without AI training components
+- Non-commercial AI development for personal/educational use
+
+**Prohibited:**
+- Training AI models or systems that compete with NorthstarDB
+- Commercial AI training services using NorthstarDB data or code
+- Military, surveillance, or government applications without explicit permission
+- Redistribution in AI training platforms competing with our intelligence features
+- Creation of derivative database systems that replicate our Living Database architecture
+
+**Rationale:**
+The license restrictions are specifically designed to protect NorthstarDB's unique value proposition in the AI database space while maintaining openness for legitimate educational, research, and traditional database development use cases.
+
+For complete license terms, see [LICENSE](../LICENSE).
