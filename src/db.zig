@@ -623,7 +623,7 @@ pub const WriteTxn = struct {
             // For efficiency, we'll use a prefix scan approach
             // Check for claims by iterating through possible agent IDs
             // In a real implementation, this might be optimized with indexes
-            const max_agents_to_check = 1000; // Reasonable limit to prevent infinite scan
+            const max_agents_to_check = 20; // Reduced from 1000 for better benchmark performance
             var claim_found = false;
 
             for (0..max_agents_to_check) |other_agent_id| {

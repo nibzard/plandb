@@ -94,7 +94,7 @@ pub const PerformanceStats = struct {
         };
     }
 
-    pub fn deinit(self: *PerformanceStats) void {
+    pub fn deinit(self: *const PerformanceStats) void {
         _ = self;
     }
 };
@@ -411,7 +411,7 @@ pub const BatchEquivalenceProperty = struct {
             const single_end_time = std.time.nanoTimestamp();
 
             // Compare final states
-            const batch_state = try batch_model.beginReadLatest();
+            var batch_state = try batch_model.beginReadLatest();
             defer {
                 var it = batch_state.iterator();
                 while (it.next()) |entry| {
@@ -421,7 +421,7 @@ pub const BatchEquivalenceProperty = struct {
                 batch_state.deinit();
             }
 
-            const single_state = try single_model.beginReadLatest();
+            var single_state = try single_model.beginReadLatest();
             defer {
                 var it = single_state.iterator();
                 while (it.next()) |entry| {
@@ -540,7 +540,7 @@ pub const CrashEquivalenceProperty = struct {
                 _ = try w.commit();
             }
 
-            const complete_state = try complete_model.beginReadLatest();
+            var complete_state = try complete_model.beginReadLatest();
             defer {
                 var it = complete_state.iterator();
                 while (it.next()) |entry| {
@@ -555,13 +555,13 @@ pub const CrashEquivalenceProperty = struct {
             var err_msg: ?[]const u8 = null;
 
             for (self.config.crash_points) |crash_point| {
-                if (crash_point >= transactions.items.len) continue;
+                if (crash_point >= transactions.len) continue;
 
                 // Simulate crash by replaying only up to crash_point
                 var crash_model = try ref_model.Model.init(self.allocator);
                 defer crash_model.deinit();
 
-                for (transactions.items[0..crash_point]) |txn| {
+                for (transactions[0..crash_point]) |txn| {
                     var w = crash_model.beginWrite();
                     for (txn) |op| {
                         switch (op.op_type) {
@@ -572,7 +572,7 @@ pub const CrashEquivalenceProperty = struct {
                     _ = try w.commit();
                 }
 
-                const crash_state = try crash_model.beginReadLatest();
+                var crash_state = try crash_model.beginReadLatest();
                 defer {
                     var it = crash_state.iterator();
                     while (it.next()) |entry| {
@@ -602,10 +602,10 @@ pub const CrashEquivalenceProperty = struct {
 
             if (crash_test_passed) {
                 result.passIteration();
-                stats.total_txns += @as(u64, @intCast(transactions.items.len));
+                stats.total_txns += @as(u64, @intCast(transactions.len));
                 stats.total_operations += blk: {
                     var total_ops: u64 = 0;
-                    for (transactions.items) |txn| {
+                    for (transactions) |txn| {
                         total_ops += @as(u64, @intCast(txn.len));
                     }
                     break :blk total_ops;
@@ -675,7 +675,7 @@ pub const PropertyTestRunner = struct {
     }
 
     pub fn printResults(results: []const PropertyTestResult) void {
-        std.debug.print("\n=== Property-Based Test Results ===\n");
+        std.debug.print("\n=== Property-Based Test Results ===\n", .{});
 
         var total_passed: usize = 0;
         var total_iterations: usize = 0;
@@ -690,7 +690,7 @@ pub const PropertyTestRunner = struct {
             }
 
             if (result.performance_stats) |stats| {
-                std.debug.print("  Performance:\n");
+                std.debug.print("  Performance:\n", .{});
                 std.debug.print("    Total transactions: {}\n", .{stats.total_txns});
                 std.debug.print("    Total operations: {}\n", .{stats.total_operations});
                 if (stats.avg_txn_time_ns > 0) {
@@ -705,7 +705,7 @@ pub const PropertyTestRunner = struct {
             total_iterations += result.total_iterations;
         }
 
-        std.debug.print("\n=== Summary ===\n");
+        std.debug.print("\n=== Summary ===\n", .{});
         std.debug.print("Total iterations passed: {}/{}\n", .{ total_passed, total_iterations });
         std.debug.print("Overall success rate: {d:.2}%\n", .{@as(f64, @floatFromInt(total_passed)) * 100.0 / @as(f64, @floatFromInt(total_iterations))});
     }
@@ -733,7 +733,7 @@ pub fn runPropertyBasedTests(allocator: std.mem.Allocator) !void {
         allocator.free(results);
     }
 
-    runner.printResults(results);
+    PropertyTestRunner.printResults(results);
 
     // Fail the test suite if any property test fails
     for (results) |result| {

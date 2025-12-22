@@ -349,7 +349,7 @@ fn runPropertyTests(allocator: std.mem.Allocator, args: []const []const u8) !voi
         allocator.free(results);
     }
 
-    runner.printResults(results);
+    property_based.PropertyTestRunner.printResults(results);
 
     // Check if all tests passed
     var all_passed = true;
