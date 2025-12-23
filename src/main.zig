@@ -11,6 +11,7 @@ const _ref_model_tests = @import("ref_model.zig");
 const _db_tests = @import("db.zig");
 const _property_based_tests = @import("property_based.zig");
 const _validator = @import("validator.zig");
+const _fuzz = @import("fuzz.zig");
 
 pub fn main() !void {
     const gpa = std.heap.page_allocator;
@@ -40,6 +41,8 @@ pub fn main() !void {
         try validateTree(allocator, args[2..]);
     } else if (std.mem.eql(u8, command, "dump")) {
         try dumpTree(allocator, args[2..]);
+    } else if (std.mem.eql(u8, command, "fuzz")) {
+        try runFuzzTests(allocator, args[2..]);
     } else {
         try printUsage();
     }
@@ -57,6 +60,7 @@ fn printUsage() !void {
         \\  bench --list                   List all available benchmarks and suites
         \\  bench validate <db.db>         Validate B+tree invariants
         \\  bench dump <db.db> [options]   Dump B+tree structure
+        \\  bench fuzz [options]           Run fuzzing tests on node decode
         \\
         \\Run options:
         \\  --repeats <n>         Number of repeats (default: 5)
@@ -93,6 +97,11 @@ fn printUsage() !void {
         \\  --show-values          Show values in addition to keys
         \\  --max-key-len <n>      Truncate keys at this length (default: 50)
         \\  --max-val-len <n>      Truncate values at this length (default: 50)
+        \\
+        \\Fuzz options:
+        \\  --iterations <n>       Number of fuzz iterations per test (default: 1000)
+        \\  --seed <n>             Random seed for reproducible fuzzing (default: 12345)
+        \\  --quick                Run with reduced iterations for quick validation
         \\
     , .{});
 }
@@ -415,4 +424,29 @@ fn dumpTree(allocator: std.mem.Allocator, args: []const []const u8) !void {
     }
 
     try _validator.dumpTree(allocator, db_path, config);
+}
+
+fn runFuzzTests(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    var iterations: usize = 1000;
+    var seed: u64 = 12345;
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (std.mem.eql(u8, args[i], "--iterations") and i + 1 < args.len) {
+            iterations = try std.fmt.parseInt(usize, args[i + 1], 10);
+            i += 1;
+        } else if (std.mem.eql(u8, args[i], "--seed") and i + 1 < args.len) {
+            seed = try std.fmt.parseInt(u64, args[i + 1], 10);
+            i += 1;
+        } else if (std.mem.eql(u8, args[i], "--quick")) {
+            iterations = 100;
+        } else {
+            std.debug.print("Unknown option: {s}\n", .{args[i]});
+            return;
+        }
+    }
+
+    std.debug.print("Running fuzzing tests with {} iterations (seed: {})...\n\n", .{ iterations, seed });
+
+    try _fuzz.runAllFuzzTests(allocator, iterations);
 }
