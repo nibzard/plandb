@@ -331,13 +331,34 @@ pub const BtreeLeafPayload = struct {
         if (node_header.key_count >= MAX_KEYS_PER_LEAF) return error.LeafFull;
 
         const total_entry_size = @sizeOf(u16) + @sizeOf(u32) + key.len + value.len;
-        const entry_data_area = self.getEntryDataArea(payload_bytes);
 
-        // Find space at the end of entry data area
-        if (entry_data_area.len < total_entry_size) return error.InsufficientSpace;
+        // Calculate where to place the new entry.
+        // Entries are stored backwards from the end of payload_bytes.
+        // We need to find the minimum slot offset (the entry closest to slot array)
+        // and place the new entry before it.
+        const slot_array_end = BtreeNodeHeader.SIZE + Self.getSlotArraySize(node_header.key_count);
+        var entry_offset_from_payload_start: u16 = undefined;
 
-        // Create the new entry at the end of the entry data area (from the end growing backwards)
-        const entry_offset_from_payload_start = @as(u16, @intCast(payload_bytes.len - total_entry_size));
+        if (node_header.key_count > 0) {
+            // Find the minimum slot offset (closest to slot array = earliest entry)
+            var slot_buffer: [BtreeLeafPayload.MAX_KEYS_PER_LEAF]u16 = undefined;
+            const slot_array = self.getSlotArray(payload_bytes, &slot_buffer);
+            var min_slot_offset: u16 = @intCast(payload_bytes.len); // Start with max value
+            for (slot_array[0..node_header.key_count]) |offset| {
+                if (offset < min_slot_offset) {
+                    min_slot_offset = offset;
+                }
+            }
+            // Check if new entry fits before the earliest existing entry
+            if (min_slot_offset < slot_array_end + total_entry_size) return error.LeafFull;
+            // Place new entry before the earliest existing entry
+            entry_offset_from_payload_start = @intCast(min_slot_offset - total_entry_size);
+        } else {
+            // First entry - place at end of payload
+            if (payload_bytes.len < total_entry_size) return error.LeafFull;
+            entry_offset_from_payload_start = @intCast(payload_bytes.len - total_entry_size);
+        }
+
         var entry_bytes = payload_bytes[entry_offset_from_payload_start..];
 
         // Write entry: key_len + val_len + key + value

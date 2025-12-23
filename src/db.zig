@@ -206,7 +206,8 @@ pub const Db = struct {
         if (self.wal == null or self.pager == null) return error.NotFileBased;
 
         const wal_inst = self.wal.?; // Still needed for commitSync
-        var pager_inst = self.pager.?;
+        // Use pointer directly to avoid copying Pager
+        const pager_inst = &self.pager.?;
 
         // Phase 1: Prepare
         try txn_ctx.prepare();
