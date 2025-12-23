@@ -637,8 +637,8 @@ pub const WriteTxn = struct {
     /// The operation is atomic within the transaction and includes:
     /// 1. Check if task metadata exists (using get() with read-your-writes)
     /// 2. Check if claim:{task_id}:{agent_id} already exists (prevent duplicates)
-    /// 3. Check if any other agent has already claimed this task
-    /// 4. If all checks pass, create the claim record
+    /// 3. Check if any other agent has already claimed this task (using claimed:{task_id} index)
+    /// 4. If all checks pass, create the claim record and update the index
     pub fn claimTask(self: *WriteTxn, task_id: u64, agent_id: u64, claim_timestamp: i64) !bool {
         // Check if this specific agent has already claimed this task
         var claim_key_buf: [64]u8 = undefined;
@@ -654,29 +654,11 @@ pub const WriteTxn = struct {
         const task_key = try std.fmt.bufPrint(&task_key_buf, "task:{d}", .{task_id});
 
         if (self.get(task_key)) |_| {
-            // Task exists, now check if any other agent has claimed it
-            // We need to scan for existing claims by any agent
+            // Task exists, check if it's already claimed using the index
+            var claimed_index_key_buf: [32]u8 = undefined;
+            const claimed_index_key = try std.fmt.bufPrint(&claimed_index_key_buf, "claimed:{d}", .{task_id});
 
-            // For efficiency, we'll use a prefix scan approach
-            // Check for claims by iterating through possible agent IDs
-            // In a real implementation, this might be optimized with indexes
-            const max_agents_to_check = 20; // Reduced from 1000 for better benchmark performance
-            var claim_found = false;
-
-            for (0..max_agents_to_check) |other_agent_id| {
-                if (other_agent_id == agent_id) continue; // Skip self, already checked
-
-                var other_claim_key_buf: [64]u8 = undefined;
-                const other_claim_key = try std.fmt.bufPrint(&other_claim_key_buf, "claim:{d}:{d}", .{ task_id, other_agent_id });
-
-                if (self.get(other_claim_key)) |_| {
-                    // Found an existing claim by another agent
-                    claim_found = true;
-                    break;
-                }
-            }
-
-            if (claim_found) {
+            if (self.get(claimed_index_key)) |_| {
                 // Task is already claimed by another agent
                 return false;
             }
@@ -685,6 +667,11 @@ pub const WriteTxn = struct {
             var claim_value_buf: [32]u8 = undefined;
             const claim_value = try std.fmt.bufPrint(&claim_value_buf, "{}", .{claim_timestamp});
             try self.put(claim_key, claim_value);
+
+            // Update the claimed index to store this agent_id
+            var claimed_index_value_buf: [32]u8 = undefined;
+            const claimed_index_value = try std.fmt.bufPrint(&claimed_index_value_buf, "{}", .{agent_id});
+            try self.put(claimed_index_key, claimed_index_value);
 
             // Update agent's active task count
             var agent_key_buf: [32]u8 = undefined;
@@ -710,7 +697,8 @@ pub const WriteTxn = struct {
     /// 1. Verifying the claim exists for this agent and task
     /// 2. Marking the task as completed
     /// 3. Removing the claim record
-    /// 4. Decrementing the agent's active task count
+    /// 4. Clearing the claimed index
+    /// 5. Decrementing the agent's active task count
     ///
     /// Arguments:
     /// - task_id: The ID of the task to complete
@@ -737,6 +725,11 @@ pub const WriteTxn = struct {
 
             // Remove the claim
             try self.del(claim_key);
+
+            // Clear the claimed index
+            var claimed_index_key_buf: [32]u8 = undefined;
+            const claimed_index_key = try std.fmt.bufPrint(&claimed_index_key_buf, "claimed:{d}", .{task_id});
+            try self.del(claimed_index_key);
 
             // Decrement agent's active task count
             var agent_key_buf: [32]u8 = undefined;
@@ -1636,5 +1629,5 @@ test "attachPluginManager_method" {
 
     // Should now have plugin manager
     try testing.expect(db.plugin_manager != null);
-    try testing.expectEqual(@ptrCast(db.plugin_manager.?), @ptrCast(&plugin_manager));
+    try testing.expectEqual(@as(*plugins.PluginManager, @ptrCast(db.plugin_manager.?)), @as(*plugins.PluginManager, @ptrCast(&plugin_manager)));
 }

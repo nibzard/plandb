@@ -1173,3 +1173,16 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **STATUS**: COMPLETED - All tests and benchmarks pass
   - **FIXED 2025-12-23**
   - **IMPACT**: Unblocks commit/replay correctness validation
+
+## Build System & Compatibility
+
+- [ ✅ ] FIXED: Zig 0.15.2 compilation errors
+  - **TASK_ID**: zig-0.15.2-timestamp-fix
+  - **COMPLETED**: 2025-12-23
+  - **FIXES APPLIED**:
+    - Changed `std.testing.expect` to `std.testing.expectEqual` (2 locations)
+    - Added `@intCast()` to `std.time.nanoTimestamp()` return values (5 locations)
+    - Fixed const qualifier issues by changing const to var (manager, result, schema, found variables)
+  - **COMMIT**: 339c7a7
+  - **STATUS**: Compilation successful, build succeeds
+  - **IMPACT**: Resolves Zig 0.15.2 compatibility issues - no blockers noted
