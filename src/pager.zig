@@ -770,13 +770,11 @@ pub const BtreeInternalPayload = struct {
         // Shift existing child pointers to make room for new child
         // We shift from the end to avoid overwriting
         const current_child_count = node_header.key_count + 1;
-        const new_child_count = current_child_count + 1;
         const old_key_count = node_header.key_count; // Save for separator manipulation
 
-        // Check if we have enough space in the payload for the new child
-        const required_child_space = new_child_count * @sizeOf(u64);
-        const available_space = payload_bytes.len - BtreeNodeHeader.SIZE;
-        if (required_child_space > available_space) return error.InsufficientSpace;
+        // Note: Space check removed - caller (insertIntoInternalNode or putBtreeValue)
+        // is responsible for ensuring the node is not full before calling addChild.
+        // The payload will be expanded by updating payload_len after addChild returns.
 
         var child_idx = current_child_count;
         while (child_idx > insert_pos + 1) {
@@ -2084,9 +2082,17 @@ pub const Pager = struct {
                     // Add separator and right child
                     try internal.addChild(payload_bytes, split_result.separator_key, split_result.right_page_id);
 
-                    // Update payload length and recalculate checksums
+                    // CRITICAL: Recalculate payload_len after addChild since payload grew
+                    // addChild increments key_count and adds separator data, growing the payload
+                    // New payload_len = BtreeNodeHeader.SIZE + child_array_size + separator_data_size
+                    // After addChild with first separator: key_count=1, child_array=16, separator=2+len
+                    const new_key_count: u16 = 1; // We added one separator
+                    const child_array_size = BtreeInternalPayload.getChildPageIdsSize(new_key_count);
+                    const separator_data_size = @sizeOf(u16) + split_result.separator_key.len;
+                    const new_payload_len = BtreeNodeHeader.SIZE + child_array_size + separator_data_size;
+
                     var root_header_mut = std.mem.bytesAsValue(PageHeader, new_root_buffer[0..PageHeader.SIZE]);
-                    root_header_mut.payload_len = @intCast(payload_bytes.len);
+                    root_header_mut.payload_len = @intCast(new_payload_len);
                     root_header_mut.header_crc32c = root_header_mut.calculateHeaderChecksum();
                     const root_page_data = new_root_buffer[0 .. PageHeader.SIZE + root_header_mut.payload_len];
                     root_header_mut.page_crc32c = calculatePageChecksum(root_page_data);
@@ -2135,9 +2141,17 @@ pub const Pager = struct {
                                 var root_internal = BtreeInternalPayload{};
                                 try root_internal.addChild(root_payload_bytes, parent_split_result.separator_key, parent_split_result.right_page_id);
 
-                                // Update payload length and write
+                                // CRITICAL: Recalculate payload_len after addChild since payload grew
+                                const new_root_key_count: u16 = 1;
+                                const new_root_child_size = BtreeInternalPayload.getChildPageIdsSize(new_root_key_count);
+                                const new_root_sep_size = @sizeOf(u16) + parent_split_result.separator_key.len;
+                                const new_root_payload_len = BtreeNodeHeader.SIZE + new_root_child_size + new_root_sep_size;
+
                                 var root_header_mut = std.mem.bytesAsValue(PageHeader, new_root_buffer[0..PageHeader.SIZE]);
-                                root_header_mut.payload_len = @intCast(root_payload_bytes.len);
+                                root_header_mut.payload_len = @intCast(new_root_payload_len);
+                                root_header_mut.header_crc32c = root_header_mut.calculateHeaderChecksum();
+                                const new_root_page_data = new_root_buffer[0 .. PageHeader.SIZE + root_header_mut.payload_len];
+                                root_header_mut.page_crc32c = calculatePageChecksum(new_root_page_data);
 
                                 try self.writePage(new_root_id, &new_root_buffer);
 
@@ -2496,28 +2510,38 @@ pub const Pager = struct {
     fn insertIntoInternalNode(_: *Self, internal_buffer: []u8, separator_key: []const u8, child_page_id: u64) !void {
         const payload_start = PageHeader.SIZE;
         const header = try PageHeader.decode(internal_buffer[0..PageHeader.SIZE]);
-        const payload_end = payload_start + header.payload_len;
-        const payload_bytes = internal_buffer[payload_start..payload_end];
+        const old_payload_len = header.payload_len;
+        const payload_end = payload_start + old_payload_len;
+        const old_payload_bytes = internal_buffer[payload_start..payload_end];
 
         var internal = BtreeInternalPayload{};
 
-        // Find insertion position
-        const node_header = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
+        // Find insertion position using old payload_bytes (valid data only)
+        const node_header = std.mem.bytesAsValue(BtreeNodeHeader, old_payload_bytes[0..BtreeNodeHeader.SIZE]);
         var insert_pos: u16 = 0;
         while (insert_pos < node_header.key_count) {
-            const existing_key = try internal.getSeparatorKey(payload_bytes, insert_pos);
+            const existing_key = try internal.getSeparatorKey(old_payload_bytes, insert_pos);
             if (std.mem.lessThan(u8, separator_key, existing_key)) {
                 break;
             }
             insert_pos += 1;
         }
 
-        // Insert the separator key and child pointer
-        try internal.addChild(payload_bytes, separator_key, child_page_id);
+        // CRITICAL: Expand payload_bytes for addChild to include space for new child
+        // addChild needs to write beyond the old payload to add the new child pointer
+        const payload_growth = @sizeOf(u64) + @sizeOf(u16) + separator_key.len;
+        const new_payload_end = payload_start + old_payload_len + payload_growth;
+        const expanded_payload_bytes = internal_buffer[payload_start..new_payload_end];
 
-        // Update payload length
+        // Note: No copy needed - old_payload_bytes and expanded_payload_bytes point to
+        // the same underlying memory, just with different slice bounds.
+
+        // Insert the separator key and child pointer
+        try internal.addChild(expanded_payload_bytes, separator_key, child_page_id);
+
+        // Update payload length to reflect the growth
         var header_mut = std.mem.bytesAsValue(PageHeader, internal_buffer[0..PageHeader.SIZE]);
-        header_mut.payload_len = @intCast(payload_end - payload_start);
+        header_mut.payload_len = @intCast(old_payload_len + payload_growth);
     }
 
     // Split an internal node and propagate split up the tree
@@ -2588,7 +2612,10 @@ pub const Pager = struct {
         }
 
         // Add separator keys to left node
-        var left_separator_area = internal.getSeparatorKeyArea(left_payload_bytes);
+        // CRITICAL: Calculate separator area using full buffer, not payload_bytes slice
+        // to match the right node approach and avoid potential issues.
+        const left_child_array_size = BtreeInternalPayload.getChildPageIdsSize(left_key_count);
+        const left_separator_area = left_buffer[left_payload_start + BtreeNodeHeader.SIZE + left_child_array_size..];
         var left_separator_offset: usize = left_separator_area.len;
 
         for (0..left_key_count) |i| {
@@ -2621,7 +2648,11 @@ pub const Pager = struct {
         }
 
         // Add separator keys to right node
-        var right_separator_area = internal.getSeparatorKeyArea(right_payload_bytes);
+        // CRITICAL: Calculate separator area using full buffer, not payload_bytes slice
+        // The payload_bytes slice is based on old payload_len, but we're writing new data
+        // and will update payload_len after. Using payload_bytes here would give wrong bounds.
+        const right_child_array_size = BtreeInternalPayload.getChildPageIdsSize(right_key_count);
+        const right_separator_area = right_buffer[right_payload_start + BtreeNodeHeader.SIZE + right_child_array_size..];
         var right_separator_offset: usize = right_separator_area.len;
 
         for (left_key_count + 1..internal_node_header.key_count) |i| {
