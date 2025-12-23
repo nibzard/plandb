@@ -754,7 +754,7 @@ test "commutativity property basic functionality" {
     };
 
     var comm_test = CommutativityProperty.init(std.testing.allocator, config);
-    const result = try comm_test.run();
+    var result = try comm_test.run();
     defer result.deinit();
 
     try std.testing.expect(result.passed);
@@ -769,7 +769,7 @@ test "batch equivalence property basic functionality" {
     };
 
     var batch_test = BatchEquivalenceProperty.init(std.testing.allocator, config);
-    const result = try batch_test.run();
+    var result = try batch_test.run();
     defer result.deinit();
 
     try std.testing.expect(result.passed);
@@ -785,7 +785,7 @@ test "crash equivalence property basic functionality" {
     };
 
     var crash_test = CrashEquivalenceProperty.init(std.testing.allocator, config);
-    const result = try crash_test.run();
+    var result = try crash_test.run();
     defer result.deinit();
 
     try std.testing.expect(result.passed);
@@ -833,6 +833,648 @@ test "property test runner integration" {
     }
 
     try std.testing.expectEqual(@as(usize, 3), results.len); // commutativity, batch, crash
+
+    // All tests should pass
+    for (results) |result| {
+        try std.testing.expect(result.passed);
+    }
+}
+
+// ==================== MVCC Property Tests ====================
+
+/// Property 4: Snapshot Immutability - A snapshot never changes after creation
+/// Even after subsequent writes, reading from an old snapshot should return
+/// the same data as when the snapshot was first created.
+pub const SnapshotImmutabilityProperty = struct {
+    config: PropertyTestConfig,
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator, config: PropertyTestConfig) SnapshotImmutabilityProperty {
+        return SnapshotImmutabilityProperty{
+            .config = config,
+            .allocator = allocator,
+        };
+    }
+
+    pub fn run(self: *SnapshotImmutabilityProperty) !PropertyTestResult {
+        var result = PropertyTestResult.init("snapshot_immutability", self.allocator);
+        var stats = PerformanceStats.init(self.allocator);
+        defer stats.deinit();
+
+        for (0..self.config.num_iterations) |iteration| {
+            const seed = self.config.random_seed + @as(u64, @intCast(iteration));
+            var test_passed = true;
+            var err_msg: ?[]const u8 = null;
+
+            var model = try ref_model.Model.init(self.allocator);
+            defer model.deinit();
+
+            // Create initial state with some data
+            var generator = ref_model.OperationGenerator.init(self.allocator, seed);
+            const initial_ops = try generator.generateSequence(20, 10);
+            defer {
+                for (initial_ops) |op| {
+                    self.allocator.free(op.key);
+                    if (op.value) |val| self.allocator.free(val);
+                }
+                self.allocator.free(initial_ops);
+            }
+
+            var w = model.beginWrite();
+            for (initial_ops) |op| {
+                switch (op.op_type) {
+                    .put => try w.put(op.key, op.value.?),
+                    .delete => try w.del(op.key),
+                }
+            }
+            const snapshot_txn_id = try w.commit();
+
+            // Capture snapshot state
+            var snapshot1 = try model.beginRead(snapshot_txn_id);
+            defer {
+                var it = snapshot1.iterator();
+                while (it.next()) |entry| {
+                    self.allocator.free(entry.key_ptr.*);
+                    self.allocator.free(entry.value_ptr.*);
+                }
+                snapshot1.deinit();
+            }
+
+            // Collect initial keys and values
+            var initial_keys = std.ArrayList([]const u8).initCapacity(self.allocator, 0) catch unreachable;
+            var initial_values = std.ArrayList([]const u8).initCapacity(self.allocator, 0) catch unreachable;
+            defer {
+                for (initial_keys.items) |k| self.allocator.free(k);
+                initial_keys.deinit(self.allocator);
+                for (initial_values.items) |v| self.allocator.free(v);
+                initial_values.deinit(self.allocator);
+            }
+
+            {
+                var it = snapshot1.iterator();
+                while (it.next()) |entry| {
+                    try initial_keys.append(self.allocator, try self.allocator.dupe(u8, entry.key_ptr.*));
+                    try initial_values.append(self.allocator, try self.allocator.dupe(u8, entry.value_ptr.*));
+                }
+            }
+
+            // Perform many more write transactions that modify the same keys
+            const num_subsequent_txns = 10;
+            for (0..num_subsequent_txns) |_| {
+                var w2 = model.beginWrite();
+                const modify_ops = try generator.generateSequence(15, 10);
+                defer {
+                    for (modify_ops) |op| {
+                        self.allocator.free(op.key);
+                        if (op.value) |val| self.allocator.free(val);
+                    }
+                    self.allocator.free(modify_ops);
+                }
+
+                for (modify_ops) |op| {
+                    switch (op.op_type) {
+                        .put => try w2.put(op.key, op.value.?),
+                        .delete => try w2.del(op.key),
+                    }
+                }
+                _ = try w2.commit();
+                stats.total_txns += 1;
+            }
+
+            // Re-read the same snapshot
+            var snapshot2 = try model.beginRead(snapshot_txn_id);
+            defer {
+                var it = snapshot2.iterator();
+                while (it.next()) |entry| {
+                    self.allocator.free(entry.key_ptr.*);
+                    self.allocator.free(entry.value_ptr.*);
+                }
+                snapshot2.deinit();
+            }
+
+            // Verify snapshot has same keys
+            if (snapshot2.count() != initial_keys.items.len) {
+                test_passed = false;
+                err_msg = try std.fmt.allocPrint(self.allocator, "Iteration {}: Snapshot key count changed from {} to {}", .{ iteration, initial_keys.items.len, snapshot2.count() });
+            } else {
+                // Verify each key-value pair is identical
+                for (initial_keys.items, initial_values.items) |key, expected_value| {
+                    const actual_value = snapshot2.get(key) orelse {
+                        test_passed = false;
+                        err_msg = try std.fmt.allocPrint(self.allocator, "Iteration {}: Key {s} disappeared from snapshot", .{ iteration, key });
+                        break;
+                    };
+
+                    if (!std.mem.eql(u8, expected_value, actual_value)) {
+                        test_passed = false;
+                        err_msg = try std.fmt.allocPrint(self.allocator, "Iteration {}: Key {s} value changed from {s} to {s}", .{ iteration, key, expected_value, actual_value });
+                        break;
+                    }
+                }
+
+                // Verify no new keys appeared
+                var it = snapshot2.iterator();
+                while (it.next()) |entry| {
+                    var found = false;
+                    for (initial_keys.items) |k| {
+                        if (std.mem.eql(u8, k, entry.key_ptr.*)) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        test_passed = false;
+                        err_msg = try std.fmt.allocPrint(self.allocator, "Iteration {}: New key {s} appeared in old snapshot", .{ iteration, entry.key_ptr.* });
+                        break;
+                    }
+                }
+            }
+
+            if (test_passed) {
+                result.passIteration();
+                stats.total_operations += @as(u64, @intCast(initial_ops.len + num_subsequent_txns * 15));
+            } else {
+                if (err_msg) |msg| {
+                    result.fail("Snapshot immutability violation: {s}", .{msg});
+                    self.allocator.free(msg);
+                } else {
+                    result.fail("Snapshot immutability violation in iteration {}", .{iteration});
+                }
+                break;
+            }
+        }
+
+        result.complete(self.config.num_iterations);
+        result.performance_stats = stats;
+        return result;
+    }
+};
+
+/// Property 5: Time-Travel Correctness - Historical snapshots reflect exact state at that LSN
+/// For any transaction ID, reading that snapshot should show the state exactly
+/// as it was after that transaction committed.
+pub const TimeTravelCorrectnessProperty = struct {
+    config: PropertyTestConfig,
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator, config: PropertyTestConfig) TimeTravelCorrectnessProperty {
+        return TimeTravelCorrectnessProperty{
+            .config = config,
+            .allocator = allocator,
+        };
+    }
+
+    pub fn run(self: *TimeTravelCorrectnessProperty) !PropertyTestResult {
+        var result = PropertyTestResult.init("time_travel_correctness", self.allocator);
+        var stats = PerformanceStats.init(self.allocator);
+        defer stats.deinit();
+
+        for (0..self.config.num_iterations) |iteration| {
+            const seed = self.config.random_seed + @as(u64, @intCast(iteration));
+            var test_passed = true;
+            var err_msg: ?[]const u8 = null;
+
+            var model = try ref_model.Model.init(self.allocator);
+            defer model.deinit();
+
+            // Track expected state at each transaction ID
+            var expected_states = std.AutoHashMap(u64, TestSnapshot).init(self.allocator);
+            defer {
+                var it = expected_states.iterator();
+                while (it.next()) |entry| {
+                    entry.value_ptr.deinit(self.allocator);
+                }
+                expected_states.deinit();
+            }
+
+            var generator = ref_model.OperationGenerator.init(self.allocator, seed);
+
+            // Create a sequence of transactions
+            const num_txns = 20;
+            var txn_ids = try self.allocator.alloc(u64, num_txns);
+            defer self.allocator.free(txn_ids);
+
+            for (0..num_txns) |i| {
+                var w = model.beginWrite();
+                const ops = try generator.generateSequence(
+                    generator.rng.nextRange(1, 10),
+                    generator.rng.nextRange(5, 20),
+                );
+                defer {
+                    for (ops) |op| {
+                        self.allocator.free(op.key);
+                        if (op.value) |val| self.allocator.free(val);
+                    }
+                    self.allocator.free(ops);
+                }
+
+                for (ops) |op| {
+                    switch (op.op_type) {
+                        .put => try w.put(op.key, op.value.?),
+                        .delete => try w.del(op.key),
+                    }
+                }
+
+                const txn_id = try w.commit();
+                txn_ids[i] = txn_id;
+                stats.total_txns += 1;
+
+                // Capture expected state after this transaction
+                var snap = try model.beginReadLatest();
+                defer {
+                    var it2 = snap.iterator();
+                    while (it2.next()) |entry| {
+                        self.allocator.free(entry.key_ptr.*);
+                        self.allocator.free(entry.value_ptr.*);
+                    }
+                    snap.deinit();
+                }
+
+                const test_snap = try TestSnapshot.fromSnapshotState(snap, self.allocator);
+                try expected_states.put(txn_id, test_snap);
+            }
+
+            // Now verify time-travel: for each txn_id, reading that snapshot matches expected state
+            for (txn_ids) |target_txn_id| {
+                var actual_snapshot = try model.beginRead(target_txn_id);
+                defer {
+                    var it = actual_snapshot.iterator();
+                    while (it.next()) |entry| {
+                        self.allocator.free(entry.key_ptr.*);
+                        self.allocator.free(entry.value_ptr.*);
+                    }
+                    actual_snapshot.deinit();
+                }
+
+                const expected_state = expected_states.get(target_txn_id) orelse {
+                    test_passed = false;
+                    err_msg = try std.fmt.allocPrint(self.allocator, "Iteration {}: Missing expected state for txn {}", .{ iteration, target_txn_id });
+                    break;
+                };
+
+                // Compare key counts
+                if (actual_snapshot.count() != expected_state.map.count()) {
+                    test_passed = false;
+                    err_msg = try std.fmt.allocPrint(self.allocator, "Iteration {}: Txn {} key count mismatch: expected {}, got {}", .{ iteration, target_txn_id, expected_state.map.count(), actual_snapshot.count() });
+                    break;
+                }
+
+                // Compare each key-value pair
+                var it = expected_state.map.iterator();
+                while (it.next()) |entry| {
+                    const actual_val = actual_snapshot.get(entry.key_ptr.*) orelse {
+                        test_passed = false;
+                        err_msg = try std.fmt.allocPrint(self.allocator, "Iteration {}: Txn {} key {s} missing in actual snapshot", .{ iteration, target_txn_id, entry.key_ptr.* });
+                        break;
+                    };
+
+                    if (!std.mem.eql(u8, entry.value_ptr.*, actual_val)) {
+                        test_passed = false;
+                        err_msg = try std.fmt.allocPrint(self.allocator, "Iteration {}: Txn {} key {s} value mismatch: expected {s}, got {s}", .{ iteration, target_txn_id, entry.key_ptr.*, entry.value_ptr.*, actual_val });
+                        break;
+                    }
+                }
+
+                if (!test_passed) break;
+            }
+
+            if (test_passed) {
+                result.passIteration();
+            } else {
+                if (err_msg) |msg| {
+                    result.fail("Time-travel correctness violation: {s}", .{msg});
+                    self.allocator.free(msg);
+                } else {
+                    result.fail("Time-travel correctness violation in iteration {}", .{iteration});
+                }
+                break;
+            }
+        }
+
+        result.complete(self.config.num_iterations);
+        result.performance_stats = stats;
+        return result;
+    }
+};
+
+/// Helper type for storing test snapshots
+const TestSnapshot = struct {
+    map: std.StringHashMap([]const u8),
+
+    pub fn fromSnapshotState(snap: ref_model.SnapshotState, allocator: std.mem.Allocator) !TestSnapshot {
+        var map = std.StringHashMap([]const u8).init(allocator);
+        var it = snap.iterator();
+        while (it.next()) |entry| {
+            const key_copy = try allocator.dupe(u8, entry.key_ptr.*);
+            const val_copy = try allocator.dupe(u8, entry.value_ptr.*);
+            try map.put(key_copy, val_copy);
+        }
+        return TestSnapshot{ .map = map };
+    }
+
+    pub fn deinit(self: *TestSnapshot, allocator: std.mem.Allocator) void {
+        var it = self.map.iterator();
+        while (it.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            allocator.free(entry.value_ptr.*);
+        }
+        self.map.deinit();
+    }
+};
+
+/// Property 6: Concurrent Snapshot Isolation - Multiple readers see consistent snapshots
+/// Multiple concurrent readers operating on different snapshots should each see
+/// a consistent view without interference from other readers or writers.
+pub const ConcurrentSnapshotIsolationProperty = struct {
+    config: PropertyTestConfig,
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator, config: PropertyTestConfig) ConcurrentSnapshotIsolationProperty {
+        return ConcurrentSnapshotIsolationProperty{
+            .config = config,
+            .allocator = allocator,
+        };
+    }
+
+    pub fn run(self: *ConcurrentSnapshotIsolationProperty) !PropertyTestResult {
+        var result = PropertyTestResult.init("concurrent_snapshot_isolation", self.allocator);
+        var stats = PerformanceStats.init(self.allocator);
+        defer stats.deinit();
+
+        for (0..self.config.num_iterations) |iteration| {
+            const seed = self.config.random_seed + @as(u64, @intCast(iteration));
+            var test_passed = true;
+            var err_msg: ?[]const u8 = null;
+
+            var model = try ref_model.Model.init(self.allocator);
+            defer model.deinit();
+
+            var generator = ref_model.OperationGenerator.init(self.allocator, seed);
+
+            // Create baseline with some data
+            var baseline_w = model.beginWrite();
+            const baseline_ops = try generator.generateSequence(30, 15);
+            defer {
+                for (baseline_ops) |op| {
+                    self.allocator.free(op.key);
+                    if (op.value) |val| self.allocator.free(val);
+                }
+                self.allocator.free(baseline_ops);
+            }
+
+            for (baseline_ops) |op| {
+                switch (op.op_type) {
+                    .put => try baseline_w.put(op.key, op.value.?),
+                    .delete => try baseline_w.del(op.key),
+                }
+            }
+            _ = try baseline_w.commit();
+
+            // Capture snapshot states at different points
+            const num_snapshots = 5;
+            var snapshot_states = try self.allocator.alloc(TestSnapshot, num_snapshots);
+            defer {
+                for (snapshot_states) |*snap| {
+                    snap.deinit(self.allocator);
+                }
+                self.allocator.free(snapshot_states);
+            }
+
+            var snapshot_txn_ids = try self.allocator.alloc(u64, num_snapshots);
+            defer self.allocator.free(snapshot_txn_ids);
+
+            // Create snapshots at different points
+            for (0..num_snapshots) |i| {
+                var w = model.beginWrite();
+                const ops = try generator.generateSequence(5, 10);
+                defer {
+                    for (ops) |op| {
+                        self.allocator.free(op.key);
+                        if (op.value) |val| self.allocator.free(val);
+                    }
+                    self.allocator.free(ops);
+                }
+
+                for (ops) |op| {
+                    switch (op.op_type) {
+                        .put => try w.put(op.key, op.value.?),
+                        .delete => try w.del(op.key),
+                    }
+                }
+                const txn_id = try w.commit();
+                snapshot_txn_ids[i] = txn_id;
+                stats.total_txns += 1;
+
+                // Capture snapshot state
+                var snap = try model.beginRead(txn_id);
+                defer {
+                    var it2 = snap.iterator();
+                    while (it2.next()) |entry| {
+                        self.allocator.free(entry.key_ptr.*);
+                        self.allocator.free(entry.value_ptr.*);
+                    }
+                    snap.deinit();
+                }
+
+                snapshot_states[i] = try TestSnapshot.fromSnapshotState(snap, self.allocator);
+            }
+
+            // Verify each snapshot is still accessible and consistent
+            for (snapshot_txn_ids, 0..) |txn_id, i| {
+                var verify_snap = try model.beginRead(txn_id);
+                defer {
+                    var it = verify_snap.iterator();
+                    while (it.next()) |entry| {
+                        self.allocator.free(entry.key_ptr.*);
+                        self.allocator.free(entry.value_ptr.*);
+                    }
+                    verify_snap.deinit();
+                }
+
+                const expected = &snapshot_states[i];
+
+                if (verify_snap.count() != expected.map.count()) {
+                    test_passed = false;
+                    err_msg = try std.fmt.allocPrint(self.allocator, "Iteration {}: Snapshot {} key count changed from {} to {}", .{ iteration, i, expected.map.count(), verify_snap.count() });
+                    break;
+                }
+
+                // Verify all key-value pairs match
+                var it = expected.map.iterator();
+                while (it.next()) |entry| {
+                    const actual_val = verify_snap.get(entry.key_ptr.*) orelse {
+                        test_passed = false;
+                        err_msg = try std.fmt.allocPrint(self.allocator, "Iteration {}: Snapshot {} key {s} missing", .{ iteration, i, entry.key_ptr.* });
+                        break;
+                    };
+
+                    if (!std.mem.eql(u8, entry.value_ptr.*, actual_val)) {
+                        test_passed = false;
+                        err_msg = try std.fmt.allocPrint(self.allocator, "Iteration {}: Snapshot {} key {s} value changed", .{ iteration, i, entry.key_ptr.* });
+                        break;
+                    }
+                }
+
+                if (!test_passed) break;
+            }
+
+            if (test_passed) {
+                result.passIteration();
+            } else {
+                if (err_msg) |msg| {
+                    result.fail("Concurrent snapshot isolation violation: {s}", .{msg});
+                    self.allocator.free(msg);
+                } else {
+                    result.fail("Concurrent snapshot isolation violation in iteration {}", .{iteration});
+                }
+                break;
+            }
+        }
+
+        result.complete(self.config.num_iterations);
+        result.performance_stats = stats;
+        return result;
+    }
+};
+
+// ==================== MVCC Test Runner ====================
+
+/// Run all MVCC-specific property tests
+pub const MvccPropertyTestRunner = struct {
+    config: PropertyTestConfig,
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator, config: PropertyTestConfig) MvccPropertyTestRunner {
+        return MvccPropertyTestRunner{
+            .config = config,
+            .allocator = allocator,
+        };
+    }
+
+    pub fn runAllMvccPropertyTests(self: *MvccPropertyTestRunner) ![]PropertyTestResult {
+        var results = try self.allocator.alloc(PropertyTestResult, 3);
+
+        // Run snapshot immutability tests
+        {
+            var prop = SnapshotImmutabilityProperty.init(self.allocator, self.config);
+            const result = try prop.run();
+            results[0] = result;
+        }
+
+        // Run time-travel correctness tests
+        {
+            var prop = TimeTravelCorrectnessProperty.init(self.allocator, self.config);
+            const result = try prop.run();
+            results[1] = result;
+        }
+
+        // Run concurrent snapshot isolation tests
+        {
+            var prop = ConcurrentSnapshotIsolationProperty.init(self.allocator, self.config);
+            const result = try prop.run();
+            results[2] = result;
+        }
+
+        return results;
+    }
+};
+
+/// Run MVCC property tests as part of the normal test suite
+pub fn runMvccPropertyTests(allocator: std.mem.Allocator) !void {
+    const config = PropertyTestConfig{
+        .max_concurrent_txns = 5,
+        .max_keys_per_txn = 20,
+        .max_total_keys = 100,
+        .random_seed = 54321,
+        .num_iterations = 50,
+        .enable_crash_simulation = false,
+    };
+
+    var runner = MvccPropertyTestRunner.init(allocator, config);
+    const results = try runner.runAllMvccPropertyTests();
+    defer {
+        for (results) |*result| {
+            result.deinit();
+        }
+        allocator.free(results);
+    }
+
+    PropertyTestRunner.printResults(results);
+
+    // Fail the test suite if any property test fails
+    for (results) |result| {
+        if (!result.passed) {
+            std.log.err("MVCC property test '{s}' failed", .{result.test_name});
+            return error.PropertyTestFailed;
+        }
+    }
+}
+
+// ==================== Unit Tests for MVCC Property Tests ====================
+
+test "snapshot immutability property basic functionality" {
+    const config = PropertyTestConfig{
+        .num_iterations = 5,
+        .random_seed = 42,
+        .max_keys_per_txn = 10,
+    };
+
+    var prop = SnapshotImmutabilityProperty.init(std.testing.allocator, config);
+    var result = try prop.run();
+    defer result.deinit();
+
+    try std.testing.expect(result.passed);
+    try std.testing.expectEqual(@as(usize, 5), result.iterations_passed);
+}
+
+test "time travel correctness property basic functionality" {
+    const config = PropertyTestConfig{
+        .num_iterations = 5,
+        .random_seed = 42,
+        .max_keys_per_txn = 10,
+    };
+
+    var prop = TimeTravelCorrectnessProperty.init(std.testing.allocator, config);
+    var result = try prop.run();
+    defer result.deinit();
+
+    try std.testing.expect(result.passed);
+    try std.testing.expectEqual(@as(usize, 5), result.iterations_passed);
+}
+
+test "concurrent snapshot isolation property basic functionality" {
+    const config = PropertyTestConfig{
+        .num_iterations = 5,
+        .random_seed = 42,
+        .max_keys_per_txn = 10,
+    };
+
+    var prop = ConcurrentSnapshotIsolationProperty.init(std.testing.allocator, config);
+    var result = try prop.run();
+    defer result.deinit();
+
+    try std.testing.expect(result.passed);
+    try std.testing.expectEqual(@as(usize, 5), result.iterations_passed);
+}
+
+test "MVCC property test runner integration" {
+    const config = PropertyTestConfig{
+        .num_iterations = 3,
+        .random_seed = 42,
+        .max_keys_per_txn = 5,
+        .enable_crash_simulation = false,
+    };
+
+    var runner = MvccPropertyTestRunner.init(std.testing.allocator, config);
+    const results = try runner.runAllMvccPropertyTests();
+    defer {
+        for (results) |*result| {
+            result.deinit();
+        }
+        std.testing.allocator.free(results);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), results.len);
 
     // All tests should pass
     for (results) |result| {
