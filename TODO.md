@@ -1157,18 +1157,19 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **IMPACT**: Ensures page integrity validation works correctly after splits
   - **STATUS**: COMPLETED
 
-- [ ⚠️ ] BLOCKER: bench/pager/commit_meta_fsync - separator key corruption continues
+- [ ✅ ] FIXED: bench/pager/commit_meta_fsync - separator key corruption in addChild with payload expansion
   - **DISCOVERED 2025-12-23**: Unit tests pass but commit_meta_fsync benchmark fails with CorruptSeparatorData
   - **FIXED ATTEMPTS**:
     - Commit 2d55636: Fixed payload_len recalculation after addChild in new root creation
     - Commit 2d55636: Fixed separator area calculation in splitInternalNode (use full buffer)
     - Commit 2d55636: Fixed insertIntoInternalNode payload expansion before addChild
     - Commit 2d55636: Removed redundant space check in addChild
-  - **REMAINING ISSUE**: Separator keys still corrupted during commit operations
-  - **NEXT STEPS**:
-    - Run benchmark with detailed logging to pinpoint exact corruption point
-    - Verify getSeparatorKey reads correct offset after payload_len updates
-    - Check if separator key data is overwritten by subsequent operations
-    - Validate checksum calculation includes full expanded payload
-  - **STATUS**: Partial fix committed, corruption persists - needs deeper investigation
-  - **PRIORITY**: Critical - blocks all commit/replay correctness validation
+  - **ROOT CAUSE**: addChild with expanded payload corrupted separator keys by writing to freed space
+  - **FINAL FIX**: Commit 50835fb - Fixed separator key payload management in internal nodes
+    - Added payload_len tracking to addChild to detect when payload expands
+    - Calculate available space after expansion, reject if insufficient
+    - Write separator key to correct location after child pointer shifts
+    - Properly update payload_len in header after expansion
+  - **STATUS**: COMPLETED - All tests and benchmarks pass
+  - **FIXED 2025-12-23**
+  - **IMPACT**: Unblocks commit/replay correctness validation
