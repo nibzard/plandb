@@ -576,7 +576,13 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED**: Validates all tests pass (errors_total == 0)
   - **IMPACT**: Automated hardening test execution for crash consistency validation
   - Committed with hash 26e76f0
-- [ ] 🔴 Nightly: macrobenches execution (blocked by Phase 5)
+- [ ✅ ] 🔴 Nightly: macrobenches execution
+  - **COMPLETED**: Macrobenches integrated into CI workflow with automated execution
+  - **COMPLETED**: Phase 5 macrobenchmarks (Code Knowledge Graph) fully implemented with baselines
+  - **COMPLETED**: CI workflow executes macrobench suite as part of validation pipeline
+  - **COMPLETED**: Baseline thresholds established for macrobench workloads
+  - **IMPACT**: Automated macrobenchmark execution ensures long-running workload performance validation
+  - Committed with hash 99cafc9
 - [ ] 🔴 Nightly: automated baseline refresh
 - [ ✅ ] 🟠 Command: `bench capture-baseline --profile ci|dev_nvme`
   - **COMPLETED**: Implemented via scripts/manage_baselines.sh
