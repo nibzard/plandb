@@ -7,6 +7,7 @@ const std = @import("std");
 
 pub const types = @import("types.zig");
 pub const function = @import("function.zig");
+pub const orchestrator = @import("orchestrator.zig");
 
 const OpenAIProvider = @import("providers/openai.zig").OpenAIProvider;
 const AnthropicProvider = @import("providers/anthropic.zig").AnthropicProvider;
