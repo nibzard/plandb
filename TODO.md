@@ -82,7 +82,13 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED**: Implemented recursive JSON file discovery in directories
   - **COMPLETED**: Tests pass: successfully compares benchmark output directories
   - Completed 2025-12-23
-- [ ] 🟡 Document harness usage, filters, baselines, and JSON layout
+- [ ✅ ] 🟡 Document harness usage, filters, baselines, and JSON layout
+  - **COMPLETED**: Created docs/bench-harness.md with comprehensive documentation
+  - **COMPLETED**: Documented CLI usage, commands, and options (run, gate, compare, etc.)
+  - **COMPLETED**: Documented benchmark suites (micro, macro, hardening) and categories
+  - **COMPLETED**: Documented baseline management (ci, dev_nvme profiles)
+  - **COMPLETED**: Documented JSON schema and output format
+  - **Completed 2025-12-23
 
 ### Reference Model Testing Framework
 - [ ✅ ] 🔴 Build comprehensive in-memory reference model with MVCC snapshots
@@ -211,7 +217,13 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED**: Comprehensive tests added for torn write scenarios
   - **COMPLETED**: Protection against corruption from interrupted meta page writes
   - **COMPLETED**: All tests passing, robust detection and recovery implemented
-- [ ] 🟡 Golden file: empty DB v0 opens and validates
+- [ ✅ ] 🟡 Golden file: empty DB v0 opens and validates
+  - **COMPLETED**: Added golden file test infrastructure in src/hardening.zig
+  - **COMPLETED**: Created function goldenFileEmptyDbV0() that creates a valid empty DB v0 file with proper meta pages
+  - **COMPLETED**: Added unit test "golden file: empty DB v0 opens and validates"
+  - **COMPLETED**: Test verifies pager opens file, committed_txn_id=0, root_page_id=0, Db API works correctly
+  - **STATUS**: All tests passing with zig test, validates empty database v0 file format
+  - Committed 2025-12-23
 
 ## Phase 2 — B+tree
 - **✅ COMPLETED**: Implement leaf slotted-page encode/decode + structural validator
@@ -351,7 +363,11 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED**: All 3 MVCC property tests passing
   - **STATUS**: Implementation complete and working, validates MVCC correctness properties
   - Committed with hash [current]
-- [ ] 🟡 Simple page cache with pinning/epochs for readers
+- [x] 🟡 Simple page cache with pinning/epochs for readers
+  - **COMPLETED**: LRU page cache with pinning support implemented in src/page_cache.zig
+  - **COMPLETED**: Integrated with Pager via readPageCached() API
+  - **COMPLETED**: Benchmark added: bench/pager/cache_read_multiple_pages
+  - Committed with hash 9088783
 
 ## Phase 4 — Commit Record + Replay
 - [✅] 🔴 Implement record header/trailer framing and CRCs per `spec/commit_record_v0.md`
@@ -551,9 +567,38 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
 *See [PLAN-LIVING-DB.md](./PLAN-LIVING-DB.md) for detailed 6-month implementation plan, architecture, and success metrics*
 
 ### AI Plugin Foundation
-- [ ] 🔴 Design `src/llm/` module architecture with provider-agnostic interface
-- [ ] 🔴 Implement OpenAI-compatible client interface with function calling
-- [ ] 🔴 Design plugin lifecycle system (init, on_commit, on_query, cleanup)
+- [ ✅ ] 🔴 Design `src/llm/` module architecture with provider-agnostic interface
+  - **COMPLETED**: Implemented provider-agnostic LLM interface for Phase 7 AI Intelligence Layer
+  - **COMPLETED**: src/llm/types.zig - Core type definitions (Config, Message, Role, Tool, etc.)
+  - **COMPLETED**: src/llm/function.zig - Function schema framework with validation
+  - **COMPLETED**: src/llm/client.zig - Provider-agnostic Client interface with complete API
+  - **COMPLETED**: src/llm/providers/openai.zig - OpenAI client implementation
+  - **COMPLETED**: src/llm/providers/anthropic.zig - Anthropic client implementation
+  - **COMPLETED**: src/llm/providers/local.zig - Local model placeholder
+  - **STATUS**: Implementation complete and ready for integration
+  - **BLOCKERS**: None
+- [ ✅ ] 🔴 Implement OpenAI-compatible client interface with function calling
+  - **COMPLETED**: Migrated OpenAI provider from deprecated `functions`/`function_call` API to modern `tools` format
+  - **COMPLETED**: Added `chat()` method for general LLM queries with tool support
+  - **COMPLETED**: Fixed HTTP client usage (proper `request.start()`, `request.finish()`, `reader()` pattern)
+  - **COMPLETED**: Updated response parsing to use `tool_calls` instead of deprecated `function_call`
+  - **COMPLETED**: Added comprehensive test suite with 6 tests covering:
+    - Provider initialization and capabilities
+    - Chat message type validation
+    - Tool format conversion
+    - Tool response parsing with mock data
+    - Response validation success/error cases
+  - **COMPLETED**: Fixed multiple memory leaks in JSON cleanup
+  - **VERIFIED**: All tests pass
+  - **STATUS**: Implementation complete and working
+  - **COMMIT**: 498d03e5a8436cce9072e6f763c14fdc548c42ca
+  - **BLOCKERS**: None
+- [ ✅ ] 🔴 Design plugin lifecycle system (init, on_commit, on_query, cleanup)
+  - **COMPLETED**: Full plugin lifecycle (init/deinit/cleanup)
+  - **COMPLETED**: LLM provider integration
+  - **COMPLETED**: Function registry
+  - **COMPLETED**: on_commit/on_query hook execution
+  - **COMPLETED**: Comprehensive tests
 - [ ] 🔴 Extend commit record processing with plugin hooks
 - [ ] 🟠 Add Anthropic and local model provider support
 - [ ] 🟠 Implement asynchronous plugin execution with error isolation
