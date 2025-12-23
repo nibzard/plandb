@@ -18,6 +18,9 @@ pub const PendingTasksCartridge = struct {
     type_index: std.StringHashMap(TypeEntry),
     key_index: std.StringHashMap(TaskOffset),
 
+    // Task storage during build (for serialization)
+    tasks: std.ArrayList(TaskEntry),
+
     // Mapped file data (for memory-mapped access)
     mapped_data: ?[]const u8,
 
@@ -38,6 +41,7 @@ pub const PendingTasksCartridge = struct {
             .metadata = metadata,
             .type_index = std.StringHashMap(TypeEntry).init(allocator),
             .key_index = std.StringHashMap(TaskOffset).init(allocator),
+            .tasks = std.ArrayList(TaskEntry).init(allocator),
             .mapped_data = null,
         };
     }
@@ -253,10 +257,12 @@ pub const PendingTasksCartridge = struct {
             .metadata = metadata,
             .type_index = std.StringHashMap(TypeEntry).init(allocator),
             .key_index = std.StringHashMap(TaskOffset).init(allocator),
+            .tasks = std.ArrayList(TaskEntry).init(allocator),
             .mapped_data = null,
         };
 
         try cartridge.loadIndexFromFile(file);
+        try cartridge.mapDataSection(file);
         return cartridge;
     }
 
@@ -325,6 +331,12 @@ pub const PendingTasksCartridge = struct {
         }
         self.key_index.deinit();
 
+        // Clean up tasks
+        for (self.tasks.items) |*task| {
+            task.deinit(self.allocator);
+        }
+        self.tasks.deinit();
+
         // Clean up metadata
         self.metadata.deinit(self.allocator);
 
@@ -336,11 +348,22 @@ pub const PendingTasksCartridge = struct {
 
     /// Add a task to the cartridge (during build phase)
     pub fn addTask(self: *Self, task: TaskEntry) !void {
-        // Add to key index
+        // Store full task for serialization
+        const task_copy = TaskEntry{
+            .key = try self.allocator.dupe(u8, task.key),
+            .task_type = try self.allocator.dupe(u8, task.task_type),
+            .priority = task.priority,
+            .claimed = task.claimed,
+            .claimed_by = if (task.claimed_by) |c| try self.allocator.dupe(u8, c) else null,
+            .claim_time = task.claim_time,
+        };
+        try self.tasks.append(task_copy);
+
+        // Add to key index (offset will be set during write)
         const key_copy = try self.allocator.dupe(u8, task.key);
         errdefer self.allocator.free(key_copy);
         const offset = TaskOffset{
-            .offset = 0, // Will be set during serialization
+            .offset = 0,
             .size = 0,
         };
         try self.key_index.put(key_copy, offset);
@@ -405,12 +428,77 @@ pub const PendingTasksCartridge = struct {
         return txn_delta >= self.metadata.invalidation_policy.max_new_txns;
     }
 
+    /// Claim a task - returns updated task entry or error if not found/already claimed
+    /// Note: This is a transient claim not persisted to the read-only cartridge.
+    /// For persistent claims, write through to the main database and rebuild cartridge.
+    pub fn claimTask(self: *const Self, key: []const u8, claimer: []const u8) !?TaskEntry {
+        var task = (try self.getTask(key)) orelse return null;
+        errdefer task.deinit(self.allocator);
+
+        if (task.claimed) {
+            task.deinit(self.allocator);
+            return error.AlreadyClaimed;
+        }
+
+        // Return a claimed copy
+        task.claimed = true;
+        task.claimed_by = try self.allocator.dupe(u8, claimer);
+        task.claim_time = std.time.nanoTimestamp();
+
+        return task;
+    }
+
     /// Read a task from data section
     fn readTaskAt(self: *const Self, data: []const u8, offset: u64) !TaskEntry {
-        _ = self;
-        _ = data;
-        _ = offset;
-        return error.NotImplemented;
+        var pos: usize = @intCast(offset);
+        if (pos + 8 > data.len) return error.InvalidTaskOffset;
+
+        // Read task entry header: flags(1) + priority(1) + type_len(2) + key_len(4)
+        const flags = data[pos];
+        const priority = data[pos + 1];
+        const type_len = std.mem.readInt(u16, data[pos + 2 .. pos + 4], .little);
+        const key_len = std.mem.readInt(u32, data[pos + 4 .. pos + 8], .little);
+        pos += 8;
+
+        // Validate we have enough data
+        const type_start = pos;
+        const key_start = pos + @as(usize, type_len);
+        const min_required = key_start + key_len;
+        if (min_required > data.len) return error.InvalidTaskData;
+
+        // Read type string
+        const task_type = try self.allocator.dupe(u8, data[type_start..key_start]);
+        errdefer self.allocator.free(task_type);
+
+        // Read key string
+        const key = try self.allocator.dupe(u8, data[key_start .. key_start + key_len]);
+        errdefer self.allocator.free(key);
+        pos = key_start + key_len;
+
+        // Parse claim info if present (flags & 0x01 indicates claimed)
+        var claimed = false;
+        var claimed_by: ?[]const u8 = null;
+        var claim_time: ?u64 = null;
+
+        if (flags & 0x01 != 0 and pos + 12 <= data.len) {
+            claimed = true;
+            const claimant_len = std.mem.readInt(u16, data[pos .. pos + 2], .little);
+            pos += 2;
+            if (claimant_len > 0 and pos + claimant_len + 8 <= data.len) {
+                claimed_by = try self.allocator.dupe(u8, data[pos .. pos + claimant_len]);
+                pos += claimant_len;
+                claim_time = std.mem.readInt(u64, data[pos .. pos + 8], .little);
+            }
+        }
+
+        return TaskEntry{
+            .key = key,
+            .task_type = task_type,
+            .priority = priority,
+            .claimed = claimed,
+            .claimed_by = claimed_by,
+            .claim_time = claim_time,
+        };
     }
 
     /// Write cartridge to file
@@ -418,32 +506,32 @@ pub const PendingTasksCartridge = struct {
         var buffer = std.ArrayList(u8).init(self.allocator);
         defer buffer.deinit();
 
-        // Write header
+        // Reserve space for header (will rewrite with final offsets)
+        const header_pos = buffer.items.len;
         try self.header.serialize(buffer.writer());
 
-        // Calculate offsets
-        const data_start_offset = format.CartridgeHeader.SIZE + self.calculateIndexSize();
-        self.header.data_offset = data_start_offset;
+        // Calculate and update offsets
+        const index_start = buffer.items.len;
+        self.header.index_offset = @intCast(index_start);
 
-        // Write index section
+        // Write index section and calculate offsets
         try self.writeIndexSection(buffer.writer());
 
         // Write data section (tasks)
         const data_start = buffer.items.len;
+        self.header.data_offset = @intCast(data_start);
         try self.writeDataSection(buffer.writer());
 
-        // Update data offset in header
-        self.header.data_offset = data_start;
-
         // Write metadata section
-        self.header.metadata_offset = buffer.items.len;
+        self.header.metadata_offset = @intCast(buffer.items.len);
         try self.metadata.serialize(buffer.writer());
 
         // Calculate and write checksum
         self.header.checksum = std.hash.Crc32.hash(buffer.items);
 
-        // Update header in buffer with final checksum
-        var header_fbs = std.io.fixedBufferStream(buffer.items[0..format.CartridgeHeader.SIZE]);
+        // Update header in buffer with final offsets and checksum
+        const header_bytes = buffer.items[header_pos..header_pos + format.CartridgeHeader.SIZE];
+        var header_fbs = std.io.fixedBufferStream(header_bytes);
         try self.header.serialize(header_fbs.writer());
 
         // Write to file
@@ -463,34 +551,161 @@ pub const PendingTasksCartridge = struct {
         return size;
     }
 
-    fn writeIndexSection(self: *const Self, writer: anytype) !void {
+    fn writeIndexSection(self: *Self, writer: anytype) !void {
         try writer.writeInt(u32, @intCast(self.type_index.count()), .little);
 
+        var task_idx: usize = 0;
         var it = self.type_index.iterator();
         while (it.next()) |entry| {
             const type_entry = entry.value_ptr.*;
             try writer.writeInt(u16, @intCast(type_entry.task_type.len), .little);
             try writer.writeAll(type_entry.task_type);
             try writer.writeInt(u32, @intCast(type_entry.tasks.items.len), .little);
-            try writer.writeInt(u64, type_entry.first_task_offset, .little);
-            try writer.writeInt(u64, type_entry.last_task_offset, .little);
+
+            // We'll need to update first/last offsets after writing data
+            // For now, store position to patch later
+            _ = type_entry.first_task_offset;
+            _ = type_entry.last_task_offset;
+
+            _ = writer.context.context.items.len;
+            try writer.writeInt(u64, 0, .little); // first_task_offset placeholder
+            try writer.writeInt(u64, 0, .little); // last_task_offset placeholder
             try writer.writeInt(u32, 0, .little); // checksum placeholder
+
+            // Update offset tracking for this type
+            for (type_entry.tasks.items) |*off| {
+                off.*.offset = 0; // Will be set when writing data
+                off.*.size = 0;
+
+                // Track which task we're on
+                _ = task_idx < self.tasks.items.len;
+                task_idx += 1;
+            }
         }
+    }
+
+    /// Map data section into memory for fast access
+    fn mapDataSection(self: *Self, file: std.fs.File) !void {
+        const data_size = self.header.metadata_offset - self.header.data_offset;
+        if (data_size == 0) {
+            self.mapped_data = null;
+            return;
+        }
+
+        const data = try self.allocator.alloc(u8, data_size);
+        errdefer self.allocator.free(data);
+        const bytes_read = try file.pread(data, self.header.data_offset);
+        if (bytes_read != data_size) return error.IOError;
+
+        // Parse data section to build key_index and update type task offsets
+        var offset: u64 = 0;
+        var type_task_counts = std.StringHashMap(usize).init(self.allocator);
+        defer type_task_counts.deinit();
+
+        // First pass: parse all tasks and build key_index
+        while (offset < @as(u64, @intCast(data_size))) {
+            if (offset + 8 > data_size) break;
+
+            const start_offset = offset;
+            const flags = data[@intCast(offset)];
+            _ = data[@intCast(offset + 1)]; // priority
+            const type_len = std.mem.readInt(u16, data[@intCast(offset + 2) .. @intCast(offset + 4)], .little);
+            const key_len = std.mem.readInt(u32, data[@intCast(offset + 4) .. @intCast(offset + 8)], .little);
+            offset += 8;
+
+            // Read type and key
+            if (offset + type_len + key_len > data_size) break;
+            const type_str = data[@intCast(offset) .. @intCast(offset + type_len)];
+            offset += type_len;
+            const key_str = data[@intCast(offset) .. @intCast(offset + key_len)];
+            offset += key_len;
+
+            // Read claim info if present
+            if (flags & 0x01 != 0 and offset + 10 <= data_size) {
+                const claimant_len = std.mem.readInt(u16, data[@intCast(offset) .. @intCast(offset + 2)], .little);
+                offset += 2 + claimant_len + 8;
+            }
+
+            const entry_size = offset - start_offset;
+
+            // Add to key_index
+            const key_copy = try self.allocator.dupe(u8, key_str);
+            try self.key_index.put(key_copy, TaskOffset{
+                .offset = start_offset,
+                .size = entry_size,
+            });
+
+            // Track task count per type
+            const count_entry = try type_task_counts.getOrPut(type_str);
+            if (!count_entry.found_existing) {
+                const type_copy = try self.allocator.dupe(u8, type_str);
+                _ = try type_task_counts.put(type_copy, 0);
+            }
+            count_entry.value_ptr.* += 1;
+        }
+
+        // Second pass: update type_index task offsets
+        var task_idx: usize = 0;
+        offset = 0;
+        while (offset < @as(u64, @intCast(data_size))) {
+            if (offset + 8 > data_size) break;
+
+            const start_offset = offset;
+            const flags = data[@intCast(offset)];
+            _ = data[@intCast(offset + 1)]; // priority
+            const type_len = std.mem.readInt(u16, data[@intCast(offset + 2) .. @intCast(offset + 4)], .little);
+            const key_len = std.mem.readInt(u32, data[@intCast(offset + 4) .. @intCast(offset + 8)], .little);
+            offset += 8;
+
+            if (offset + type_len + key_len > data_size) break;
+            const type_str = data[@intCast(offset) .. @intCast(offset + type_len)];
+            offset += type_len;
+            offset += key_len; // skip key
+
+            if (flags & 0x01 != 0 and offset + 10 <= data_size) {
+                const claimant_len = std.mem.readInt(u16, data[@intCast(offset) .. @intCast(offset + 2)], .little);
+                offset += 2 + claimant_len + 8;
+            }
+
+            // Update type entry
+            if (self.type_index.get(type_str)) |*entry| {
+                if (entry.tasks.items.len == 0) {
+                    entry.first_task_offset = start_offset;
+                }
+                entry.last_task_offset = start_offset;
+                const task_off = TaskOffset{
+                    .offset = start_offset,
+                    .size = offset - start_offset,
+                };
+                try entry.tasks.append(task_off);
+            }
+            task_idx += 1;
+        }
+
+        self.mapped_data = data;
     }
 
     fn writeDataSection(self: *const Self, writer: anytype) !void {
         // Write all tasks to data section
-        // Each task entry: flags(1) + priority(1) + type_len(2) + type + key_len(4) + key
-        var it = self.key_index.iterator();
-        while (it.next()) |entry| {
-            const key = entry.key_ptr.*;
-            // We'd need to store task metadata to write full entry
-            // For now, write minimal entry
-            try writer.writeByte(0); // flags
-            try writer.writeByte(128); // default priority
-            try writer.writeInt(u16, 0, .little); // type_len (placeholder)
-            try writer.writeInt(u32, @intCast(key.len), .little);
-            try writer.writeAll(key);
+        // Each task entry: flags(1) + priority(1) + type_len(2) + type + key_len(4) + key [+ claim_info]
+        for (self.tasks.items) |task| {
+            var flags: u8 = 0;
+            if (task.claimed) flags |= 0x01;
+
+            try writer.writeByte(flags);
+            try writer.writeByte(task.priority);
+            try writer.writeInt(u16, @intCast(task.task_type.len), .little);
+            try writer.writeAll(task.task_type);
+            try writer.writeInt(u32, @intCast(task.key.len), .little);
+            try writer.writeAll(task.key);
+
+            // Write claim info if claimed
+            if (task.claimed) {
+                const claimant = task.claimed_by orelse "";
+                try writer.writeInt(u16, @intCast(claimant.len), .little);
+                try writer.writeAll(claimant);
+                try writer.writeInt(u64, task.claim_time orelse 0, .little);
+            }
         }
     }
 };
@@ -755,7 +970,7 @@ test "extractTaskId" {
     try std.testing.expectEqual(@as(u64, 123), extractTaskId("task:123:extra").?);
     try std.testing.expect(extractTaskId("notatask") == null);
     try std.testing.expect(extractTaskId("task:") == null);
-    try std.testing.expect(extractTaskId("task:abc") == null;
+    try std.testing.expect(extractTaskId("task:abc") == null);
 }
 
 test "PendingTasksCartridge.deterministic_rebuild" {
@@ -850,4 +1065,122 @@ test "PendingTasksCartridge.parseTaskPriority" {
     const json_without_priority = "{\"type\":\"processing\"}";
     const default_priority = try cartridge.parseTaskPriority(json_without_priority);
     try std.testing.expectEqual(@as(u8, 128), default_priority);
+}
+
+test "PendingTasksCartridge.memory_map_lookups" {
+    const test_path = "test_memory_map.cartridge";
+    defer {
+        _ = std.fs.cwd().deleteFile(test_path) catch {};
+    }
+
+    // Create and write cartridge with multiple tasks
+    {
+        var cartridge = try PendingTasksCartridge.init(std.testing.allocator, 100);
+        defer cartridge.deinit();
+
+        // Add tasks of different types
+        const task1 = TaskEntry{
+            .key = "task:001",
+            .task_type = "processing",
+            .priority = 10,
+            .claimed = false,
+            .claimed_by = null,
+            .claim_time = null,
+        };
+        try cartridge.addTask(task1);
+
+        const task2 = TaskEntry{
+            .key = "task:002",
+            .task_type = "upload",
+            .priority = 5,
+            .claimed = false,
+            .claimed_by = null,
+            .claim_time = null,
+        };
+        try cartridge.addTask(task2);
+
+        const task3 = TaskEntry{
+            .key = "task:003",
+            .task_type = "processing",
+            .priority = 15,
+            .claimed = false,
+            .claimed_by = null,
+            .claim_time = null,
+        };
+        try cartridge.addTask(task3);
+
+        try cartridge.writeToFile(test_path);
+    }
+
+    // Open and test memory-mapped lookups
+    var cartridge = try PendingTasksCartridge.open(std.testing.allocator, test_path);
+    defer cartridge.deinit();
+
+    // Verify data is mapped
+    try std.testing.expect(cartridge.mapped_data != null);
+
+    // Test getTask by key
+    const task = try cartridge.getTask("task:001");
+    try std.testing.expect(task != null);
+    defer if (task) |*t| t.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("task:001", task.?.key);
+    try std.testing.expectEqualStrings("processing", task.?.task_type);
+    try std.testing.expectEqual(@as(u8, 10), task.?.priority);
+
+    // Test getTasksByType
+    const processing_tasks = try cartridge.getTasksByType("processing");
+    defer {
+        for (processing_tasks) |*t| t.deinit(std.testing.allocator);
+        std.testing.allocator.free(processing_tasks);
+    }
+    try std.testing.expectEqual(@as(usize, 2), processing_tasks.len);
+
+    const upload_tasks = try cartridge.getTasksByType("upload");
+    defer {
+        for (upload_tasks) |*t| t.deinit(std.testing.allocator);
+        std.testing.allocator.free(upload_tasks);
+    }
+    try std.testing.expectEqual(@as(usize, 1), upload_tasks.len);
+
+    // Test claimTask
+    const claimed = try cartridge.claimTask("task:002", "agent-42");
+    try std.testing.expect(claimed != null);
+    defer if (claimed) |*c| c.deinit(std.testing.allocator);
+    try std.testing.expect(claimed.?.claimed);
+    try std.testing.expectEqualStrings("agent-42", claimed.?.claimed_by.?);
+}
+
+test "PendingTasksCartridge.claimTask_errors" {
+    const test_path = "test_claim_errors.cartridge";
+    defer {
+        _ = std.fs.cwd().deleteFile(test_path) catch {};
+    }
+
+    // Create cartridge with a claimed task
+    {
+        var cartridge = try PendingTasksCartridge.init(std.testing.allocator, 100);
+        defer cartridge.deinit();
+
+        const task = TaskEntry{
+            .key = "task:001",
+            .task_type = "processing",
+            .priority = 10,
+            .claimed = true,
+            .claimed_by = "agent-1",
+            .claim_time = 12345,
+        };
+        try cartridge.addTask(task);
+        try cartridge.writeToFile(test_path);
+    }
+
+    var cartridge = try PendingTasksCartridge.open(std.testing.allocator, test_path);
+    defer cartridge.deinit();
+
+    // Try to claim already claimed task
+    const result = cartridge.claimTask("task:001", "agent-2");
+    try std.testing.expectError(error.AlreadyClaimed, result);
+
+    // Try to claim non-existent task
+    const not_found = try cartridge.claimTask("task:999", "agent-2");
+    try std.testing.expect(not_found == null);
 }
