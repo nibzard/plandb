@@ -55,3 +55,51 @@ jobs:
           fi
         done
         echo "PASS: All hardening tests completed successfully"
+
+  macrobenches:
+    name: Macrobench Suite
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Zig
+      uses: goto-bus-stop/setup-zig@v2
+      with:
+        version: ${{ env.ZIG_VERSION }}
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y jq
+
+    - name: Build benchmark harness
+      run: |
+        zig build
+
+    - name: Run macrobench suite
+      run: |
+        ./zig-cache/bin/bench run --suite macro --repeats 3
+
+    - name: Upload macrobench results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: macrobench-results-${{ github.run_number }}
+        path: bench/results/
+        retention-days: 90
+
+    - name: Check macrobench passes
+      run: |
+        # Ensure all macrobenches completed successfully
+        # Note: task_queue_clamins uses errors_total to track contention (expected)
+        for file in bench/results/bench/macro/*.json; do
+          if [ -f "$file" ]; then
+            # Verify JSON is valid and has required fields
+            if ! jq -e '.bench_name and .results' "$file" > /dev/null; then
+              echo "FAIL: Invalid benchmark output in $file"
+              exit 1
+            fi
+            echo "OK: $(jq -r '.bench_name' "$file") completed"
+          fi
+        done
+        echo "PASS: All macrobenches completed successfully"
