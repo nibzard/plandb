@@ -49,6 +49,19 @@ pub const EntityId = struct {
     }
 };
 
+/// Context for HashMap with EntityId keys
+pub const EntityIdContext = struct {
+    pub fn hash(self: @This(), id: EntityId) u64 {
+        _ = self;
+        return EntityId.hash(id);
+    }
+
+    pub fn eql(self: @This(), a: EntityId, b: EntityId) bool {
+        _ = self;
+        return EntityId.eql(a, b);
+    }
+};
+
 /// Entity type classification
 pub const EntityType = enum(u8) {
     file = 1,
@@ -740,6 +753,346 @@ pub const EntityIndexCartridge = struct {
     }
 };
 
+// ==================== Inverted Index (Topic Cartridge) ====================
+
+/// Term posting with entity reference and relevance
+pub const TermPosting = struct {
+    entity_id: EntityId,
+    frequency: u16,
+    relevance_score: f32,
+    timestamp: u64,
+    positions: ArrayListManaged(u32),
+
+    pub fn init(
+        allocator: std.mem.Allocator,
+        entity: EntityId,
+        txn_id: u64
+    ) !TermPosting {
+        const ns = try allocator.dupe(u8, entity.namespace);
+        errdefer allocator.free(ns);
+        const local = try allocator.dupe(u8, entity.local_id);
+        errdefer allocator.free(local);
+
+        return TermPosting{
+            .entity_id = .{ .namespace = ns, .local_id = local },
+            .frequency = 1,
+            .relevance_score = 1.0,
+            .timestamp = txn_id,
+            .positions = .{},
+        };
+    }
+
+    pub fn deinit(self: *TermPosting, allocator: std.mem.Allocator) void {
+        allocator.free(self.entity_id.namespace);
+        allocator.free(self.entity_id.local_id);
+        self.positions.deinit(allocator);
+    }
+
+    pub fn addPosition(self: *TermPosting, allocator: std.mem.Allocator, pos: u32) !void {
+        try self.positions.append(allocator, pos);
+        self.frequency += 1;
+    }
+};
+
+/// Term data with posting list offset and statistics
+pub const TermData = struct {
+    term: []const u8,
+    posting_offset: u64,
+    document_frequency: u32,
+    total_frequency: u64,
+    last_updated: u64,
+
+    pub fn init(allocator: std.mem.Allocator, term: []const u8) !TermData {
+        return TermData{
+            .term = try allocator.dupe(u8, term),
+            .posting_offset = 0,
+            .document_frequency = 0,
+            .total_frequency = 0,
+            .last_updated = 0,
+        };
+    }
+
+    pub fn deinit(self: *TermData, allocator: std.mem.Allocator) void {
+        allocator.free(self.term);
+    }
+};
+
+/// Trie node for efficient term lookup and prefix search
+pub const TrieNode = struct {
+    character: u8,
+    children: std.AutoHashMap(u8, *TrieNode),
+    term_data: ?*TermData,
+    frequency: u32,
+
+    pub fn init(allocator: std.mem.Allocator, char: u8) !*TrieNode {
+        const node = try allocator.create(TrieNode);
+        node.* = TrieNode{
+            .character = char,
+            .children = std.AutoHashMap(u8, *TrieNode).init(allocator),
+            .term_data = null,
+            .frequency = 0,
+        };
+        return node;
+    }
+
+    pub fn deinit(self: *TrieNode, allocator: std.mem.Allocator) void {
+        var it = self.children.valueIterator();
+        while (it.next()) |child_ptr| {
+            child_ptr.*.deinit(allocator);
+        }
+        self.children.deinit();
+        if (self.term_data) |td| {
+            td.deinit(allocator);
+            allocator.destroy(td);
+        }
+        allocator.destroy(self);
+    }
+
+    /// Insert a term and return its term data (creating if needed)
+    pub fn insert(self: *TrieNode, allocator: std.mem.Allocator, term: []const u8) !*TermData {
+        var current = self;
+
+        for (term) |ch| {
+            const child_ptr = try current.children.getOrPut(ch);
+            if (!child_ptr.found_existing) {
+                child_ptr.value_ptr.* = try TrieNode.init(allocator, ch);
+            }
+            current = child_ptr.value_ptr.*;
+        }
+
+        if (current.term_data == null) {
+            const td = try allocator.create(TermData);
+            td.* = try TermData.init(allocator, term);
+            current.term_data = td;
+        }
+
+        current.frequency += 1;
+        return current.term_data.?;
+    }
+
+    /// Lookup a term in the trie
+    pub fn lookup(self: *const TrieNode, term: []const u8) ?*TermData {
+        var current = self;
+
+        for (term) |ch| {
+            const child = current.children.get(ch) orelse return null;
+            current = child;
+        }
+
+        return current.term_data;
+    }
+
+    /// Find all terms with a given prefix
+    pub fn findPrefix(self: *const TrieNode, prefix: []const u8, allocator: std.mem.Allocator) !ArrayListManaged([]const u8) {
+        var results = ArrayListManaged([]const u8){};
+        var current = self;
+
+        // Navigate to prefix end
+        for (prefix) |ch| {
+            const child = current.children.get(ch) orelse return results;
+            current = child;
+        }
+
+        // Collect all terms from this point
+        var buffer = ArrayListManaged(u8){};
+        buffer.appendSlice(allocator, prefix) catch return results;
+        defer buffer.deinit(allocator);
+
+        try self.collectTerms(current, &buffer, allocator, &results);
+        return results;
+    }
+
+    fn collectTerms(self: *const TrieNode, node: *const TrieNode, buffer: *ArrayListManaged(u8), allocator: std.mem.Allocator, results: *ArrayListManaged([]const u8)) !void {
+        if (node.term_data) |td| {
+            const term_copy = try allocator.dupe(u8, td.term);
+            try results.append(allocator, term_copy);
+        }
+
+        var it = node.children.iterator();
+        while (it.next()) |entry| {
+            try buffer.append(allocator, entry.key_ptr.*);
+            try self.collectTerms(entry.value_ptr.*, buffer, allocator, results);
+            _ = buffer.pop();
+        }
+    }
+};
+
+/// Topic cartridge with inverted index
+pub const TopicCartridge = struct {
+    allocator: std.mem.Allocator,
+    header: format.CartridgeHeader,
+    term_dict: *TrieNode,
+    posting_lists: ArrayListManaged(ArrayListManaged(TermPosting)),
+    total_documents: u64,
+
+    /// Create new topic cartridge
+    pub fn init(allocator: std.mem.Allocator, source_txn_id: u64) !TopicCartridge {
+        const header = format.CartridgeHeader.init(.topic_index, source_txn_id);
+        return TopicCartridge{
+            .allocator = allocator,
+            .header = header,
+            .term_dict = try TrieNode.init(allocator, 0),
+            .posting_lists = .{},
+            .total_documents = 0,
+        };
+    }
+
+    pub fn deinit(self: *TopicCartridge) void {
+        self.term_dict.deinit(self.allocator);
+        for (self.posting_lists.items) |*list| {
+            for (list.items) |*posting| posting.deinit(self.allocator);
+            list.deinit(self.allocator);
+        }
+        self.posting_lists.deinit(self.allocator);
+    }
+
+    /// Add entity terms to the inverted index
+    pub fn addEntityTerms(
+        self: *TopicCartridge,
+        entity_id: EntityId,
+        terms: []const []const u8,
+        txn_id: u64
+    ) !void {
+        for (terms) |term| {
+            // Get or create term data
+            const term_data = try self.term_dict.insert(self.allocator, term);
+
+            // Assign posting offset if this is a new term
+            if (term_data.document_frequency == 0 and term_data.total_frequency == 0) {
+                term_data.posting_offset = self.posting_lists.items.len;
+                try self.posting_lists.append(self.allocator, .{});
+            }
+
+            const posting_list = &self.posting_lists.items[term_data.posting_offset];
+
+            // Check if entity already has a posting for this term
+            var found = false;
+            for (posting_list.items) |*posting| {
+                if (EntityId.eql(posting.entity_id, entity_id)) {
+                    posting.frequency += 1;
+                    posting.timestamp = txn_id;
+                    term_data.total_frequency += 1;
+                    found = true;
+                    break;
+                }
+            }
+
+            // Add new posting if not found
+            if (!found) {
+                const posting = try TermPosting.init(self.allocator, entity_id, txn_id);
+                try posting_list.append(self.allocator, posting);
+                term_data.document_frequency += 1;
+                term_data.total_frequency += 1;
+                self.header.entry_count += 1;
+            }
+        }
+    }
+
+    /// Search for entities matching terms
+    pub fn searchByTopic(
+        self: *const TopicCartridge,
+        query_terms: []const []const u8,
+        limit: usize
+    ) !ArrayListManaged(EntityResult) {
+        var results = ArrayListManaged(EntityResult){};
+        if (query_terms.len == 0) return results;
+
+        // Score entities by term frequency
+        var scores = std.HashMap(EntityId, f32, EntityIdContext, std.hash_map.default_max_load_percentage).init(self.allocator);
+        defer scores.deinit();
+
+        // Collect postings from all query terms
+        for (query_terms) |term| {
+            if (self.term_dict.lookup(term)) |term_data| {
+                if (term_data.posting_offset < self.posting_lists.items.len) {
+                    const postings = &self.posting_lists.items[term_data.posting_offset];
+                    for (postings.items) |posting| {
+                        const current_score = scores.get(posting.entity_id) orelse 0;
+                        const boost = @as(f32, @floatFromInt(posting.frequency));
+                        const ns = try self.allocator.dupe(u8, posting.entity_id.namespace);
+                        errdefer self.allocator.free(ns);
+                        const local = try self.allocator.dupe(u8, posting.entity_id.local_id);
+                        errdefer self.allocator.free(local);
+
+                        const eid = EntityId{ .namespace = ns, .local_id = local };
+                        try scores.put(eid, current_score + boost * posting.relevance_score);
+                    }
+                }
+            }
+        }
+
+        // Convert to results and sort - take ownership of keys from HashMap
+        var it = scores.iterator();
+        while (it.next()) |entry| {
+            const result = EntityResult{
+                .entity_id = entry.key_ptr.*,
+                .score = entry.value_ptr.*,
+            };
+            try results.append(self.allocator, result);
+        }
+
+        // Sort by score (descending)
+        sortResults(results.items);
+
+        // Limit results
+        if (results.items.len > limit) {
+            for (results.items[limit..]) |*r| {
+                self.allocator.free(r.entity_id.namespace);
+                self.allocator.free(r.entity_id.local_id);
+            }
+            results.items.len = limit;
+        }
+
+        return results;
+    }
+
+    /// Get term frequency statistics
+    pub fn getTermStats(self: *const TopicCartridge, term: []const u8) ?TermStats {
+        const term_data = self.term_dict.lookup(term) orelse return null;
+
+        var entity_count: u32 = 0;
+        var total_occurrences: u64 = 0;
+
+        if (term_data.posting_offset < self.posting_lists.items.len) {
+            const postings = &self.posting_lists.items[term_data.posting_offset];
+            entity_count = @intCast(postings.items.len);
+            for (postings.items) |posting| {
+                total_occurrences += posting.frequency;
+            }
+        }
+
+        return TermStats{
+            .term = term,
+            .document_frequency = entity_count,
+            .total_frequency = total_occurrences,
+            .idf = if (self.total_documents > 0)
+                @log(@as(f32, @floatFromInt(self.total_documents)) / @as(f32, @floatFromInt(entity_count)))
+            else
+                0,
+        };
+    }
+};
+
+const EntityResult = struct {
+    entity_id: EntityId,
+    score: f32,
+};
+
+const TermStats = struct {
+    term: []const u8,
+    document_frequency: u32,
+    total_frequency: u64,
+    idf: f32,
+};
+
+fn sortResults(items: []EntityResult) void {
+    std.sort.insertion(EntityResult, items, {}, struct {
+        fn lessThan(_: void, a: EntityResult, b: EntityResult) bool {
+            return a.score > b.score;
+        }
+    }.lessThan);
+}
+
 // ==================== Tests ====================
 
 test "EntityId.toString roundtrip" {
@@ -1012,4 +1365,145 @@ test "EntityType.fromUint and toUint" {
 
     const restored = try EntityType.fromUint(val);
     try std.testing.expectEqual(EntityType.function, restored);
+}
+
+test "TrieNode.insert and lookup" {
+    var root = try TrieNode.init(std.testing.allocator, 0);
+    defer root.deinit(std.testing.allocator);
+
+    const term1 = "database";
+    const data1 = try root.insert(std.testing.allocator, term1);
+    try std.testing.expectEqualStrings(term1, data1.term);
+
+    const found = root.lookup(term1);
+    try std.testing.expect(found != null);
+    try std.testing.expectEqualStrings(term1, found.?.term);
+
+    const not_found = root.lookup("nonexistent");
+    try std.testing.expect(not_found == null);
+}
+
+test "TrieNode.findPrefix" {
+    var root = try TrieNode.init(std.testing.allocator, 0);
+    defer root.deinit(std.testing.allocator);
+
+    // Insert terms with common prefix
+    _ = try root.insert(std.testing.allocator, "database");
+    _ = try root.insert(std.testing.allocator, "data");
+    _ = try root.insert(std.testing.allocator, "dat");
+    _ = try root.insert(std.testing.allocator, "btree");
+
+    var results = try root.findPrefix("dat", std.testing.allocator);
+    defer {
+        for (results.items) |term| std.testing.allocator.free(term);
+        results.deinit(std.testing.allocator);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), results.items.len);
+
+    // Check all expected terms are present
+    var found_data = false;
+    var found_database = false;
+    var found_dat = false;
+    for (results.items) |term| {
+        if (std.mem.eql(u8, term, "data")) found_data = true;
+        if (std.mem.eql(u8, term, "database")) found_database = true;
+        if (std.mem.eql(u8, term, "dat")) found_dat = true;
+    }
+    try std.testing.expect(found_data);
+    try std.testing.expect(found_database);
+    try std.testing.expect(found_dat);
+}
+
+test "TermPosting.init and addPosition" {
+    const entity_id = EntityId{ .namespace = "file", .local_id = "test.zig" };
+    var posting = try TermPosting.init(std.testing.allocator, entity_id, 100);
+    defer posting.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(u16, 1), posting.frequency);
+    try std.testing.expectEqual(@as(u64, 100), posting.timestamp);
+
+    try posting.addPosition(std.testing.allocator, 5);
+    try std.testing.expectEqual(@as(u16, 2), posting.frequency);
+    try std.testing.expectEqual(@as(usize, 1), posting.positions.items.len);
+}
+
+test "TopicCartridge.addEntityTerms" {
+    var cartridge = try TopicCartridge.init(std.testing.allocator, 100);
+    defer cartridge.deinit();
+
+    const entity_id = EntityId{ .namespace = "file", .local_id = "main.zig" };
+    const terms = [_][]const u8{ "zig", "database", "performance" };
+
+    try cartridge.addEntityTerms(entity_id, &terms, 100);
+
+    // Each unique term-entity pair creates one posting
+    try std.testing.expectEqual(@as(u64, 3), cartridge.header.entry_count);
+    try std.testing.expectEqual(@as(usize, 3), cartridge.posting_lists.items.len);
+}
+
+test "TopicCartridge.searchByTopic" {
+    var cartridge = try TopicCartridge.init(std.testing.allocator, 100);
+    defer cartridge.deinit();
+
+    // Add entities with overlapping terms
+    const entity1 = EntityId{ .namespace = "file", .local_id = "db.zig" };
+    const terms1 = [_][]const u8{ "zig", "database", "btree" };
+    try cartridge.addEntityTerms(entity1, &terms1, 100);
+
+    const entity2 = EntityId{ .namespace = "file", .local_id = "pager.zig" };
+    const terms2 = [_][]const u8{ "zig", "pager", "io" };
+    try cartridge.addEntityTerms(entity2, &terms2, 101);
+
+    // Search for "zig" - should find both entities
+    const query1 = [_][]const u8{"zig"};
+    var results1 = try cartridge.searchByTopic(&query1, 10);
+    defer {
+        for (results1.items) |*r| {
+            std.testing.allocator.free(r.entity_id.namespace);
+            std.testing.allocator.free(r.entity_id.local_id);
+        }
+        results1.deinit(std.testing.allocator);
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), results1.items.len);
+
+    // Search for "btree" - should find only entity1
+    const query2 = [_][]const u8{"btree"};
+    var results2 = try cartridge.searchByTopic(&query2, 10);
+    defer {
+        for (results2.items) |*r| {
+            std.testing.allocator.free(r.entity_id.namespace);
+            std.testing.allocator.free(r.entity_id.local_id);
+        }
+        results2.deinit(std.testing.allocator);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), results2.items.len);
+    try std.testing.expectEqualStrings("db.zig", results2.items[0].entity_id.local_id);
+}
+
+test "TopicCartridge.getTermStats" {
+    var cartridge = try TopicCartridge.init(std.testing.allocator, 100);
+    defer cartridge.deinit();
+
+    const entity1 = EntityId{ .namespace = "file", .local_id = "a.zig" };
+    const terms1 = [_][]const u8{ "zig", "zig", "database" }; // zig appears twice
+    try cartridge.addEntityTerms(entity1, &terms1, 100);
+
+    const entity2 = EntityId{ .namespace = "file", .local_id = "b.zig" };
+    const terms2 = [_][]const u8{ "zig", "database" };
+    try cartridge.addEntityTerms(entity2, &terms2, 101);
+
+    const stats = cartridge.getTermStats("zig");
+    try std.testing.expect(stats != null);
+    // 2 entities have "zig" (document_frequency)
+    try std.testing.expectEqual(@as(u32, 2), stats.?.document_frequency);
+    // Each time "zig" appears in the terms array, frequency is incremented
+    // entity1 has "zig" twice (frequency=2), entity2 has "zig" once (frequency=1)
+    // total_frequency = 2 + 1 = 3
+    try std.testing.expectEqual(@as(u64, 3), stats.?.total_frequency);
+
+    const no_stats = cartridge.getTermStats("nonexistent");
+    try std.testing.expect(no_stats == null);
 }
