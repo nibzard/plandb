@@ -169,6 +169,22 @@ pub const GateResult = struct {
     failure_notes: []const u8,
 };
 
+pub const SuiteSummary = struct {
+    total_benchmarks: usize,
+    passed: usize,
+    failed: usize,
+    skipped: usize,
+    comparisons: []BenchmarkComparison,
+};
+
+pub const BenchmarkComparison = struct {
+    bench_name: []const u8,
+    passed: bool,
+    throughput_change_pct: f64,
+    p99_latency_change_pct: f64,
+    notes: []const u8,
+};
+
 pub const Benchmark = struct {
     name: []const u8,
     run_fn: RunFn,
@@ -205,6 +221,16 @@ pub const Runner = struct {
     }
 
     pub fn run(self: *Runner, args: RunArgs) !void {
+        const summary = try self.runWithSummary(args);
+        defer self.freeSummary(summary);
+
+        // Print summary if baseline comparison was done
+        if (summary.comparisons.len > 0) {
+            try self.printSummary(summary);
+        }
+    }
+
+    pub fn runWithSummary(self: *Runner, args: RunArgs) !SuiteSummary {
         // Create output directory if needed
         if (args.output_dir) |dir| {
             try std.fs.cwd().makePath(dir);
@@ -216,8 +242,27 @@ pub const Runner = struct {
 
         if (filtered.len == 0) {
             std.debug.print("No benchmarks match criteria\n", .{});
-            return;
+            return SuiteSummary{
+                .total_benchmarks = 0,
+                .passed = 0,
+                .failed = 0,
+                .skipped = 0,
+                .comparisons = &.{},
+            };
         }
+
+        var comparisons = std.ArrayList(BenchmarkComparison).initCapacity(self.allocator, 0) catch unreachable;
+        defer {
+            for (comparisons.items) |*c| {
+                self.allocator.free(c.bench_name);
+                self.allocator.free(c.notes);
+            }
+            comparisons.deinit(self.allocator);
+        }
+
+        var passed: usize = 0;
+        var failed: usize = 0;
+        var skipped: usize = 0;
 
         // Run benchmarks
         for (filtered) |bench| {
@@ -272,11 +317,20 @@ pub const Runner = struct {
                         .git = try self.detectGit(),
                     };
 
-                    if (self.compareWithBaseline(aggregated_result, baseline_path)) |comparison| {
-                        std.debug.print("  Comparison: {s}\n", .{comparison});
-                    } else |err| {
+                    const comp_result = self.compareWithBaselineResult(aggregated_result, baseline_path) catch |err| {
+                        skipped += 1;
                         std.debug.print("  Baseline comparison failed: {}\n", .{err});
+                        continue;
+                    };
+                    if (comp_result) |cr| {
+                        if (cr.passed) passed += 1 else failed += 1;
+                        try comparisons.append(self.allocator, cr);
+                        std.debug.print("  Comparison: {s}\n", .{cr.notes});
+                    } else {
+                        skipped += 1;
                     }
+                } else {
+                    skipped += 1;
                 }
             } else {
                 // Console output: show aggregated results only
@@ -305,6 +359,68 @@ pub const Runner = struct {
                 std.debug.print("{s}\n", .{fbs.getWritten()});
             }
         }
+
+        // Clone comparisons for return
+        const comparisons_clone = try self.allocator.alloc(BenchmarkComparison, comparisons.items.len);
+        errdefer self.allocator.free(comparisons_clone);
+        for (comparisons.items, 0..) |c, i| {
+            comparisons_clone[i] = .{
+                .bench_name = try self.allocator.dupe(u8, c.bench_name),
+                .passed = c.passed,
+                .throughput_change_pct = c.throughput_change_pct,
+                .p99_latency_change_pct = c.p99_latency_change_pct,
+                .notes = try self.allocator.dupe(u8, c.notes),
+            };
+        }
+
+        return SuiteSummary{
+            .total_benchmarks = filtered.len,
+            .passed = passed,
+            .failed = failed,
+            .skipped = skipped,
+            .comparisons = comparisons_clone,
+        };
+    }
+
+    pub fn freeSummary(self: *Runner, summary: SuiteSummary) void {
+        for (summary.comparisons) |*c| {
+            self.allocator.free(c.bench_name);
+            self.allocator.free(c.notes);
+        }
+        self.allocator.free(summary.comparisons);
+    }
+
+    pub fn printSummary(self: *Runner, summary: SuiteSummary) !void {
+        _ = self;
+
+        std.debug.print("\n" ++ "=" ** 60 ++ "\n", .{});
+        std.debug.print("Suite Summary\n", .{});
+        std.debug.print("=" ** 60 ++ "\n", .{});
+        std.debug.print("Total: {d}, Passed: {d}, Failed: {d}, Skipped: {d}\n", .{
+            summary.total_benchmarks,
+            summary.passed,
+            summary.failed,
+            summary.skipped,
+        });
+
+        if (summary.comparisons.len > 0) {
+            std.debug.print("\nIndividual Results:\n", .{});
+            for (summary.comparisons) |comp| {
+                const status = if (comp.passed) "✅" else "❌";
+                const tp_sign: u8 = if (comp.throughput_change_pct >= 0) '+' else '-';
+                const p99_sign: u8 = if (comp.p99_latency_change_pct >= 0) '+' else '-';
+                std.debug.print("{s} {s}: Throughput {c}{d:.1}%, P99 {c}{d:.1}%\n", .{
+                    status,
+                    comp.bench_name,
+                    tp_sign,
+                    @abs(comp.throughput_change_pct),
+                    p99_sign,
+                    @abs(comp.p99_latency_change_pct),
+                });
+            }
+        }
+
+        std.debug.print("=" ** 60 ++ "\n\n", .{});
     }
 
     pub fn runGated(self: *Runner, args: RunArgs) !GateResult {
@@ -1000,6 +1116,49 @@ pub const Runner = struct {
         );
         if (!comp.passed) try w.writeAll(" (FAILED)");
         return try buf.toOwnedSlice(self.allocator);
+    }
+
+    fn compareWithBaselineResult(self: *Runner, result: types.BenchmarkResult, baseline_path: []const u8) !?BenchmarkComparison {
+        const tmp_buf = try self.allocator.alloc(u8, 4096);
+        defer self.allocator.free(tmp_buf);
+        var fbs = std.io.fixedBufferStream(tmp_buf);
+        try self.writeJson(fbs.writer(), result);
+
+        // Write candidate to temp file to reuse comparator loader
+        const tmp_path = try std.fs.path.join(self.allocator, &.{ "candidate.tmp.json" });
+        defer self.allocator.free(tmp_path);
+        {
+            const file = try std.fs.cwd().createFile(tmp_path, .{});
+            defer file.close();
+            try file.writeAll(fbs.getWritten());
+        }
+
+        var comparator = @import("compare.zig").Comparator.init(self.allocator, .{});
+        const comp = try comparator.compare(baseline_path, tmp_path);
+        // cleanup temp file best-effort
+        _ = std.fs.cwd().deleteFile(tmp_path) catch {};
+
+        var notes_buf = std.ArrayListUnmanaged(u8){};
+        defer notes_buf.deinit(self.allocator);
+        const writer = notes_buf.writer(self.allocator);
+
+        const throughput_sign: u8 = if (comp.throughput_change_pct >= 0) '+' else '-';
+        const p99_sign: u8 = if (comp.p99_latency_change_pct >= 0) '+' else '-';
+        try writer.print("Throughput {c}{d:.1}%, P99 {c}{d:.1}%", .{
+            throughput_sign,
+            @abs(comp.throughput_change_pct),
+            p99_sign,
+            @abs(comp.p99_latency_change_pct),
+        });
+        if (!comp.passed) try writer.writeAll(" (FAILED)");
+
+        return BenchmarkComparison{
+            .bench_name = try self.allocator.dupe(u8, result.bench_name),
+            .passed = comp.passed,
+            .throughput_change_pct = comp.throughput_change_pct,
+            .p99_latency_change_pct = comp.p99_latency_change_pct,
+            .notes = try notes_buf.toOwnedSlice(self.allocator),
+        };
     }
 };
 
