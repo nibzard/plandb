@@ -784,6 +784,10 @@ pub const BtreeInternalPayload = struct {
             i -= 1;
         }
 
+        // Update key count BEFORE inserting new child (so bounds check passes)
+        const header_mut = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
+        header_mut.key_count += 1;
+
         // Insert new child page ID at position insert_pos + 1
         try self.setChildPageId(payload_bytes, insert_pos + 1, child_page_id);
 
@@ -795,10 +799,6 @@ pub const BtreeInternalPayload = struct {
         const separator_len_ptr = @as(*[2]u8, @ptrCast(@alignCast(@constCast(separator_bytes).ptr)));
         std.mem.writeInt(u16, separator_len_ptr, @intCast(separator_key.len), .little);
         @memcpy(@constCast(separator_bytes[2..2+separator_key.len]), separator_key);
-
-        // Update key count
-        const header_mut = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
-        header_mut.key_count += 1;
     }
 
     // Find child page ID for a given key (returns index and page_id)
@@ -1928,6 +1928,9 @@ pub const Pager = struct {
         // Update the transaction ID for the new version
         var header = try PageHeader.decode(new_buffer[0..PageHeader.SIZE]);
         header.txn_id = txn_id;
+
+        // Recalculate header checksum (txn_id changed)
+        header.header_crc32c = header.calculateHeaderChecksum();
         try header.encode(new_buffer[0..PageHeader.SIZE]);
 
         // Recalculate page checksum with updated header
@@ -2009,9 +2012,12 @@ pub const Pager = struct {
                     // Add separator and right child
                     try internal.addChild(payload_bytes, split_result.separator_key, split_result.right_page_id);
 
-                    // Update payload length and write
+                    // Update payload length and recalculate checksums
                     var root_header_mut = std.mem.bytesAsValue(PageHeader, new_root_buffer[0..PageHeader.SIZE]);
                     root_header_mut.payload_len = @intCast(payload_bytes.len);
+                    root_header_mut.header_crc32c = root_header_mut.calculateHeaderChecksum();
+                    const root_page_data = new_root_buffer[0 .. PageHeader.SIZE + root_header_mut.payload_len];
+                    root_header_mut.page_crc32c = calculatePageChecksum(root_page_data);
 
                     try self.writePage(new_root_id, &new_root_buffer);
 
@@ -2331,17 +2337,36 @@ pub const Pager = struct {
         // Get all entries from the original leaf
         var leaf = BtreeLeafPayload{};
         const node_header = std.mem.bytesAsValue(BtreeNodeHeader, left_payload_bytes[0..BtreeNodeHeader.SIZE]);
-        var entries = try self.allocator.alloc(BtreeLeafEntry, node_header.key_count);
-        defer self.allocator.free(entries);
 
-        // Extract all entries
+        // Structure to own key/value data (copies to avoid aliasing after zeroing)
+        const OwnedEntry = struct {
+            key: []const u8,
+            value: []const u8,
+
+            fn deinit(entry: *const @This(), allocator: std.mem.Allocator) void {
+                allocator.free(entry.key);
+                allocator.free(entry.value);
+            }
+        };
+
+        var owned_entries = try self.allocator.alloc(OwnedEntry, node_header.key_count);
+        defer {
+            for (owned_entries) |*e| e.deinit(self.allocator);
+            self.allocator.free(owned_entries);
+        }
+
+        // Extract all entries and copy key/value data (must own copies before zeroing)
         for (0..node_header.key_count) |i| {
-            entries[i] = try leaf.getEntry(left_payload_bytes, @intCast(i));
+            const entry = try leaf.getEntry(left_payload_bytes, @intCast(i));
+            owned_entries[i] = .{
+                .key = try self.allocator.dupe(u8, entry.key),
+                .value = try self.allocator.dupe(u8, entry.value),
+            };
         }
 
         // Find split point (middle entry)
         const split_point = node_header.key_count / 2;
-        const separator_key = entries[split_point].key;
+        const separator_key = owned_entries[split_point].key;
 
         // Clear and rebuild left leaf
         @memset(left_payload_bytes[BtreeNodeHeader.SIZE..], 0);
@@ -2351,13 +2376,13 @@ pub const Pager = struct {
 
         // Insert entries into left leaf (first half)
         for (0..split_point) |i| {
-            _ = try leaf.addEntry(left_payload_bytes, entries[i].key, entries[i].value);
+            _ = try leaf.addEntry(left_payload_bytes, owned_entries[i].key, owned_entries[i].value);
         }
 
         // Insert entries into right leaf (second half)
         var right_leaf = BtreeLeafPayload{};
         for (split_point..node_header.key_count) |i| {
-            _ = try right_leaf.addEntry(right_payload_bytes, entries[i].key, entries[i].value);
+            _ = try right_leaf.addEntry(right_payload_bytes, owned_entries[i].key, owned_entries[i].value);
         }
 
         // Update payload lengths - use the actual payload sizes
@@ -2367,6 +2392,15 @@ pub const Pager = struct {
         // Use the actual size of the rebuilt payloads
         left_header_mut.payload_len = @intCast(left_payload_bytes.len);
         right_header_mut.payload_len = @intCast(right_payload_bytes.len);
+
+        // Recalculate checksums for both pages
+        left_header_mut.header_crc32c = left_header_mut.calculateHeaderChecksum();
+        const left_page_data = left_buffer[0 .. PageHeader.SIZE + left_header_mut.payload_len];
+        left_header_mut.page_crc32c = calculatePageChecksum(left_page_data);
+
+        right_header_mut.header_crc32c = right_header_mut.calculateHeaderChecksum();
+        const right_page_data = right_buffer[0 .. PageHeader.SIZE + right_header_mut.payload_len];
+        right_header_mut.page_crc32c = calculatePageChecksum(right_page_data);
 
         // Write both pages
         const left_page_id = left_header.page_id;
