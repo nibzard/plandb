@@ -1720,6 +1720,22 @@ fn benchMacroCodeKnowledgeGraph(allocator: std.mem.Allocator, config: types.Conf
     const p99_latency = avg_latency * 2;
     const max_latency = avg_latency * 3;
 
+    // Add detailed metrics for index build time and memory footprint
+    var notes_map = std.json.ObjectMap.init(allocator);
+    try notes_map.put("num_files", std.json.Value{ .integer = @intCast(num_files) });
+    try notes_map.put("total_functions", std.json.Value{ .integer = @intCast(total_functions) });
+    try notes_map.put("avg_functions_per_file", std.json.Value{ .integer = @intCast(avg_functions_per_file) });
+    try notes_map.put("avg_calls_per_function", std.json.Value{ .integer = @intCast(avg_calls_per_function) });
+    try notes_map.put("avg_imports_per_file", std.json.Value{ .integer = @intCast(avg_imports_per_file) });
+    try notes_map.put("query_mix_iterations", std.json.Value{ .integer = @intCast(query_mix_iterations) });
+    try notes_map.put("callers_of_queries", std.json.Value{ .integer = @intCast(callers_of_queries) });
+    try notes_map.put("deps_of_module_queries", std.json.Value{ .integer = @intCast(deps_of_module_queries) });
+    try notes_map.put("fns_in_file_queries", std.json.Value{ .integer = @intCast(fns_in_file_queries) });
+    try notes_map.put("path_lookup_queries", std.json.Value{ .integer = @intCast(path_lookup_queries) });
+    try notes_map.put("hot_memory_bytes", std.json.Value{ .integer = @intCast(total_alloc_bytes) });
+    // Index build time is embedded in total duration - includes all 4 ingestion phases
+    try notes_map.put("ingestion_phases", std.json.Value{ .integer = 4 });
+
     return types.Results{
         .ops_total = total_queries,
         .duration_ns = duration_ns,
@@ -1742,6 +1758,7 @@ fn benchMacroCodeKnowledgeGraph(allocator: std.mem.Allocator, config: types.Conf
             .alloc_bytes = total_alloc_bytes,
         },
         .errors_total = 0,
+        .notes = std.json.Value{ .object = notes_map },
     };
 }
 

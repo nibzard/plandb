@@ -589,7 +589,13 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED**: Baseline thresholds established for macrobench workloads
   - **IMPACT**: Automated macrobenchmark execution ensures long-running workload performance validation
   - Committed with hash 99cafc9
-- [ ] 🔴 Nightly: automated baseline refresh
+- [ ✅ ] 🔴 Nightly: automated baseline refresh
+  - **COMPLETED**: Added `refresh_baselines` job to nightly CI workflow
+  - **COMPLETED**: Job runs only on scheduled runs (not manual triggers)
+  - **COMPLETED**: Captures new baselines for macrobench and hardening suites
+  - **COMPLETED**: Auto-commits refreshed baselines back to repository
+  - **IMPACT**: Baselines now automatically refresh after successful nightly runs
+  - **COMMIT**: 0f8b47a
 - [ ✅ ] 🟠 Command: `bench capture-baseline --profile ci|dev_nvme`
   - **COMPLETED**: Implemented via scripts/manage_baselines.sh
   - **COMPLETED**: Supports both ci and dev_nvme profiles
