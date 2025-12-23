@@ -1106,8 +1106,8 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
     - **FIX**: Use pointer reference instead of copying Pager struct
     - **COMMIT**: d11330a
 
-- [ 🔴 ] KNOWN ISSUE: getSeparatorKey data layout problem for internal nodes
-  - **LOCATION**: src/pager.zig addChild function (line 748-802)
+- [ ✅ ] FIXED: getSeparatorKey data layout problem for internal nodes
+  - **LOCATION**: src/pager.zig addChild function (line 748-858)
   - **DESCRIPTION**: addChild doesn't properly shift existing separators when inserting in middle to maintain sorted order
   - **ROOT CAUSE**:
     - Test expects separators stored in sorted order (for binary search in findChild)
@@ -1119,10 +1119,13 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
     - Must calculate offset for all separators after insert_pos
     - Must move memory blocks while maintaining reverse order
     - Must update offsets for separator key entries
-  - **STATUS**: Needs further investigation, blocking getSeparatorKey tests
+  - **FIX**: Implemented two-pass algorithm to collect sizes and shift existing separators
+  - **STATUS**: COMPLETED - commit 9d5875f
   - **NOTE**: Basic internal node creation test passes, issue specific to multi-separator scenarios
   - **DISCOVERED**: 2025-12-23 during fix validation for commit 6726104
+  - **FIXED**: 2025-12-23
   - **IMPACT**: Affects B+tree internal node operations, particularly splits and traversals
+  - **TESTS**: All tests pass after fix
 
 - [ ✅ ] FIXED: Related checksum bugs fixed in commit 6726104
   - **FIXED**: Recalculate checksums in splitLeafNode after rebuilding nodes

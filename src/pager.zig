@@ -800,7 +800,9 @@ pub const BtreeInternalPayload = struct {
         // Strategy: Walk backwards collecting sizes, then move each separator after insert_pos
         // by separator_entry_size bytes toward the beginning.
 
-        const separator_area_mut = payload_bytes[BtreeNodeHeader.SIZE + Self.getChildPageIdsSize(old_key_count)..];
+        // IMPORTANT: Use the NEW key_count (after increment) to calculate separator area start
+        // because the child pointer array has already been expanded
+        const separator_area_mut = payload_bytes[BtreeNodeHeader.SIZE + Self.getChildPageIdsSize(node_header.key_count)..];
 
         // First pass: collect sizes of all separators
         var offset: usize = separator_area.len;
@@ -841,16 +843,16 @@ pub const BtreeInternalPayload = struct {
             offset += entry_size;
         }
 
-        // Calculate offset for new separator
+        // Calculate offset for new separator from the END of the area
+        // Separators grow backwards, so offset 0 is at the end
         offset = 0;
         sep_idx = 0;
         while (sep_idx < insert_pos) : (sep_idx += 1) {
             offset += separator_sizes[sep_idx];
         }
 
-        // Write new separator at the correct position
-        const new_separator_offset = offset;
-        if (new_separator_offset + separator_entry_size > separator_area.len) return error.InsufficientSpace;
+        // Write new separator at the correct position (from the end)
+        const new_separator_offset = separator_area_mut.len - offset - separator_entry_size;
 
         var separator_bytes = separator_area_mut[new_separator_offset..];
         const separator_len_ptr = @as(*[2]u8, @ptrCast(@alignCast(separator_bytes.ptr)));
@@ -2039,14 +2041,27 @@ pub const Pager = struct {
 
                 // Determine which leaf should contain the new key
                 if (std.mem.lessThan(u8, key, split_result.separator_key)) {
-                    // Key goes to left leaf (leaf_cow_buffer)
-                    try addEntryToBtreeLeaf(leaf_cow_buffer[0..], key, value);
-                    try self.writePage(split_result.left_page_id, &leaf_cow_buffer);
+                    // Key goes to left leaf - read it and add
+                    // (splitLeafNode already wrote the split pages, so we need to read the left one back)
+                    var left_buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
+                    try self.readPage(split_result.left_page_id, &left_buffer);
+                    try addEntryToBtreeLeaf(&left_buffer, key, value);
+                    // Recalculate checksum after modification
+                    var left_header_mut = std.mem.bytesAsValue(PageHeader, left_buffer[0..PageHeader.SIZE]);
+                    left_header_mut.header_crc32c = left_header_mut.calculateHeaderChecksum();
+                    const left_page_data = left_buffer[0 .. PageHeader.SIZE + left_header_mut.payload_len];
+                    left_header_mut.page_crc32c = calculatePageChecksum(left_page_data);
+                    try self.writePage(split_result.left_page_id, &left_buffer);
                 } else {
                     // Key goes to right leaf - read it and add
                     var right_buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
                     try self.readPage(split_result.right_page_id, &right_buffer);
                     try addEntryToBtreeLeaf(&right_buffer, key, value);
+                    // Recalculate checksum after modification
+                    var right_header_mut = std.mem.bytesAsValue(PageHeader, right_buffer[0..PageHeader.SIZE]);
+                    right_header_mut.header_crc32c = right_header_mut.calculateHeaderChecksum();
+                    const right_page_data = right_buffer[0 .. PageHeader.SIZE + right_header_mut.payload_len];
+                    right_header_mut.page_crc32c = calculatePageChecksum(right_page_data);
                     try self.writePage(split_result.right_page_id, &right_buffer);
                 }
 
@@ -2239,9 +2254,12 @@ pub const Pager = struct {
 
                         try internal.setChildPageId(payload_bytes, child_idx, split_result.left_page_id);
 
-                        // Update parent payload length and write
+                        // Update parent payload length and recalculate checksum
                         var parent_header_mut = std.mem.bytesAsValue(PageHeader, parent_cow_buffer[0..PageHeader.SIZE]);
                         parent_header_mut.payload_len = @intCast(payload_bytes.len);
+                        parent_header_mut.header_crc32c = parent_header_mut.calculateHeaderChecksum();
+                        const parent_page_data = parent_cow_buffer[0 .. PageHeader.SIZE + parent_header_mut.payload_len];
+                        parent_header_mut.page_crc32c = calculatePageChecksum(parent_page_data);
 
                         try self.writePage(parent_info.page_id, &parent_cow_buffer);
 
@@ -2442,11 +2460,11 @@ pub const Pager = struct {
             _ = try right_leaf.addEntry(right_payload_bytes, owned_entries[i].key, owned_entries[i].value);
         }
 
-        // Update payload lengths - use the actual payload sizes
+        // Update payload lengths - use the original payload lengths
+        // (the actual data only occupies a portion, but we need the full allocation)
         var left_header_mut = std.mem.bytesAsValue(PageHeader, left_buffer[0..PageHeader.SIZE]);
         var right_header_mut = std.mem.bytesAsValue(PageHeader, right_buffer[0..PageHeader.SIZE]);
 
-        // Use the actual size of the rebuilt payloads
         left_header_mut.payload_len = @intCast(left_payload_bytes.len);
         right_header_mut.payload_len = @intCast(right_payload_bytes.len);
 
