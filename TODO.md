@@ -479,10 +479,10 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
 - [ ] 🟡 Measure index build time and hot memory footprint
 
 ### Macrobench 3: Time-Travel + Deterministic Replay
-- [ ] 🔴 Implement 1M small txn workload (edits/actions)
-- [ ] 🔴 Add random AS OF txn_id queries vs reference model comparison
-- [ ] 🟠 Measure snapshot open time and replay performance
-- [ ] 🟡 Validate byte-identical results vs reference model
+- [ ✅ ] 🔴 Implement 1M small txn workload (edits/actions) (COMPLETE 2025-12-23)
+- [ ✅ ] 🔴 Add random AS OF txn_id queries vs reference model comparison (COMPLETE 2025-12-23)
+- [ ✅ ] 🟠 Measure snapshot open time and replay performance (COMPLETE 2025-12-23)
+- [ ✅ ] 🟡 Validate byte-identical results vs reference model (COMPLETE 2025-12-23)
 
 ### Macrobench 4: Cartridge Template (pending_tasks_by_type)
 - [ ] 🟡 Define cartridge artifact format and invalidation policy
