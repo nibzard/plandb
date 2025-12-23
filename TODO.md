@@ -502,7 +502,9 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED**: Ensures crash at any point results in consistent state vs reference model
   - **STATUS**: Implementation complete and working, validates crash consistency for task queue
   - Committed with hash [current]
-- [ ] 🟡 Export scenario metrics (p50/p99 claim latency, dup rate, fsyncs/op)
+- [x] 🟡 Export scenario metrics (p50/p99 claim latency, dup rate, fsyncs/op) (COMPLETE 2025-12-23)
+  - **COMPLETED**: aggregateResults() now preserves scenario metrics (notes)
+  - **COMPLETED**: Metrics exported in console JSON output and file JSON output
 
 ### Macrobench 2: Code Knowledge Graph
 - [ ✅ ] 🔴 Define synthetic repo schema (files, functions, call/import edges) (COMPLETE 2025-12-23)
