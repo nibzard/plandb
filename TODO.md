@@ -503,7 +503,16 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
 - [ ] 🟡 Quantify rebuild cost vs query savings
 
 ## Phase 6 — Cartridge 1: `pending_tasks_by_type`
-- [ ] 🔴 Define cartridge format/versioning and invalidation policy
+- [ ✅ ] 🔴 Define cartridge format/versioning and invalidation policy
+  - **COMPLETED**: Added spec/cartridge_format_v1.md with complete cartridge artifact format specification
+  - **COMPLETED**: Implemented src/cartridges/format.zig with CartridgeHeader, CartridgeMetadata, Version, CartridgeType
+  - **COMPLETED**: Implemented FeatureFlags, InvalidationPattern, InvalidationPolicy with pattern matching
+  - **COMPLETED**: Full serialization/deserialization support for all structures
+  - **COMPLETED**: Version compatibility matrix and invalidation policy logic
+  - **COMPLETED**: 12/12 unit tests passing
+  - **NOTE**: InvalidationPolicy uses fixed-size array (16 patterns) due to Zig 0.15.2 ArrayList compatibility issues
+  - **STATUS**: Core cartridge format complete, ready for build phase
+  - Committed with hash e6c007a
 - [ ] 🔴 Build cartridge from commit stream (offline) deterministically
 - [ ] 🟠 Memory-map artifact and serve hot lookups
 - [ ] 🟠 Macrobench demonstrating latency improvement vs baseline scan
