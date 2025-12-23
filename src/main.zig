@@ -12,6 +12,7 @@ const _db_tests = @import("db.zig");
 const _property_based_tests = @import("property_based.zig");
 const _validator = @import("validator.zig");
 const _fuzz = @import("fuzz.zig");
+const plugin_cli = @import("plugins/cli.zig");
 
 pub fn main() !void {
     const gpa = std.heap.page_allocator;
@@ -45,6 +46,9 @@ pub fn main() !void {
         try dumpTree(allocator, args[2..]);
     } else if (std.mem.eql(u8, command, "fuzz")) {
         try runFuzzTests(allocator, args[2..]);
+    } else if (std.mem.eql(u8, command, "plugin")) {
+        var cli = plugin_cli.PluginCli.init(allocator);
+        try cli.run(args[2..]);
     } else {
         try printUsage();
     }
@@ -64,6 +68,7 @@ fn printUsage() !void {
         \\  bench validate <db.db>         Validate B+tree invariants
         \\  bench dump <db.db> [options]   Dump B+tree structure
         \\  bench fuzz [options]           Run fuzzing tests on node decode
+        \\  bench plugin <cmd> [options]   Plugin management (list, test, validate, info, mock, trace)
         \\
         \\Run options:
         \\  --repeats <n>         Number of repeats (default: 5)
