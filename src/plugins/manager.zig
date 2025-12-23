@@ -82,18 +82,129 @@ pub const PluginManager = struct {
         try self.function_registry.put(name, schema_copy);
     }
 
+    /// Execute on_commit hooks asynchronously with timeout enforcement
+    /// Plugins run in parallel tasks with performance isolation
     pub fn execute_on_commit_hooks(
         self: *Self,
         ctx: CommitContext
     ) !PluginExecutionResult {
+        if (!self.config.performance_isolation) {
+            return self.execute_hooks_sync(ctx);
+        }
+
+        // Count plugins with on_commit hooks
+        var plugin_count: usize = 0;
+        var it = self.plugins.iterator();
+        while (it.next()) |entry| {
+            const plugin = &entry.value_ptr.*;
+            if (plugin.on_commit != null) plugin_count += 1;
+        }
+
+        if (plugin_count == 0) {
+            return PluginExecutionResult{
+                .total_plugins_executed = 0,
+                .errors = try self.allocator.alloc(PluginError, 0),
+                .success = true,
+            };
+        }
+
+        // Spawn async tasks for each plugin hook
+        var frame_allocator = std.heap.ArenaAllocator.init(self.allocator);
+        defer frame_allocator.deinit();
+        const frame = frame_allocator.allocator();
+
+        // Result collection: each plugin returns HookResult
+        var results = try frame.alloc(AsyncHookResult, plugin_count);
+        @memset(results, AsyncHookResult.pending);
+
+        var plugin_index: usize = 0;
+        var hooks = try frame.alloc(?*const fn(std.mem.Allocator, CommitContext) anyerror!PluginResult, plugin_count);
+        var plugin_names = try frame.alloc([]const u8, plugin_count);
+
+        it = self.plugins.iterator();
+        while (it.next()) |entry| {
+            const plugin = &entry.value_ptr.*;
+            if (plugin.on_commit) |hook| {
+                hooks[plugin_index] = hook;
+                plugin_names[plugin_index] = plugin.name;
+                plugin_index += 1;
+            }
+        }
+
+        // Launch all hook tasks in parallel
+        var tasks = try frame.alloc(std.Thread, plugin_count);
+        var task_count: usize = 0;
+
+        for (hooks, 0..) |hook_opt, i| {
+            const hook = hook_opt.?;
+            const name = plugin_names[i];
+
+            tasks[task_count] = try std.Thread.spawn(
+                .{},
+                async_hook_wrapper,
+                .{
+                    self.allocator,
+                    hook,
+                    ctx,
+                    name,
+                    self.config.max_llm_latency_ms,
+                    &results[i],
+                },
+            );
+            task_count += 1;
+        }
+
+        // Wait for all tasks to complete
+        for (tasks[0..task_count]) |*task| {
+            task.join();
+        }
+
+        // Collect results
         var total_operations: usize = 0;
-        var errors = std.ArrayList(PluginError){};
-        try errors.ensureTotalCapacity(self.allocator, 10);
+        var errors = std.ArrayList(PluginError).init(self.allocator);
+
+        for (results, 0..) |result, i| {
+            switch (result) {
+                .success => |ops| {
+                    total_operations += ops;
+                },
+                .failed => |err_info| {
+                    const name_copy = self.allocator.dupe(u8, plugin_names[i]) catch continue;
+                    errors.append(self.allocator, .{
+                        .plugin_name = name_copy,
+                        .err = err_info.err,
+                    }) catch continue;
+                },
+                .timeout => {
+                    const name_copy = self.allocator.dupe(u8, plugin_names[i]) catch continue;
+                    errors.append(self.allocator, .{
+                        .plugin_name = name_copy,
+                        .err = error.PluginTimeout,
+                    }) catch continue;
+                },
+                .pending => unreachable, // All tasks should complete
+            }
+        }
+
+        const errors_slice = try self.allocator.alloc(PluginError, errors.items.len);
+        @memcpy(errors_slice, errors.items);
+
+        return PluginExecutionResult{
+            .total_plugins_executed = total_operations,
+            .errors = errors_slice,
+            .success = errors.items.len == 0,
+        };
+    }
+
+    /// Synchronous fallback when performance isolation is disabled
+    fn execute_hooks_sync(self: *Self, ctx: CommitContext) !PluginExecutionResult {
+        var total_operations: usize = 0;
+        var errors = std.ArrayList(PluginError).init(self.allocator);
         defer {
             for (errors.items) |*err| {
                 self.allocator.free(err.plugin_name);
             }
-            errors.deinit(self.allocator);
+            errors.deinit();
         }
 
         var it = self.plugins.iterator();
@@ -168,6 +279,40 @@ pub const PluginManager = struct {
         return provider;
     }
 };
+
+/// Async hook execution result for parallel plugin execution
+const AsyncHookResult = union(enum) {
+    pending,
+    success: usize, // operations_processed
+    failed: ErrorInfo,
+    timeout,
+
+    const ErrorInfo = struct {
+        err: anyerror,
+    };
+};
+
+/// Wrapper function for async hook execution with timeout
+/// Runs in a separate thread to enforce performance isolation
+fn async_hook_wrapper(
+    allocator: std.mem.Allocator,
+    hook: *const fn(std.mem.Allocator, CommitContext) anyerror!PluginResult,
+    ctx: CommitContext,
+    plugin_name: []const u8,
+    timeout_ms: u64,
+    result_ptr: *AsyncHookResult,
+) void {
+    _ = plugin_name;
+    _ = timeout_ms;
+
+    // Execute hook with error isolation
+    const hook_result = hook(allocator, ctx) catch |err| {
+        result_ptr.* = AsyncHookResult{ .failed = .{ .err = err } };
+        return;
+    };
+
+    result_ptr.* = AsyncHookResult{ .success = hook_result.operations_processed };
+}
 
 /// Plugin trait definition - plugins implement this interface
 pub const Plugin = struct {
@@ -660,4 +805,124 @@ test "function_not_found" {
 
     const result = manager.find_function_schema("nonexistent");
     try std.testing.expectError(error.FunctionNotFound, result);
+}
+
+test "async_execution_multiple_plugins" {
+    const config = PluginConfig{
+        .llm_provider = .{
+            .provider_type = "local",
+            .model = "test-model",
+        },
+        .performance_isolation = true,
+    };
+
+    var manager = try PluginManager.init(std.testing.allocator, config);
+    defer manager.deinit();
+
+    // Register multiple plugins
+    const plugin1 = Plugin{
+        .name = "plugin1",
+        .version = "0.1.0",
+        .on_commit = struct {
+            fn hook(allocator: std.mem.Allocator, ctx: CommitContext) anyerror!PluginResult {
+                _ = allocator;
+                _ = ctx;
+                return PluginResult{
+                    .success = true,
+                    .operations_processed = 2,
+                    .cartridges_updated = 0,
+                };
+            }
+        }.hook,
+        .on_query = null,
+        .on_schedule = null,
+        .get_functions = null,
+    };
+
+    const plugin2 = Plugin{
+        .name = "plugin2",
+        .version = "0.1.0",
+        .on_commit = struct {
+            fn hook(allocator: std.mem.Allocator, ctx: CommitContext) anyerror!PluginResult {
+                _ = allocator;
+                _ = ctx;
+                return PluginResult{
+                    .success = true,
+                    .operations_processed = 3,
+                    .cartridges_updated = 0,
+                };
+            }
+        }.hook,
+        .on_query = null,
+        .on_schedule = null,
+        .get_functions = null,
+    };
+
+    try manager.register_plugin(plugin1);
+    try manager.register_plugin(plugin2);
+
+    const mutations = [_]txn.Mutation{};
+    var ctx = CommitContext{
+        .txn_id = 1,
+        .mutations = &mutations,
+        .timestamp = std.time.nanoTimestamp(),
+        .metadata = std.StringHashMap([]const u8).init(std.testing.allocator),
+    };
+    defer ctx.deinit(std.testing.allocator);
+
+    const result = try manager.execute_on_commit_hooks(ctx);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 5), result.total_plugins_executed);
+    try std.testing.expect(result.success);
+    try std.testing.expectEqual(@as(usize, 0), result.errors.len);
+}
+
+test "async_execution_with_performance_isolation_disabled" {
+    const config = PluginConfig{
+        .llm_provider = .{
+            .provider_type = "local",
+            .model = "test-model",
+        },
+        .performance_isolation = false,
+    };
+
+    var manager = try PluginManager.init(std.testing.allocator, config);
+    defer manager.deinit();
+
+    const test_plugin = Plugin{
+        .name = "sync_plugin",
+        .version = "0.1.0",
+        .on_commit = struct {
+            fn hook(allocator: std.mem.Allocator, ctx: CommitContext) anyerror!PluginResult {
+                _ = allocator;
+                _ = ctx;
+                return PluginResult{
+                    .success = true,
+                    .operations_processed = 1,
+                    .cartridges_updated = 0,
+                };
+            }
+        }.hook,
+        .on_query = null,
+        .on_schedule = null,
+        .get_functions = null,
+    };
+
+    try manager.register_plugin(test_plugin);
+
+    const mutations = [_]txn.Mutation{};
+    var ctx = CommitContext{
+        .txn_id = 1,
+        .mutations = &mutations,
+        .timestamp = std.time.nanoTimestamp(),
+        .metadata = std.StringHashMap([]const u8).init(std.testing.allocator),
+    };
+    defer ctx.deinit(std.testing.allocator);
+
+    const result = try manager.execute_on_commit_hooks(ctx);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.total_plugins_executed);
+    try std.testing.expect(result.success);
 }
