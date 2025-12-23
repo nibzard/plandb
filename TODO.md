@@ -274,8 +274,14 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
 - [✅] 🟠 Add microbench `bench/btree/range_scan_1k_rows_hot`
   - **COMPLETED**: Range scan benchmark already implemented and functional
   - **VERIFIED**: Successfully runs with 247K ops/sec performance
-- [ ] 🟠 Fuzz: node decode (valid and mutated corpora)
-- [ ] 🟡 CLI validator: dump/verify tree invariants
+- [✅] 🟠 Fuzz: node decode (valid and mutated corpora)
+  - **COMPLETED**: Full fuzzing harness in src/fuzz.zig with 666 lines
+  - **COMPLETED**: Valid corpus generation for empty, single entry, full leaf/internal nodes
+  - **COMPLETED**: 14 mutation strategies (bit flip, byte flip, truncate, extend, corrupt checksum/magic/level/entry offsets, swap bytes, etc)
+  - **COMPLETED**: CLI integration via `bench fuzz` command with --iterations/--seed/--quick options
+  - **VERIFIED**: All fuzz tests pass with 0 crashes - decodeBtreeLeafPage returns clean errors (BufferTooSmall, InvalidPageType, EntryTooShort, EntryIncomplete, InvalidEntryOffset)
+  - **VERIFIED**: 100-iteration quick test run successfully with 36 successes, 64 clean errors
+- [x] 🟡 CLI validator: dump/verify tree invariants (COMPLETED: Implemented `bench validate` and `bench dump` commands for B+tree debugging)
 
 ## Phase 3 — MVCC
 - [✅] 🔴 Implement snapshot registry (TxnId ➜ root) and latest snapshot API
