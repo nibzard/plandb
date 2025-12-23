@@ -8,6 +8,8 @@ const wal = @import("wal.zig");
 const replay = @import("replay.zig");
 const txn = @import("txn.zig");
 const ref_model = @import("ref_model.zig");
+const pager_mod = @import("pager.zig");
+const db = @import("db.zig");
 
 /// Fault injector for simulating various corruption scenarios
 pub const FaultInjector = struct {
@@ -766,6 +768,87 @@ pub fn runAllHardeningTests(allocator: std.mem.Allocator) ![]TestResult {
     return results.toOwnedSlice();
 }
 
+// ==================== Golden File Tests ====================
+
+/// Test: Empty DB v0 opens and validates correctly
+/// Golden file test: verifies known empty database file opens properly
+pub fn goldenFileEmptyDbV0(db_path: []const u8, allocator: std.mem.Allocator) !TestResult {
+    const test_name = "golden_empty_db_v0";
+    var result = TestResult.init(test_name, allocator);
+
+    // First, create a valid empty DB v0 file
+    {
+        var file = try std.fs.cwd().createFile(db_path, .{ .truncate = true });
+        defer file.close();
+
+        // Create both meta pages for empty database
+        var buffer_a: [pager_mod.DEFAULT_PAGE_SIZE]u8 = undefined;
+        var buffer_b: [pager_mod.DEFAULT_PAGE_SIZE]u8 = undefined;
+
+        const empty_meta = pager_mod.MetaPayload{
+            .meta_magic = pager_mod.META_MAGIC,
+            .format_version = pager_mod.FORMAT_VERSION,
+            .page_size = pager_mod.DEFAULT_PAGE_SIZE,
+            .committed_txn_id = 0,
+            .root_page_id = 0, // Empty tree
+            .freelist_head_page_id = 0,
+            .log_tail_lsn = 0,
+            .meta_crc32c = 0, // Will be recalculated by encodeMetaPage
+        };
+
+        try pager_mod.encodeMetaPage(pager_mod.META_A_PAGE_ID, empty_meta, &buffer_a);
+        try pager_mod.encodeMetaPage(pager_mod.META_B_PAGE_ID, empty_meta, &buffer_b);
+
+        // Write both meta pages
+        _ = try file.pwriteAll(&buffer_a, 0);
+        _ = try file.pwriteAll(&buffer_b, pager_mod.DEFAULT_PAGE_SIZE);
+
+        // Ensure the file is synced
+        try file.sync();
+    }
+
+    // Now test that the file can be opened and validated
+    {
+        // Try to open with the pager
+        var pager = try pager_mod.Pager.open(db_path, allocator);
+        defer pager.close();
+
+        // Verify the pager state
+        const committed_txn_id = pager.getCommittedTxnId();
+        const root_page_id = pager.getRootPageId();
+
+        // Empty DB should have txn_id=0 and root_page_id=0
+        if (committed_txn_id != 0) {
+            result.fail("Expected committed_txn_id=0 for empty DB, got {}", .{committed_txn_id});
+            return result;
+        }
+
+        if (root_page_id != 0) {
+            result.fail("Expected root_page_id=0 for empty DB, got {}", .{root_page_id});
+            return result;
+        }
+
+        // Verify that opening with Db API also works
+        const wal_path = try std.fmt.allocPrint(allocator, "{s}.wal", .{std.fs.path.stem(db_path)});
+        defer allocator.free(wal_path);
+
+        // Clean up any existing wal file
+        std.fs.cwd().deleteFile(wal_path) catch {};
+
+        var test_db = try db.Db.openWithFile(allocator, db_path, wal_path);
+        defer test_db.close();
+
+        // Verify DB state
+        if (test_db.next_txn_id != 1) {
+            result.fail("Expected next_txn_id=1 for empty DB, got {}", .{test_db.next_txn_id});
+            return result;
+        }
+    }
+
+    result.pass();
+    return result;
+}
+
 // ==================== Unit Tests ====================
 
 test "crash harness task queue - random crash" {
@@ -791,5 +874,20 @@ test "crash harness task queue - crash at txn 5" {
     try std.testing.expect(result.passed);
     if (result.failure_reason) |reason| {
         std.debug.print("Test failed: {s}\n", .{reason});
+    }
+}
+
+test "golden file: empty DB v0 opens and validates" {
+    const db_path = "test_golden_empty_v0.db";
+    defer std.fs.cwd().deleteFile(db_path) catch {};
+    const wal_path = "test_golden_empty_v0.db.wal";
+    defer std.fs.cwd().deleteFile(wal_path) catch {};
+
+    var result = try goldenFileEmptyDbV0(db_path, std.testing.allocator);
+    defer result.deinit();
+
+    try std.testing.expect(result.passed);
+    if (result.failure_reason) |reason| {
+        std.debug.print("Golden file test failed: {s}\n", .{reason});
     }
 }
