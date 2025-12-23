@@ -293,7 +293,7 @@ pub const Db = struct {
             };
             defer commit_ctx.deinit(self.allocator);
 
-            const result = manager.execute_on_commit_hooks(commit_ctx) catch |err| {
+            var result = manager.execute_on_commit_hooks(commit_ctx) catch |err| {
                 // Log the error but don't fail the commit
                 std.log.err("Plugin hook execution failed: {}", .{err});
                 return commit_record.txn_id;

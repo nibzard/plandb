@@ -574,6 +574,9 @@ pub const Runner = struct {
         var ops_per_sec_values = std.ArrayListUnmanaged(f64){};
         defer ops_per_sec_values.deinit(allocator);
 
+        // Preserve scenario metrics (notes) from first result if present
+        var scenario_notes: ?std.json.Value = null;
+
         for (results) |result| {
             total_ops += result.ops_total;
             total_duration += result.duration_ns;
@@ -586,6 +589,11 @@ pub const Runner = struct {
 
             try latencies.append(allocator, result.latency_ns.p99); // Use p99 for comparison
             try ops_per_sec_values.append(allocator, result.ops_per_sec);
+
+            // Capture scenario metrics from first result that has notes
+            if (scenario_notes == null and result.notes != null) {
+                scenario_notes = result.notes;
+            }
         }
 
         // Sort latencies for percentile calculation
@@ -620,6 +628,7 @@ pub const Runner = struct {
                 .alloc_bytes = total_alloc_bytes,
             },
             .errors_total = total_errors,
+            .notes = scenario_notes,
             .stability = stability,
         };
     }

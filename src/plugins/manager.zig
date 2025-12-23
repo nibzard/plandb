@@ -87,21 +87,22 @@ pub const PluginManager = struct {
         ctx: CommitContext
     ) !PluginExecutionResult {
         var total_operations: usize = 0;
-        var errors = std.ArrayList(PluginError).init(self.allocator);
+        var errors = std.ArrayList(PluginError){};
+        try errors.ensureTotalCapacity(self.allocator, 10);
         defer {
             for (errors.items) |*err| {
                 self.allocator.free(err.plugin_name);
             }
-            errors.deinit();
+            errors.deinit(self.allocator);
         }
 
         var it = self.plugins.iterator();
         while (it.next()) |entry| {
             const plugin = &entry.value_ptr.*;
             if (plugin.on_commit) |hook| {
-                hook(self.allocator, ctx) catch |err| {
+                _ = hook(self.allocator, ctx) catch |err| {
                     const name_copy = try self.allocator.dupe(u8, plugin.name);
-                    try errors.append(.{ .plugin_name = name_copy, .err = err });
+                    try errors.append(self.allocator, .{ .plugin_name = name_copy, .err = err });
                     continue;
                 };
                 total_operations += 1;
