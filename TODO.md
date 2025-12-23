@@ -1075,9 +1075,15 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED**: Exports {bench_name}.csv with ops/sec, latency percentiles, allocations, fsyncs, I/O bytes, errors
   - **COMPLETED**: All repeats for a benchmark in single CSV file
 
+- [ ✅ ] FIXED: ArrayList API compatibility for Zig 0.15.2 (commit 36f7d5a)
+  - **FIXED 2025-12-23**: Changed `std.ArrayList(T).init()` to `std.array_list.Managed(T).init()` across 25+ source files
+  - **DESCRIPTION**: Zig 0.15.2 changed ArrayList API - init() now takes allocator parameter
+  - **FIX**: Replaced with ArrayListUnmanaged or Managed versions for compatibility
+  - **FILES AFFECTED**: src/db.zig, src/txn.zig, src/wal.zig, src/recovery.zig, and many others
+
 ## Known Bugs (blockers discovered 2025-12-23)
 
-- [ ✅ ] FIXED: All B+tree persistence bugs resolved (commit d206826)
+- [ ✅ ] FIXED: All B+tree persistence bugs resolved (commits d206826, 6726104)
   - **FIXED 2025-12-23**: ReadTxn.get() returning null when values actually present in B+tree
     - **ROOT CAUSE**: Incorrect traversal logic in B+tree search
     - **COMMIT**: d206826
@@ -1088,12 +1094,38 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
 
   - **FIXED 2025-12-23**: B+tree splitLeafNode "@memcpy arguments alias" error
     - **LOCATION**: src/pager.zig:splitLeafNode function
-    - **FIX**: Changed @memcpy(&left_buffer, leaf_buffer) to @memcpy(left_buffer[0..], leaf_buffer)
-    - **DESCRIPTION**: Resolved strict aliasing violation by using single-pointer slice as destination
-    - **COMMIT**: d206826
+    - **FIRST ATTEMPT (commit 13bd0a8)**: Changed @memcpy(&left_buffer, leaf_buffer) to @memcpy(left_buffer[0..], leaf_buffer)
+      - **INSUFFICIENT**: This fix was incomplete as it didn't address the root cause of aliasing
+    - **CORRECT FIX (commit 6726104)**: Used OwnedEntry to own key/value copies before memcpy
+      - **DESCRIPTION**: Properly resolved strict aliasing violation by creating owned copies of entries before splitting
+      - **RELATED FIXES**: Also fixed multiple checksum bugs (see below)
 
-- [ ✅ ] FIXED: Pager copy-by-value causes file handle issues
-  - **DESCRIPTION**: executeTwoPhaseCommit() copied Pager by value, causing file handle confusion
-  - **LOCATION**: src/db.zig:209 - changed from `var pager_inst = self.pager.?` to `const pager_inst = &self.pager.?`
-  - **FIX**: Use pointer reference instead of copying Pager struct
-  - **COMMIT**: d11330a
+  - **FIXED 2025-12-23**: Pager copy-by-value causes file handle issues
+    - **DESCRIPTION**: executeTwoPhaseCommit() copied Pager by value, causing file handle confusion
+    - **LOCATION**: src/db.zig:209 - changed from `var pager_inst = self.pager.?` to `const pager_inst = &self.pager.?`
+    - **FIX**: Use pointer reference instead of copying Pager struct
+    - **COMMIT**: d11330a
+
+- [ 🔴 ] KNOWN ISSUE: getSeparatorKey data layout problem for internal nodes
+  - **LOCATION**: src/pager.zig addChild function (line 748-802)
+  - **DESCRIPTION**: addChild doesn't properly shift existing separators when inserting in middle to maintain sorted order
+  - **ROOT CAUSE**:
+    - Test expects separators stored in sorted order (for binary search in findChild)
+    - addChild correctly finds insertion position (line 760-768)
+    - addChild correctly shifts child pointers (line 780-785)
+    - **BUG**: addChild just appends separator at end of separator area (line 794-801)
+    - Doesn't shift existing separators in backward-growing layout
+  - **COMPLEXITY**: Fix requires properly shifting separators in backward-growing layout
+    - Must calculate offset for all separators after insert_pos
+    - Must move memory blocks while maintaining reverse order
+    - Must update offsets for separator key entries
+  - **STATUS**: Needs further investigation, blocking getSeparatorKey tests
+  - **NOTE**: Basic internal node creation test passes, issue specific to multi-separator scenarios
+  - **DISCOVERED**: 2025-12-23 during fix validation for commit 6726104
+  - **IMPACT**: Affects B+tree internal node operations, particularly splits and traversals
+
+- [ ✅ ] FIXED: Related checksum bugs fixed in commit 6726104
+  - **FIXED**: Recalculate checksums in splitLeafNode after rebuilding nodes
+  - **FIXED**: Recalculate checksums for new internal root after leaf split
+  - **FIXED**: Fix key_count increment order in addChild (before setChildPageId)
+  - **FIXED**: Add header checksum update in copyOnWritePage
