@@ -453,6 +453,18 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED**: Resilient corruption detection and automatic recovery mechanisms
   - **COMPLETED**: Built successfully with proper Zig module imports and dependencies
   - Committed with hash ef2c00c
+- [ ✅ ] 🟠 Tooling: `tools/dbdump` for database inspection and validation
+  - **COMPLETED**: Implemented comprehensive database inspection CLI tool
+  - **COMPLETED**: dump command - Print database structure (meta, B+tree levels, keys)
+  - **COMPLETED**: validate command - Check file integrity and invariants
+  - **COMPLETED**: stats command - Show page usage, tree depth, key counts
+  - **COMPLETED**: export command - CSV and JSON export of key-value pairs
+  - **COMPLETED**: Tree traversal with checksum validation and page type detection
+  - **COMPLETED**: Integrated with build system in tools/build.zig
+  - **COMPLETED**: All commands tested and working correctly
+  - **STATUS**: Implementation complete, provides database debugging and inspection capabilities
+  - Committed with hash 19ebf2e
+  - Completed 2025-12-23
 
 ## Phase 5 — Macrobench Scenarios
 
@@ -571,7 +583,17 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED**: Critical benchmark marked for regression detection
   - **STATUS**: Implementation complete, demonstrates cartridge performance benefits
   - Committed with hash [current]
-- [ ] 🟡 Add rebuild triggers and admin introspection API
+- [ ✅ ] 🟡 Add rebuild triggers and admin introspection API
+  - **COMPLETED**: Implemented comprehensive rebuild trigger system in src/cartridges/rebuild.zig
+  - **COMPLETED**: TriggerEvaluator for determining when cartridges need rebuilding
+  - **COMPLETED**: RebuildQueue for managing pending/active/completed rebuild tasks
+  - **COMPLETED**: RebuildExecutor for executing rebuild operations
+  - **COMPLETED**: CartridgeAdmin for registration, access statistics, and monitoring
+  - **COMPLETED**: QueryBuilder for flexible cartridge queries with filtering and sorting
+  - **COMPLETED**: All 42 unit tests passing (22 in rebuild.zig, 20 in admin.zig)
+  - **COMPLETED**: Files created: src/cartridges/rebuild.zig (694 lines), src/cartridges/admin.zig (725 lines)
+  - Committed with hash a7e202d
+  - Completed 2025-12-23
 
 ## Phase 7 — Living Database: AI Intelligence Layer
 
@@ -863,9 +885,49 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **STATUS**: Complete and tested, provides autonomous performance bottleneck detection
   - **BLOCKERS**: None
   - Committed 2025-12-23 (a97f145)
-- [ ] 🟠 Security vulnerability detection plugin
-- [ ] 🟠 Custom plugin marketplace and sharing platform
-- [ ] 🟡 Multi-model orchestration for task-specific optimization
+- [ ✅ ] 🟠 Security vulnerability detection plugin
+  - **COMPLETED**: Implemented comprehensive security vulnerability detection in src/plugins/security_vulnerability.zig
+  - **COMPLETED**: Pattern matching for SQL injection, XSS, path traversal, command injection, sensitive data exposure
+  - **COMPLETED**: LLM function schema for semantic analysis of code and data
+  - **COMPLETED**: Batch processing with configurable thresholds for efficient analysis
+  - **COMPLETED**: Full test coverage (all tests pass)
+  - **FEATURES**: Configurable vulnerability patterns, confidence thresholds, batch size limits
+  - **FEATURES**: Statistics tracking for vulnerabilities found, mutations analyzed, patterns matched
+  - **STATUS**: Complete and tested, provides autonomous security vulnerability detection
+  - **BLOCKERS**: None
+  - Committed 2025-12-23 (36cde47)
+- [ ✅ ] 🟠 Custom plugin marketplace and sharing platform
+  - **COMPLETED**: Implemented comprehensive plugin marketplace in src/plugins/marketplace.zig
+  - **COMPLETED**: PluginRegistry with metadata storage, version management, and search/discovery
+  - **COMPLETED**: PluginCache for local plugin installation management with install/uninstall
+  - **COMPLETED**: PluginMarketplace main API with search, install, uninstall, update, publish operations
+  - **COMPLETED**: Built-in plugins registered: entity_extractor, context_summarizer
+  - **COMPLETED**: Search with category/tag filters and substring matching (empty query matches all after filters)
+  - **COMPLETED**: Dependency resolution framework for plugin installation
+  - **COMPLETED**: Full test coverage (10 tests passing)
+  - **FEATURES**: Plugin manifest with id, name, description, author, version, category, tags, license
+  - **FEATURES**: VersionInfo with dependencies, checksums, min_northstar_version requirements
+  - **FEATURES**: Install/update/uninstall operations with proper error handling
+  - **FEATURES**: Publish workflow for sharing custom plugins
+  - **STATUS**: Complete and tested, provides plugin marketplace foundation
+  - **BLOCKERS**: None
+  - Committed 2025-12-23 (b54aed1)
+- [ ✅ ] 🟡 Multi-model orchestration for task-specific optimization
+  - **COMPLETED**: Implemented comprehensive multi-model orchestration system in src/llm/orchestrator.zig
+  - **COMPLETED**: Task classification system for intelligent routing (simple_extraction, complex_reasoning, security_analysis, summarization, general)
+  - **COMPLETED**: Cost-aware routing with 4 strategies (cost_optimized, quality_optimized, balanced, latency_optimized)
+  - **COMPLETED**: Provider health tracking with failure counting and automatic failover
+  - **COMPLETED**: Model registry with cost/performance metadata (quality_score, avg_latency, cost_per_1k_tokens)
+  - **COMPLETED**: Fallback and retry mechanisms with configurable max attempts
+  - **COMPLETED**: Request routing optimization based on task requirements and provider capabilities
+  - **COMPLETED**: Statistics tracking (requests, failures, fallbacks, cost savings)
+  - **COMPLETED**: Full test coverage including classification, routing, health tracking, and failover scenarios (7 tests passing)
+  - **FEATURES**: Automatic provider selection based on task complexity and cost constraints
+  - **FEATURES**: Graceful degradation with fallback to alternative providers on failures
+  - **FEATURES**: Cost optimization through intelligent model selection for different task types
+  - **FEATURES**: Support for OpenAI (gpt-4o, gpt-4o-mini, gpt-3.5-turbo), Anthropic (claude-3-opus, claude-3-sonnet, claude-3-haiku), local models
+  - **STATUS**: Complete and tested, provides intelligent multi-model orchestration for optimal performance and cost
+  - Committed 2025-12-23 (9870b30)
 
 ### Production Readiness
 - [ ✅ ] 🔴 Implement comprehensive AI security and privacy controls
@@ -974,8 +1036,21 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED**: Supports both ci and dev_nvme profiles
   - **COMPLETED**: Baseline capture and management functionality working
   - **NOTE**: Currently in shell script, could be integrated into main CLI if needed
-- [ ] 🟡 Contributor guide: "tests + bench evidence" requirements
-- [ ] 🟡 Docs: cross-link specs and invariants to code validators
+- [ ✅ ] 🟡 Contributor guide: "tests + bench evidence" requirements
+  - **COMPLETED 2025-12-23**: Created comprehensive docs/contributing.md with evidence requirements
+  - **COMPLETED**: Detailed sections on bug fixes, new features, and performance changes
+  - **COMPLETED**: Code review checklist with test/bench validation requirements
+  - **COMPLETED**: Examples for PR descriptions with evidence templates
+  - **COMPLETED**: CI gating thresholds and critical benchmark documentation
+- [ ✅ ] 🟡 Docs: cross-link specs and invariants to code validators
+  - **COMPLETED**: Added Code Validator Cross-References sections to all spec files
+  - **COMPLETED**: Added Specification References sections to code validator files
+  - **COMPLETED**: Bidirectional traceability between specs and validators
+  - **SPEC FILES UPDATED**: correctness_contracts_v0.md, file_format_v0.md, semantics_v0.md, commit_record_v0.md, hardening_v0.md
+  - **CODE FILES UPDATED**: hardening.zig, ref_model.zig, property_based.zig
+  - **FEATURES**: Contract-to-validator mapping tables, spec document links, test coverage tables
+  - **STATUS**: Complete - provides traceability for formal specification validation
+  - Committed with hash b315251
 
 ## Output & Reporting
 - [ ✅ ] 🟠 Emit per-benchmark JSON under `bench/<name>.json`
@@ -990,4 +1065,7 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED**: runWithSummary() method returns summary data
   - **COMPLETED**: printSummary() method displays formatted results
   - **COMPLETED**: run() auto-prints summary when baseline comparison done
-- [ ] 🟡 Optional CSV export for quick spreadsheet analysis
+- [ ✅ ] 🟡 Optional CSV export for quick spreadsheet analysis
+  - **COMPLETED 2025-12-23**: --csv flag for bench run/gate commands
+  - **COMPLETED**: Exports {bench_name}.csv with ops/sec, latency percentiles, allocations, fsyncs, I/O bytes, errors
+  - **COMPLETED**: All repeats for a benchmark in single CSV file
