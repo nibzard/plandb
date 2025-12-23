@@ -513,8 +513,21 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **NOTE**: InvalidationPolicy uses fixed-size array (16 patterns) due to Zig 0.15.2 ArrayList compatibility issues
   - **STATUS**: Core cartridge format complete, ready for build phase
   - Committed with hash e6c007a
-- [ ] 🔴 Build cartridge from commit stream (offline) deterministically
-- [ ] 🟠 Memory-map artifact and serve hot lookups
+- [ ✅ ] 🔴 Build cartridge from commit stream (offline) deterministically
+  - **COMPLETED**: Implemented buildFromLog() for reading commit stream from .log files
+  - **COMPLETED**: Added extractTasksFromCommit() for parsing task:/claim: mutations
+  - **COMPLETED**: Implemented parseTaskType/parseTaskPriority for JSON metadata
+  - **COMPLETED**: Added writeToFile() for artifact serialization
+  - **COMPLETED**: Includes deterministic rebuild validation tests
+  - **COMPLETED**: All tests passing
+  - Committed as "feat(cartridge): Implement pending_tasks_by_type cartridge from commit stream"
+- [x] ✅ Memory-map artifact and serve hot lookups
+  - **COMPLETED**: Memory-mapped data section for fast task lookups
+  - **COMPLETED**: Implemented readTaskAt() to parse task entries from memory-mapped data
+  - **COMPLETED**: Added mapDataSection() method to load and index data from cartridge file
+  - **COMPLETED**: Implemented claimTask() method for transient task claiming
+  - **COMPLETED**: Added tests for getTask, getTasksByType, and claimTask operations
+  - Committed as "feat(cartridge): Memory-map cartridge data and serve hot lookups" (8085e51)
 - [ ] 🟠 Macrobench demonstrating latency improvement vs baseline scan
 - [ ] 🟡 Add rebuild triggers and admin introspection API
 

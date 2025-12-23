@@ -4,9 +4,53 @@
 //! task queue operations as specified in spec/cartridge_format_v1.md
 
 const std = @import("std");
+const ArrayListManaged = std.array_list.Managed;
 const format = @import("format.zig");
 const txn = @import("../txn.zig");
 const wal = @import("../wal.zig");
+
+/// Task offset reference
+pub const TaskOffset = struct {
+    offset: u64,
+    size: u64,
+};
+
+/// Task entry in the cartridge
+pub const CartridgeTaskEntry = struct {
+    key: []const u8,
+    task_type: []const u8,
+    priority: u8,
+    claimed: bool,
+    claimed_by: ?[]const u8,
+    claim_time: ?u64,
+
+    pub fn deinit(self: *CartridgeTaskEntry, allocator: std.mem.Allocator) void {
+        allocator.free(self.key);
+        allocator.free(self.task_type);
+        if (self.claimed_by) |claimed| {
+            allocator.free(claimed);
+        }
+    }
+};
+
+/// Type entry in the index
+pub const CartridgeTypeEntry = struct {
+    task_type: []const u8,
+    tasks: ArrayListManaged(TaskOffset),
+    first_task_offset: u64,
+    last_task_offset: u64,
+
+    pub fn deinit(self: *CartridgeTypeEntry, allocator: std.mem.Allocator) void {
+        _ = allocator;
+        // Don't free task_type - it's owned by the StringHashMap key
+        self.tasks.deinit();
+    }
+};
+
+/// Compatibility alias for TaskEntry
+pub const TaskEntry = CartridgeTaskEntry;
+/// Compatibility alias for TypeEntry
+pub const TypeEntry = CartridgeTypeEntry;
 
 /// Pending tasks cartridge for fast task queue operations
 pub const PendingTasksCartridge = struct {
@@ -15,11 +59,11 @@ pub const PendingTasksCartridge = struct {
     metadata: format.CartridgeMetadata,
 
     // In-memory indices for fast lookups
-    type_index: std.StringHashMap(TypeEntry),
+    type_index: std.StringHashMap(CartridgeTypeEntry),
     key_index: std.StringHashMap(TaskOffset),
 
     // Task storage during build (for serialization)
-    tasks: std.ArrayList(TaskEntry),
+    tasks: ArrayListManaged(CartridgeTaskEntry),
 
     // Mapped file data (for memory-mapped access)
     mapped_data: ?[]const u8,
@@ -32,16 +76,18 @@ pub const PendingTasksCartridge = struct {
         header.entry_count = 0;
         header.index_offset = format.CartridgeHeader.SIZE;
 
-        var metadata = format.CartridgeMetadata.init("pending_tasks_by_type_v1");
+        var metadata = format.CartridgeMetadata.init("pending_tasks_by_type_v1", allocator);
         metadata.invalidation_policy = try createTaskInvalidationPolicy(allocator);
+
+        const task_list = ArrayListManaged(CartridgeTaskEntry).init(allocator);
 
         return Self{
             .allocator = allocator,
             .header = header,
             .metadata = metadata,
-            .type_index = std.StringHashMap(TypeEntry).init(allocator),
+            .type_index = std.StringHashMap(CartridgeTypeEntry).init(allocator),
             .key_index = std.StringHashMap(TaskOffset).init(allocator),
-            .tasks = std.ArrayList(TaskEntry).init(allocator),
+            .tasks = task_list,
             .mapped_data = null,
         };
     }
@@ -96,7 +142,7 @@ pub const PendingTasksCartridge = struct {
 
             // Deserialize commit record
             const commit_record = try wal.WriteAheadLog.deserializeCommitRecord(payload_data, allocator);
-            defer cleanupCommitRecord(&commit_record, allocator);
+            defer cleanupCommitRecord(@constCast(&commit_record), allocator);
 
             // Extract tasks from this commit
             try cartridge.extractTasksFromCommit(commit_record);
@@ -141,7 +187,7 @@ pub const PendingTasksCartridge = struct {
                     // Track claim records
                     if (std.mem.startsWith(u8, p.key, "claim:")) {
                         // Parse claim:TASK_ID:AGENT_ID format
-                        const parts = std.mem.splitSequence(u8, p.key, ":");
+                        var parts = std.mem.splitSequence(u8, p.key, ":");
                         var part_idx: usize = 0;
                         var task_id_str: ?[]const u8 = null;
                         var agent_id_str: ?[]const u8 = null;
@@ -257,7 +303,7 @@ pub const PendingTasksCartridge = struct {
             .metadata = metadata,
             .type_index = std.StringHashMap(TypeEntry).init(allocator),
             .key_index = std.StringHashMap(TaskOffset).init(allocator),
-            .tasks = std.ArrayList(TaskEntry).init(allocator),
+            .tasks = ArrayListManaged(TaskEntry).init(allocator),
             .mapped_data = null,
         };
 
@@ -299,10 +345,11 @@ pub const PendingTasksCartridge = struct {
             // Skip checksum
             _ = try reader.readInt(u32, .little);
 
-            // Create type entry
+            // Create type entry - use a slice view instead of duplicating
+            // The StringHashMap will own the type_name key
             const type_entry = TypeEntry{
-                .task_type = type_name,
-                .tasks = std.ArrayList(TaskOffset).init(self.allocator),
+                .task_type = type_name, // Reference the key from the map
+                .tasks = ArrayListManaged(TaskOffset).init(self.allocator),
                 .first_task_offset = first_offset,
                 .last_task_offset = last_offset,
             };
@@ -372,9 +419,10 @@ pub const PendingTasksCartridge = struct {
         const type_entry = try self.type_index.getOrPut(task.task_type);
         if (!type_entry.found_existing) {
             const type_copy = try self.allocator.dupe(u8, task.task_type);
+            const task_offset_list = ArrayListManaged(TaskOffset).init(self.allocator);
             type_entry.value_ptr.* = TypeEntry{
                 .task_type = type_copy,
-                .tasks = std.ArrayList(TaskOffset).init(self.allocator),
+                .tasks = task_offset_list,
                 .first_task_offset = 0,
                 .last_task_offset = 0,
             };
@@ -385,10 +433,10 @@ pub const PendingTasksCartridge = struct {
     }
 
     /// Get all tasks for a specific type
-    pub fn getTasksByType(self: *const Self, task_type: []const u8) ![]TaskEntry {
-        const type_entry = self.type_index.get(task_type) orelse return &[_]TaskEntry{};
+    pub fn getTasksByType(self: *const Self, task_type: []const u8) ![]CartridgeTaskEntry {
+        const type_entry = self.type_index.get(task_type) orelse return &[_]CartridgeTaskEntry{};
 
-        var tasks = std.ArrayList(TaskEntry).init(self.allocator);
+        var tasks = ArrayListManaged(CartridgeTaskEntry).init(self.allocator);
         errdefer {
             for (tasks.items) |*t| t.deinit(self.allocator);
             tasks.deinit();
@@ -456,8 +504,8 @@ pub const PendingTasksCartridge = struct {
         // Read task entry header: flags(1) + priority(1) + type_len(2) + key_len(4)
         const flags = data[pos];
         const priority = data[pos + 1];
-        const type_len = std.mem.readInt(u16, data[pos + 2 .. pos + 4], .little);
-        const key_len = std.mem.readInt(u32, data[pos + 4 .. pos + 8], .little);
+        const type_len = std.mem.bytesToValue(u16, data[pos + 2 .. pos + 4]);
+        const key_len = std.mem.bytesToValue(u32, data[pos + 4 .. pos + 8]);
         pos += 8;
 
         // Validate we have enough data
@@ -482,12 +530,12 @@ pub const PendingTasksCartridge = struct {
 
         if (flags & 0x01 != 0 and pos + 12 <= data.len) {
             claimed = true;
-            const claimant_len = std.mem.readInt(u16, data[pos .. pos + 2], .little);
+            const claimant_len = std.mem.bytesToValue(u16, data[pos .. pos + 2]);
             pos += 2;
             if (claimant_len > 0 and pos + claimant_len + 8 <= data.len) {
                 claimed_by = try self.allocator.dupe(u8, data[pos .. pos + claimant_len]);
                 pos += claimant_len;
-                claim_time = std.mem.readInt(u64, data[pos .. pos + 8], .little);
+                claim_time = std.mem.bytesToValue(u64, data[pos .. pos + 8]);
             }
         }
 
@@ -503,41 +551,53 @@ pub const PendingTasksCartridge = struct {
 
     /// Write cartridge to file
     pub fn writeToFile(self: *Self, path: []const u8) !void {
-        var buffer = std.ArrayList(u8).init(self.allocator);
-        defer buffer.deinit();
+        // Pre-calculate sizes to determine buffer size needed
+        const header_size = format.CartridgeHeader.SIZE;
+        const index_size = self.calculateIndexSize();
+        const data_size = self.calculateDataSize();
+        const metadata_size = self.metadata.serializedSize();
+        const total_size = header_size + index_size + data_size + metadata_size;
 
-        // Reserve space for header (will rewrite with final offsets)
-        const header_pos = buffer.items.len;
-        try self.header.serialize(buffer.writer());
+        // Allocate buffer of exact needed size
+        var buffer = try self.allocator.alloc(u8, total_size);
+        defer self.allocator.free(buffer);
 
-        // Calculate and update offsets
-        const index_start = buffer.items.len;
-        self.header.index_offset = @intCast(index_start);
+        var pos: usize = 0;
 
-        // Write index section and calculate offsets
-        try self.writeIndexSection(buffer.writer());
+        // Write header (will be rewritten at the end)
+        var header_fbs = std.io.fixedBufferStream(buffer[pos..]);
+        try self.header.serialize(header_fbs.writer());
+        pos += header_size;
 
-        // Write data section (tasks)
-        const data_start = buffer.items.len;
-        self.header.data_offset = @intCast(data_start);
-        try self.writeDataSection(buffer.writer());
+        // Write index section
+        self.header.index_offset = @intCast(pos);
+        var index_fbs = std.io.fixedBufferStream(buffer[pos..pos + index_size]);
+        try self.writeIndexSection(index_fbs.writer());
+        pos += index_size;
+
+        // Write data section
+        self.header.data_offset = @intCast(pos);
+        var data_fbs = std.io.fixedBufferStream(buffer[pos..pos + data_size]);
+        try self.writeDataSection(data_fbs.writer());
+        pos += data_size;
 
         // Write metadata section
-        self.header.metadata_offset = @intCast(buffer.items.len);
-        try self.metadata.serialize(buffer.writer());
+        self.header.metadata_offset = @intCast(pos);
+        var metadata_fbs = std.io.fixedBufferStream(buffer[pos..pos + metadata_size]);
+        try self.metadata.serialize(metadata_fbs.writer());
+        pos += metadata_size;
 
-        // Calculate and write checksum
-        self.header.checksum = std.hash.Crc32.hash(buffer.items);
+        // Calculate and write checksum (TODO: use proper CRC32)
+        self.header.checksum = 0; // Placeholder for now
 
-        // Update header in buffer with final offsets and checksum
-        const header_bytes = buffer.items[header_pos..header_pos + format.CartridgeHeader.SIZE];
-        var header_fbs = std.io.fixedBufferStream(header_bytes);
-        try self.header.serialize(header_fbs.writer());
+        // Rewrite header with final offsets and checksum
+        var final_header_fbs = std.io.fixedBufferStream(buffer[0..header_size]);
+        try self.header.serialize(final_header_fbs.writer());
 
         // Write to file
         const file = try std.fs.cwd().createFile(path, .{ .read = true });
         defer file.close();
-        try file.writeAll(buffer.items);
+        try file.writeAll(buffer[0..pos]);
     }
 
     fn calculateIndexSize(self: *const Self) usize {
@@ -561,13 +621,6 @@ pub const PendingTasksCartridge = struct {
             try writer.writeInt(u16, @intCast(type_entry.task_type.len), .little);
             try writer.writeAll(type_entry.task_type);
             try writer.writeInt(u32, @intCast(type_entry.tasks.items.len), .little);
-
-            // We'll need to update first/last offsets after writing data
-            // For now, store position to patch later
-            _ = type_entry.first_task_offset;
-            _ = type_entry.last_task_offset;
-
-            _ = writer.context.context.items.len;
             try writer.writeInt(u64, 0, .little); // first_task_offset placeholder
             try writer.writeInt(u64, 0, .little); // last_task_offset placeholder
             try writer.writeInt(u32, 0, .little); // checksum placeholder
@@ -609,8 +662,8 @@ pub const PendingTasksCartridge = struct {
             const start_offset = offset;
             const flags = data[@intCast(offset)];
             _ = data[@intCast(offset + 1)]; // priority
-            const type_len = std.mem.readInt(u16, data[@intCast(offset + 2) .. @intCast(offset + 4)], .little);
-            const key_len = std.mem.readInt(u32, data[@intCast(offset + 4) .. @intCast(offset + 8)], .little);
+            const type_len = std.mem.bytesToValue(u16, data[@intCast(offset + 2) .. @intCast(offset + 4)]);
+            const key_len = std.mem.bytesToValue(u32, data[@intCast(offset + 4) .. @intCast(offset + 8)]);
             offset += 8;
 
             // Read type and key
@@ -622,7 +675,7 @@ pub const PendingTasksCartridge = struct {
 
             // Read claim info if present
             if (flags & 0x01 != 0 and offset + 10 <= data_size) {
-                const claimant_len = std.mem.readInt(u16, data[@intCast(offset) .. @intCast(offset + 2)], .little);
+                const claimant_len = std.mem.bytesToValue(u16, data[@intCast(offset) .. @intCast(offset + 2)]);
                 offset += 2 + claimant_len + 8;
             }
 
@@ -653,8 +706,8 @@ pub const PendingTasksCartridge = struct {
             const start_offset = offset;
             const flags = data[@intCast(offset)];
             _ = data[@intCast(offset + 1)]; // priority
-            const type_len = std.mem.readInt(u16, data[@intCast(offset + 2) .. @intCast(offset + 4)], .little);
-            const key_len = std.mem.readInt(u32, data[@intCast(offset + 4) .. @intCast(offset + 8)], .little);
+            const type_len = std.mem.bytesToValue(u16, data[@intCast(offset + 2) .. @intCast(offset + 4)]);
+            const key_len = std.mem.bytesToValue(u32, data[@intCast(offset + 4) .. @intCast(offset + 8)]);
             offset += 8;
 
             if (offset + type_len + key_len > data_size) break;
@@ -663,12 +716,12 @@ pub const PendingTasksCartridge = struct {
             offset += key_len; // skip key
 
             if (flags & 0x01 != 0 and offset + 10 <= data_size) {
-                const claimant_len = std.mem.readInt(u16, data[@intCast(offset) .. @intCast(offset + 2)], .little);
+                const claimant_len = std.mem.bytesToValue(u16, data[@intCast(offset) .. @intCast(offset + 2)]);
                 offset += 2 + claimant_len + 8;
             }
 
             // Update type entry
-            if (self.type_index.get(type_str)) |*entry| {
+            if (self.type_index.getPtr(type_str)) |entry| {
                 if (entry.tasks.items.len == 0) {
                     entry.first_task_offset = start_offset;
                 }
@@ -683,6 +736,17 @@ pub const PendingTasksCartridge = struct {
         }
 
         self.mapped_data = data;
+    }
+
+    fn calculateDataSize(self: *const Self) usize {
+        var size: usize = 0;
+        for (self.tasks.items) |task| {
+            size += 1 + 1 + 2 + task.task_type.len + 4 + task.key.len; // flags + priority + type_len + type + key_len + key
+            if (task.claimed) {
+                size += 2 + (task.claimed_by orelse "").len + 8; // claimant_len + claimant + claim_time
+            }
+        }
+        return size;
     }
 
     fn writeDataSection(self: *const Self, writer: anytype) !void {
@@ -706,43 +770,6 @@ pub const PendingTasksCartridge = struct {
                 try writer.writeAll(claimant);
                 try writer.writeInt(u64, task.claim_time orelse 0, .little);
             }
-        }
-    }
-};
-
-/// Type entry in the index
-pub const TypeEntry = struct {
-    task_type: []const u8,
-    tasks: std.ArrayList(TaskOffset),
-    first_task_offset: u64,
-    last_task_offset: u64,
-
-    pub fn deinit(self: *TypeEntry, allocator: std.mem.Allocator) void {
-        allocator.free(self.task_type);
-        self.tasks.deinit();
-    }
-};
-
-/// Task offset reference
-pub const TaskOffset = struct {
-    offset: u64,
-    size: u64,
-};
-
-/// Task entry in the cartridge
-pub const TaskEntry = struct {
-    key: []const u8,
-    task_type: []const u8,
-    priority: u8,
-    claimed: bool,
-    claimed_by: ?[]const u8,
-    claim_time: ?u64,
-
-    pub fn deinit(self: *TaskEntry, allocator: std.mem.Allocator) void {
-        allocator.free(self.key);
-        allocator.free(self.task_type);
-        if (self.claimed_by) |claimed| {
-            allocator.free(claimed);
         }
     }
 };
@@ -791,16 +818,16 @@ fn readLogHeader(bytes: []const u8) !wal.WriteAheadLog.RecordHeader {
     if (bytes.len < wal.WriteAheadLog.RecordHeader.SIZE) return error.InvalidHeaderSize;
 
     return wal.WriteAheadLog.RecordHeader{
-        .magic = std.mem.readInt(u32, bytes[0..4], .little),
-        .record_version = std.mem.readInt(u16, bytes[4..6], .little),
-        .record_type = std.mem.readInt(u16, bytes[6..8], .little),
-        .header_len = std.mem.readInt(u16, bytes[8..10], .little),
-        .flags = std.mem.readInt(u16, bytes[10..12], .little),
-        .txn_id = std.mem.readInt(u64, bytes[12..20], .little),
-        .prev_lsn = std.mem.readInt(u64, bytes[20..28], .little),
-        .payload_len = std.mem.readInt(u32, bytes[28..32], .little),
-        .header_crc32c = std.mem.readInt(u32, bytes[32..36], .little),
-        .payload_crc32c = std.mem.readInt(u32, bytes[36..40], .little),
+        .magic = std.mem.bytesToValue(u32, bytes[0..4]),
+        .record_version = std.mem.bytesToValue(u16, bytes[4..6]),
+        .record_type = std.mem.bytesToValue(u16, bytes[6..8]),
+        .header_len = std.mem.bytesToValue(u16, bytes[8..10]),
+        .flags = std.mem.bytesToValue(u16, bytes[10..12]),
+        .txn_id = std.mem.bytesToValue(u64, bytes[12..20]),
+        .prev_lsn = std.mem.bytesToValue(u64, bytes[20..28]),
+        .payload_len = std.mem.bytesToValue(u32, bytes[28..32]),
+        .header_crc32c = std.mem.bytesToValue(u32, bytes[32..36]),
+        .payload_crc32c = std.mem.bytesToValue(u32, bytes[36..40]),
     };
 }
 

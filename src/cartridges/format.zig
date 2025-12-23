@@ -177,9 +177,6 @@ pub const CartridgeHeader = struct {
         try writer.writeInt(u64, header.index_offset, .little);
         try writer.writeInt(u64, header.data_offset, .little);
         try writer.writeInt(u64, header.metadata_offset, .little);
-
-        // Write 4 bytes of padding
-        try writer.writeInt(u32, 0, .little);
         try writer.writeInt(u32, header.checksum, .little);
     }
 
@@ -198,9 +195,6 @@ pub const CartridgeHeader = struct {
         const index_offset = try reader.readInt(u64, .little);
         const data_offset = try reader.readInt(u64, .little);
         const metadata_offset = try reader.readInt(u64, .little);
-
-        // Skip padding
-        _ = try reader.readInt(u32, .little);
         const checksum = try reader.readInt(u32, .little);
 
         const cartridge_type = try CartridgeType.fromUint(type_value);
@@ -441,13 +435,13 @@ pub const CartridgeMetadata = struct {
         patch: u32,
     };
 
-    pub fn init(format_name: []const u8) CartridgeMetadata {
+    pub fn init(format_name: []const u8, allocator: std.mem.Allocator) CartridgeMetadata {
         return CartridgeMetadata{
-            .format_name = format_name,
+            .format_name = allocator.dupe(u8, format_name) catch unreachable,
             .schema_version = .{ .major = 1, .minor = 0, .patch = 0 },
             .build_time_ms = 0,
             .source_db_hash = [_]u8{0} ** 32,
-            .builder_version = "northstar_db.cartridge.v1",
+            .builder_version = allocator.dupe(u8, "northstar_db.cartridge.v1") catch unreachable,
             .invalidation_policy = InvalidationPolicy.default(),
         };
     }
@@ -464,7 +458,8 @@ pub const CartridgeMetadata = struct {
     pub fn serialize(metadata: CartridgeMetadata, writer: anytype) !void {
         // Write format_name (32 bytes, null-padded)
         var name_buf: [32]u8 = [_]u8{0} ** 32;
-        @memcpy(name_buf[0..@min(metadata.format_name.len, 31)], metadata.format_name);
+        const copy_len = @min(metadata.format_name.len, 31);
+        @memcpy(name_buf[0..copy_len], metadata.format_name[0..copy_len]);
         try writer.writeAll(&name_buf);
 
         // Write schema version
@@ -480,7 +475,8 @@ pub const CartridgeMetadata = struct {
 
         // Write builder version (32 bytes, null-padded)
         var builder_buf: [32]u8 = [_]u8{0} ** 32;
-        @memcpy(builder_buf[0..@min(metadata.builder_version.len, 31)], metadata.builder_version);
+        const builder_copy_len = @min(metadata.builder_version.len, 31);
+        @memcpy(builder_buf[0..builder_copy_len], metadata.builder_version[0..builder_copy_len]);
         try writer.writeAll(&builder_buf);
 
         // Write invalidation policy
@@ -523,7 +519,7 @@ pub const CartridgeMetadata = struct {
     pub fn deinit(metadata: CartridgeMetadata, allocator: std.mem.Allocator) void {
         allocator.free(metadata.format_name);
         allocator.free(metadata.builder_version);
-        metadata.invalidation_policy.deinit(allocator);
+        @constCast(&metadata.invalidation_policy).deinit(allocator);
     }
 };
 
