@@ -589,11 +589,11 @@ test "plugin_manager_initialization" {
         .cost_budget_per_hour = 10.0,
     };
 
-    const manager = try PluginManager.init(std.testing.allocator, config);
+    var manager = try PluginManager.init(std.testing.allocator, config);
     defer manager.deinit();
 
-    try std.testing.expect(@as(usize, 0), manager.plugins.count());
-    try std.testing.expect(@as(usize, 0), manager.function_registry.count());
+    try std.testing.expectEqual(@as(usize, 0), manager.plugins.count());
+    try std.testing.expectEqual(@as(usize, 0), manager.function_registry.count());
 }
 
 test "plugin_registration" {
@@ -636,12 +636,12 @@ test "execute_on_commit_hooks_no_plugins" {
     var ctx = CommitContext{
         .txn_id = 1,
         .mutations = &mutations,
-        .timestamp = std.time.nanoTimestamp(),
+        .timestamp = @intCast(std.time.nanoTimestamp()),
         .metadata = std.StringHashMap([]const u8).init(std.testing.allocator),
     };
     defer ctx.deinit(std.testing.allocator);
 
-    const result = try manager.execute_on_commit_hooks(ctx);
+    var result = try manager.execute_on_commit_hooks(ctx);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(usize, 0), result.total_plugins_executed);
@@ -684,12 +684,12 @@ test "execute_on_commit_hooks_with_plugin" {
     var ctx = CommitContext{
         .txn_id = 1,
         .mutations = &mutations,
-        .timestamp = std.time.nanoTimestamp(),
+        .timestamp = @intCast(std.time.nanoTimestamp()),
         .metadata = std.StringHashMap([]const u8).init(std.testing.allocator),
     };
     defer ctx.deinit(std.testing.allocator);
 
-    const result = try manager.execute_on_commit_hooks(ctx);
+    var result = try manager.execute_on_commit_hooks(ctx);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(usize, 1), result.total_plugins_executed);
@@ -729,12 +729,12 @@ test "execute_on_commit_hooks_with_error" {
     var ctx = CommitContext{
         .txn_id = 1,
         .mutations = &mutations,
-        .timestamp = std.time.nanoTimestamp(),
+        .timestamp = @intCast(std.time.nanoTimestamp()),
         .metadata = std.StringHashMap([]const u8).init(std.testing.allocator),
     };
     defer ctx.deinit(std.testing.allocator);
 
-    const result = try manager.execute_on_commit_hooks(ctx);
+    var result = try manager.execute_on_commit_hooks(ctx);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(usize, 1), result.total_plugins_executed);
@@ -756,7 +756,7 @@ test "function_registry" {
     var params = @import("../llm/function.zig").JSONSchema.init(.object);
     defer params.deinit(std.testing.allocator);
 
-    const schema = try FunctionSchema.init(
+    var schema = try FunctionSchema.init(
         std.testing.allocator,
         "test_function",
         "A test function",
@@ -767,7 +767,7 @@ test "function_registry" {
     try manager.register_function(schema);
 
     // Verify function can be found
-    const found = try manager.find_function_schema("test_function");
+    var found = try manager.find_function_schema("test_function");
     defer found.deinit(std.testing.allocator);
 
     try std.testing.expectEqualStrings("test_function", found.name);
@@ -847,12 +847,12 @@ test "async_execution_multiple_plugins" {
     var ctx = CommitContext{
         .txn_id = 1,
         .mutations = &mutations,
-        .timestamp = std.time.nanoTimestamp(),
+        .timestamp = @intCast(std.time.nanoTimestamp()),
         .metadata = std.StringHashMap([]const u8).init(std.testing.allocator),
     };
     defer ctx.deinit(std.testing.allocator);
 
-    const result = try manager.execute_on_commit_hooks(ctx);
+    var result = try manager.execute_on_commit_hooks(ctx);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(usize, 5), result.total_plugins_executed);
@@ -897,12 +897,12 @@ test "async_execution_with_performance_isolation_disabled" {
     var ctx = CommitContext{
         .txn_id = 1,
         .mutations = &mutations,
-        .timestamp = std.time.nanoTimestamp(),
+        .timestamp = @intCast(std.time.nanoTimestamp()),
         .metadata = std.StringHashMap([]const u8).init(std.testing.allocator),
     };
     defer ctx.deinit(std.testing.allocator);
 
-    const result = try manager.execute_on_commit_hooks(ctx);
+    var result = try manager.execute_on_commit_hooks(ctx);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(usize, 1), result.total_plugins_executed);
