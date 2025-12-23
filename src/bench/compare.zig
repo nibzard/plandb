@@ -14,6 +14,7 @@ pub const ComparisonResult = struct {
     fsync_change_pct: f64,
     stability: bool,
     notes: []const u8,
+    bench_name: []const u8 = "",
 };
 
 pub const Comparator = struct {
@@ -119,6 +120,7 @@ pub const Comparator = struct {
             .fsync_change_pct = fsync_change,
             .stability = stability,
             .notes = try notes_buf.toOwnedSlice(self.allocator),
+            .bench_name = try self.allocator.dupe(u8, baseline.bench_name),
         };
     }
 
@@ -232,7 +234,148 @@ pub const Comparator = struct {
 
         try writer.print("\nSummary: {d} passed, {d} failed\n", .{ passed, failed });
     }
+
+    pub fn compareDirs(self: *Comparator, baseline_dir: []const u8, candidate_dir: []const u8) !DirComparisonResult {
+        var baseline_files = try self.collectJsonFiles(baseline_dir);
+        defer {
+            for (baseline_files.items) |f| self.allocator.free(f);
+            baseline_files.deinit(self.allocator);
+        }
+
+        var candidate_files = try self.collectJsonFiles(candidate_dir);
+        defer {
+            for (candidate_files.items) |f| self.allocator.free(f);
+            candidate_files.deinit(self.allocator);
+        }
+
+        // Build lookup map for candidate files
+        var candidate_map = std.StringHashMap([]const u8).init(self.allocator);
+        defer {
+            var it = candidate_map.iterator();
+            while (it.next()) |entry| {
+                self.allocator.free(entry.key_ptr.*);
+                self.allocator.free(entry.value_ptr.*);
+            }
+            candidate_map.deinit();
+        }
+
+        for (candidate_files.items) |full_path| {
+            const basename = std.fs.path.basename(full_path);
+            const key = try self.allocator.dupe(u8, basename);
+            const val = try self.allocator.dupe(u8, full_path);
+            try candidate_map.put(key, val);
+        }
+
+        var comparisons = std.ArrayList(ComparisonResult).initCapacity(self.allocator, 0) catch unreachable;
+        defer {
+            for (comparisons.items) |c| self.allocator.free(c.notes);
+            comparisons.deinit(self.allocator);
+        }
+
+        var passed: usize = 0;
+        var failed: usize = 0;
+        var skipped: usize = 0;
+
+        for (baseline_files.items) |baseline_path| {
+            const basename = std.fs.path.basename(baseline_path);
+            const candidate_entry = candidate_map.get(basename);
+
+            if (candidate_entry == null) {
+                skipped += 1;
+                continue;
+            }
+
+            const result = try self.compare(baseline_path, candidate_entry.?);
+            if (result.passed) passed += 1 else failed += 1;
+            try comparisons.append(self.allocator, result);
+        }
+
+        var notes_buf = std.ArrayListUnmanaged(u8){};
+        defer notes_buf.deinit(self.allocator);
+        const writer = notes_buf.writer(self.allocator);
+
+        try writer.print("Directory comparison complete\n", .{});
+        try writer.print("Baseline dir: {s}\n", .{baseline_dir});
+        try writer.print("Candidate dir: {s}\n", .{candidate_dir});
+        try writer.print("Compared: {d}, Passed: {d}, Failed: {d}, Skipped: {d}\n", .{ comparisons.items.len, passed, failed, skipped });
+
+        const notes_final = try notes_buf.toOwnedSlice(self.allocator);
+
+        // Clone comparisons for return - duplicate both notes and bench_name
+        const comparisons_clone = try self.allocator.alloc(ComparisonResult, comparisons.items.len);
+        errdefer self.allocator.free(comparisons_clone);
+        for (comparisons.items, 0..) |c, i| {
+            comparisons_clone[i] = .{
+                .passed = c.passed,
+                .throughput_change_pct = c.throughput_change_pct,
+                .p99_latency_change_pct = c.p99_latency_change_pct,
+                .alloc_change_pct = c.alloc_change_pct,
+                .fsync_change_pct = c.fsync_change_pct,
+                .stability = c.stability,
+                .notes = try self.allocator.dupe(u8, c.notes),
+                .bench_name = try self.allocator.dupe(u8, c.bench_name),
+            };
+        }
+
+        return DirComparisonResult{
+            .passed = failed == 0,
+            .total_compared = comparisons.items.len,
+            .passed_count = passed,
+            .failed_count = failed,
+            .skipped_count = skipped,
+            .comparisons = comparisons_clone,
+            .notes = notes_final,
+        };
+    }
+
+    fn collectJsonFiles(self: *Comparator, dir_path: []const u8) !std.ArrayList([]const u8) {
+        var paths = std.ArrayList([]const u8).initCapacity(self.allocator, 0) catch unreachable;
+        try self.collectJsonFilesRecursive(dir_path, &paths);
+        return paths;
+    }
+
+    fn collectJsonFilesRecursive(self: *Comparator, dir_path: []const u8, paths: *std.ArrayList([]const u8)) !void {
+        var dir = try std.fs.cwd().openDir(dir_path, .{ .iterate = true });
+        defer dir.close();
+
+        var it = dir.iterate();
+        while (try it.next()) |entry| {
+            const full_path = try std.fs.path.join(self.allocator, &[_][]const u8{ dir_path, entry.name });
+
+            if (entry.kind == .directory) {
+                try self.collectJsonFilesRecursive(full_path, paths);
+                self.allocator.free(full_path);
+            } else if (entry.kind == .file) {
+                if (std.mem.endsWith(u8, entry.name, ".json")) {
+                    try paths.append(self.allocator, full_path);
+                } else {
+                    self.allocator.free(full_path);
+                }
+            } else {
+                self.allocator.free(full_path);
+            }
+        }
+    }
 };
+
+pub const DirComparisonResult = struct {
+    passed: bool,
+    total_compared: usize,
+    passed_count: usize,
+    failed_count: usize,
+    skipped_count: usize,
+    comparisons: []ComparisonResult,
+    notes: []const u8,
+};
+
+pub fn freeDirComparisonResult(allocator: std.mem.Allocator, result: *const DirComparisonResult) void {
+    for (result.comparisons) |*c| {
+        allocator.free(c.notes);
+        if (c.bench_name.len > 0) allocator.free(c.bench_name);
+    }
+    allocator.free(result.comparisons);
+    allocator.free(result.notes);
+}
 
 fn pctChange(baseline: f64, candidate: f64) f64 {
     if (baseline == 0) {

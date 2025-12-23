@@ -31,6 +31,8 @@ pub fn main() !void {
         try runBenchmarks(allocator, args[2..]);
     } else if (std.mem.eql(u8, command, "compare")) {
         try compareBaselines(allocator, args[2..]);
+    } else if (std.mem.eql(u8, command, "compare-dirs")) {
+        try compareDirs(allocator, args[2..]);
     } else if (std.mem.eql(u8, command, "gate")) {
         try gateSuite(allocator, args[2..]);
     } else if (std.mem.eql(u8, command, "property-test") or std.mem.eql(u8, command, "prop")) {
@@ -54,7 +56,8 @@ fn printUsage() !void {
         \\
         \\Usage:
         \\  bench run [options]          Run benchmarks
-        \\  bench compare <baseline> <candidate>  Compare results
+        \\  bench compare <baseline> <candidate>  Compare single result files
+        \\  bench compare-dirs <baseline> <candidate>  Compare entire output dirs
         \\  bench gate <baseline> [options]        Gate suite - fail on critical regressions
         \\  bench property-test [options]          Run property-based correctness tests
         \\  bench --list                   List all available benchmarks and suites
@@ -161,7 +164,10 @@ fn compareBaselines(allocator: std.mem.Allocator, args: []const []const u8) !voi
     var comparator = compare.Comparator.init(allocator, .{});
 
     const result = try comparator.compare(baseline_path, candidate_path);
-    defer allocator.free(result.notes);
+    defer {
+        allocator.free(result.notes);
+        allocator.free(result.bench_name);
+    }
 
     if (result.passed) {
         std.debug.print("✅ PASSED: ", .{});
@@ -176,6 +182,42 @@ fn compareBaselines(allocator: std.mem.Allocator, args: []const []const u8) !voi
 
     if (result.notes.len > 0) {
         std.debug.print("\n{s}\n", .{result.notes});
+    }
+}
+
+fn compareDirs(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    if (args.len < 2) {
+        std.debug.print("Error: compare-dirs requires baseline and candidate directory paths\n", .{});
+        return;
+    }
+
+    const baseline_dir = args[0];
+    const candidate_dir = args[1];
+
+    var comparator = compare.Comparator.init(allocator, .{});
+    const result = try comparator.compareDirs(baseline_dir, candidate_dir);
+    defer compare.freeDirComparisonResult(allocator, &result);
+
+    std.debug.print("\n# Directory Comparison Report\n\n", .{});
+    std.debug.print("{s}\n\n", .{result.notes});
+
+    std.debug.print("Individual Results:\n", .{});
+    for (result.comparisons) |comp| {
+        const status = if (comp.passed) "✅" else "❌";
+        std.debug.print("{s} {s}: ", .{ status, comp.bench_name });
+        std.debug.print("Throughput: {d:.1}%, P99: {d:.1}%, Fsync/op: {d:.1}%\n", .{
+            comp.throughput_change_pct,
+            comp.p99_latency_change_pct,
+            comp.fsync_change_pct,
+        });
+    }
+
+    std.debug.print("\n", .{});
+    if (result.passed) {
+        std.debug.print("✅ DIR COMPARE PASSED: {d}/{d} passed\n", .{ result.passed_count, result.total_compared });
+    } else {
+        std.debug.print("❌ DIR COMPARE FAILED: {d}/{d} failed\n", .{ result.failed_count, result.total_compared });
+        std.process.exit(1);
     }
 }
 

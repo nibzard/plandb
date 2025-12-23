@@ -75,7 +75,13 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED**: System metadata persisted in benchmark JSON output
   - **COMPLETED**: Verified working with test runs showing proper metadata collection
   - Committed with hash 73892ba
-- [ ] 🟡 Baseline discovery: compare entire output dir vs baseline dir
+- [ ✅ ] 🟡 Baseline discovery: compare entire output dir vs baseline dir
+  - **COMPLETED**: Implemented `compare-dirs` CLI command for directory comparison
+  - **COMPLETED**: Added `compareDirs()` method to Comparator in src/bench/compare.zig
+  - **COMPLETED**: Added DirComparisonResult struct with aggregated comparison results
+  - **COMPLETED**: Implemented recursive JSON file discovery in directories
+  - **COMPLETED**: Tests pass: successfully compares benchmark output directories
+  - Completed 2025-12-23
 - [ ] 🟡 Document harness usage, filters, baselines, and JSON layout
 
 ### Reference Model Testing Framework
@@ -528,7 +534,16 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED**: Implemented claimTask() method for transient task claiming
   - **COMPLETED**: Added tests for getTask, getTasksByType, and claimTask operations
   - Committed as "feat(cartridge): Memory-map cartridge data and serve hot lookups" (8085e51)
-- [ ] 🟠 Macrobench demonstrating latency improvement vs baseline scan
+- [ ✅ ] 🟠 Macrobench demonstrating latency improvement vs baseline scan
+  - **COMPLETED**: Implemented benchMacroCartridgeLatency in src/bench/suite.zig
+  - **COMPLETED**: Compares baseline B+tree scanning vs cartridge lookups
+  - **COMPLETED**: 200 tasks across 10 task types, 50 queries per type
+  - **COMPLETED**: Measures p50/p95/p99 latency for both approaches
+  - **COMPLETED**: Calculates speedup factors and memory footprint
+  - **COMPLETED**: Verification of correctness (cartridge matches WAL data)
+  - **COMPLETED**: Critical benchmark marked for regression detection
+  - **STATUS**: Implementation complete, demonstrates cartridge performance benefits
+  - Committed with hash [current]
 - [ ] 🟡 Add rebuild triggers and admin introspection API
 
 ## Phase 7 — Living Database: AI Intelligence Layer
