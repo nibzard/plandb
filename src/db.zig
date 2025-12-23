@@ -368,8 +368,8 @@ pub const ReadTxn = struct {
     pub fn get(self: *ReadTxn, key: []const u8) ?[]const u8 {
         // For file-based databases, use B+tree operations with snapshot root
         if (self.db.pager) |*pager| {
-            // Use a temporary buffer for the value (would be allocated in real implementation)
-            var value_buffer: [1024]u8 = undefined;
+            // Use a temporary buffer for the value
+            var value_buffer: [4096]u8 = undefined;
 
             // Read from the snapshot's root page, not the current root
             if (pager.getBtreeValueAtRoot(key, &value_buffer, self.root_page_id) catch |err| switch (err) {
@@ -377,10 +377,9 @@ pub const ReadTxn = struct {
                 error.BufferTooSmall => return null,
                 else => return null,
             }) |value| {
-                // In a real implementation, we'd need to manage the value lifetime
-                // For now, return null and rely on the in-memory model
-                _ = value;
-                return null;
+                // Allocate a copy of the value so it persists
+                const value_copy = self.allocator.dupe(u8, value) catch return null;
+                return value_copy;
             }
             return null;
         }

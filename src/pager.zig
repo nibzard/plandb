@@ -1392,6 +1392,11 @@ pub const PageAllocator = struct {
 
     // Allocate a new page from freelist or extend the file
     pub fn allocatePage(self: *Self) !u64 {
+        return self.allocatePageForPager(self.pager);
+    }
+
+    // Allocate a new page for a specific pager (to handle self-referential struct issue)
+    pub fn allocatePageForPager(self: *Self, pager: *Pager) !u64 {
         // Try to reuse from freelist first
         if (self.free_pages.items.len > 0) {
             return self.free_pages.orderedRemove(0); // Take lowest ID first
@@ -1416,14 +1421,19 @@ pub const PageAllocator = struct {
         header.header_crc32c = header.calculateHeaderChecksum();
         try header.encode(zero_page[0..PageHeader.SIZE]);
 
-        const offset = new_page_id * self.pager.page_size;
-        _ = try self.pager.file.pwriteAll(&zero_page, offset);
+        const offset = new_page_id * pager.page_size;
+        _ = try pager.file.pwriteAll(&zero_page, offset);
 
         return new_page_id;
     }
 
     // Free a page (add to freelist for future reuse)
     pub fn freePage(self: *Self, page_id: u64) !void {
+        return self.freePageForPager(page_id);
+    }
+
+    // Free a page (add to freelist for future reuse) - with pager parameter
+    pub fn freePageForPager(self: *Self, page_id: u64) !void {
         // Don't allow freeing meta pages
         if (page_id == META_A_PAGE_ID or page_id == META_B_PAGE_ID) {
             return error.InvalidOperation;
@@ -1785,14 +1795,14 @@ pub const Pager = struct {
     // Page allocator convenience methods
     pub fn allocatePage(self: *Self) !u64 {
         if (self.page_allocator) |*alloc| {
-            return alloc.allocatePage();
+            return alloc.allocatePageForPager(self);
         }
         return error.PageAllocatorNotInitialized;
     }
 
     pub fn freePage(self: *Self, page_id: u64) !void {
         if (self.page_allocator) |*alloc| {
-            return alloc.freePage(page_id);
+            return alloc.freePageForPager(page_id);
         }
         return error.PageAllocatorNotInitialized;
     }

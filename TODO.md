@@ -1074,3 +1074,21 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED 2025-12-23**: --csv flag for bench run/gate commands
   - **COMPLETED**: Exports {bench_name}.csv with ops/sec, latency percentiles, allocations, fsyncs, I/O bytes, errors
   - **COMPLETED**: All repeats for a benchmark in single CSV file
+
+## Known Bugs (blockers discovered 2025-12-23)
+
+- [ 🔴 ] CRITICAL: B+tree leaf entry persistence bug - PARTIALLY FIXED
+  - **DESCRIPTION**: bench/pager/commit_meta_fsync benchmark shows "key not found after commit, persistence issue" for all commits
+  - **ORIGINAL ROOT CAUSE**: B+tree entries being placed at wrong location, overwriting previous entries
+  - **ORIGINAL CODE**: src/pager.zig:BtreeLeafPayload.addEntry() placed all entries at payload.len - entry_size
+  - **FIX COMMITTED**: Modified addEntry() to find min_slot_offset and place new entry before it
+  - **REMAINING ISSUE**: Commits succeed but values can't be read back - root_page_id or B+tree read issue
+  - **INVESTIGATION NEEDED**: Check if pager.current_meta.meta.root_page_id is correct after commit
+  - **BLOCKS**: All benchmarks that write multiple keys to B+tree
+  - **COMMIT**: d11330a (partial fix)
+
+- [ ✅ ] FIXED: Pager copy-by-value causes file handle issues
+  - **DESCRIPTION**: executeTwoPhaseCommit() copied Pager by value, causing file handle confusion
+  - **LOCATION**: src/db.zig:209 - changed from `var pager_inst = self.pager.?` to `const pager_inst = &self.pager.?`
+  - **FIX**: Use pointer reference instead of copying Pager struct
+  - **COMMIT**: d11330a
