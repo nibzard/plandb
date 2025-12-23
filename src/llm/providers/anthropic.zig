@@ -1,13 +1,13 @@
-//! OpenAI provider implementation for LLM function calling
+//! Anthropic Claude provider implementation for LLM function calling
 //!
-//! Implements OpenAI-compatible API for function calling with proper error handling
-//! and response validation according to spec/ai_plugins_v1.md.
+//! Implements Anthropic Messages API with tool use support
+//! following spec/ai_plugins_v1.md.
 
 const std = @import("std");
 const types = @import("../types.zig");
 const function = @import("../function.zig");
 
-pub const OpenAIProvider = struct {
+pub const AnthropicProvider = struct {
     allocator: std.mem.Allocator,
     api_key: []const u8,
     model: []const u8,
@@ -20,8 +20,8 @@ pub const OpenAIProvider = struct {
 
     pub const Config = struct {
         api_key: []const u8,
-        model: []const u8 = "gpt-4o",
-        base_url: []const u8 = "https://api.openai.com/v1",
+        model: []const u8 = "claude-3-5-sonnet-20241022",
+        base_url: []const u8 = "https://api.anthropic.com",
         timeout_ms: u32 = 30000,
         max_retries: u32 = 3,
     };
@@ -47,12 +47,12 @@ pub const OpenAIProvider = struct {
 
     pub fn get_capabilities(self: *const Self) types.ProviderCapabilities {
         return .{
-            .max_tokens = 4096,
-            .supports_streaming = false,
+            .max_tokens = 8192,
+            .supports_streaming = true,
             .supports_function_calling = true,
             .supports_parallel_calls = true,
             .max_functions_per_call = 10,
-            .max_context_length = 128000,
+            .max_context_length = 200000,
         };
     }
 
@@ -62,25 +62,25 @@ pub const OpenAIProvider = struct {
         params: types.Value,
         allocator: std.mem.Allocator
     ) !types.FunctionResult {
-        // Convert schema to OpenAI function format
-        const openai_function = try self.convertToOpenAIFunction(&schema, allocator);
+        // Convert schema to Anthropic tool format
+        const anthropic_tool = try self.convertToAnthropicTool(&schema, allocator);
 
         // Build request payload
-        const payload = try self.buildFunctionCallPayload(openai_function, params, allocator);
+        const payload = try self.buildToolUsePayload(anthropic_tool, params, allocator);
 
         // Make API call
-        const response_body = try self.makeApiCall("/chat/completions", payload, allocator);
+        const response_body = try self.makeApiCall("/v1/messages", payload, allocator);
 
         // Parse and validate response
-        const result = try self.parseFunctionResponse(response_body, allocator);
+        const result = try self.parseToolUseResponse(response_body, allocator);
 
         // Clean up
-        if (openai_function == .object) {
-            var it = openai_function.object.iterator();
+        if (anthropic_tool == .object) {
+            var it = anthropic_tool.object.iterator();
             while (it.next()) |entry| {
                 allocator.free(entry.key_ptr.*);
             }
-            openai_function.object.deinit();
+            anthropic_tool.object.deinit();
         }
         allocator.free(response_body);
 
@@ -113,16 +113,6 @@ pub const OpenAIProvider = struct {
             });
         }
 
-        // Validate tokens_used if present
-        if (response.tokens_used) |tokens| {
-            if (tokens.total_tokens == 0) {
-                try warnings.append(.{
-                    .field = try allocator.dupe(u8, "tokens_used"),
-                    .message = try allocator.dupe(u8, "Token usage shows zero tokens"),
-                });
-            }
-        }
-
         return types.ValidationResult{
             .is_valid = errors.items.len == 0,
             .errors = try errors.toOwnedSlice(),
@@ -130,18 +120,18 @@ pub const OpenAIProvider = struct {
         };
     }
 
-    fn convertToOpenAIFunction(
+    fn convertToAnthropicTool(
         self: *const Self,
         schema: *const function.FunctionSchema,
         allocator: std.mem.Allocator
     ) !types.Value {
         _ = self;
-        return schema.toOpenAIFormat(allocator);
+        return schema.toAnthropicFormat(allocator);
     }
 
-    fn buildFunctionCallPayload(
+    fn buildToolUsePayload(
         self: *const Self,
-        openai_function: types.Value,
+        anthropic_tool: types.Value,
         params: types.Value,
         allocator: std.mem.Allocator
     ) !types.Value {
@@ -152,23 +142,21 @@ pub const OpenAIProvider = struct {
         // Model
         try root.put(try allocator.dupe(u8, "model"), .{ .string = self.model });
 
+        // Max tokens (required for Anthropic)
+        try root.put(try allocator.dupe(u8, "max_tokens"), .{ .integer = 4096 });
+
         // Messages
         var messages = std.ArrayList(types.Value).init(allocator);
         var user_msg = std.StringHashMap(types.Value).init(allocator);
         try user_msg.put(try allocator.dupe(u8, "role"), .{ .string = try allocator.dupe(u8, "user") });
-        try user_msg.put(try allocator.dupe(u8, "content"), .{ .string = try allocator.dupe(u8, "Please execute the requested function.") });
+        try user_msg.put(try allocator.dupe(u8, "content"), .{ .string = try allocator.dupe(u8, "Please execute the requested tool.") });
         try messages.append(.{ .object = user_msg });
         try root.put(try allocator.dupe(u8, "messages"), .{ .array = messages });
 
-        // Functions
-        var functions = std.ArrayList(types.Value).init(allocator);
-        try functions.append(openai_function);
-        try root.put(try allocator.dupe(u8, "functions"), .{ .array = functions });
-
-        // Function call (auto mode)
-        var function_call = std.StringHashMap(types.Value).init(allocator);
-        try function_call.put(try allocator.dupe(u8, "name"), .{ .string = try allocator.dupe(u8, "auto") });
-        try root.put(try allocator.dupe(u8, "function_call"), .{ .object = function_call });
+        // Tools (Anthropic uses "tools" instead of "functions")
+        var tools = std.ArrayList(types.Value).init(allocator);
+        try tools.append(anthropic_tool);
+        try root.put(try allocator.dupe(u8, "tools"), .{ .array = tools });
 
         return .{ .object = root };
     }
@@ -195,7 +183,8 @@ pub const OpenAIProvider = struct {
         defer headers.deinit();
 
         try headers.append(.{ .name = "Content-Type", .value = "application/json" });
-        try headers.append(.{ .name = "Authorization", .value = try std.fmt.allocPrint(allocator, "Bearer {s}", .{self.api_key}) });
+        try headers.append(.{ .name = "x-api-key", .value = self.api_key });
+        try headers.append(.{ .name = "anthropic-version", .value = "2023-06-01" });
 
         // Make request
         var request = try self.http_client.request(.POST, uri, headers, .{});
@@ -211,15 +200,15 @@ pub const OpenAIProvider = struct {
         const response_body = try request.readAll(&response_buf);
 
         // Check status
-        if (response.status.code() != 200) {
-            std.log.err("OpenAI API returned status {d}: {s}", .{ response.status.code(), response_body });
+        if (request.response.status.code() != 200) {
+            std.log.err("Anthropic API returned status {d}: {s}", .{ request.response.status.code(), response_body });
             return error.HttpError;
         }
 
         return allocator.dupe(u8, response_body);
     }
 
-    fn parseFunctionResponse(
+    fn parseToolUseResponse(
         self: *const Self,
         response_body: []const u8,
         allocator: std.mem.Allocator
@@ -231,44 +220,47 @@ pub const OpenAIProvider = struct {
 
         const root = parsed.value;
 
-        // Extract choices
-        const choices = root.object.get("choices") orelse return error.InvalidJsonStructure;
-        if (choices != .array or choices.array.items.len == 0) return error.InvalidJsonStructure;
+        // Extract content block
+        const content = root.object.get("content") orelse return error.InvalidJsonStructure;
+        if (content != .array or content.array.items.len == 0) return error.InvalidJsonStructure;
 
-        const first_choice = choices.array.items[0];
-        const message = first_choice.object.get("message") orelse return error.InvalidJsonStructure;
+        // Find tool_use block
+        var tool_use_block: ?std.json.Value = null;
+        for (content.array.items) |block| {
+            if (block.object.get("type")) |type_val| {
+                if (type_val == .string and std.mem.eql(u8, type_val.string, "tool_use")) {
+                    tool_use_block = block;
+                    break;
+                }
+            }
+        }
 
-        // Extract function call
-        const function_call = message.object.get("function_call") orelse return error.InvalidResponse;
+        const tool_block = tool_use_block orelse return error.InvalidResponse;
 
-        const function_name = function_call.object.get("name") orelse return error.InvalidJsonStructure;
-        const arguments_str = function_call.object.get("arguments") orelse return error.InvalidJsonStructure;
-
-        // Parse arguments
-        const args_parsed = try std.json.parseFromSlice(std.json.Value, allocator, arguments_str.string, .{});
-        defer args_parsed.deinit();
+        // Extract tool details
+        const function_name = tool_block.object.get("name") orelse return error.InvalidJsonStructure;
+        const input = tool_block.object.get("input") orelse return error.InvalidJsonStructure;
 
         // Extract token usage if present
         var tokens_used: ?types.TokenUsage = null;
         if (root.object.get("usage")) |usage| {
-            const prompt_tokens = usage.object.get("prompt_tokens") orelse continue;
-            const completion_tokens = usage.object.get("completion_tokens") orelse continue;
-            const total_tokens = usage.object.get("total_tokens") orelse continue;
+            const input_tokens = usage.object.get("input_tokens") orelse continue;
+            const output_tokens = usage.object.get("output_tokens") orelse continue;
 
-            if (prompt_tokens == .number and completion_tokens == .number and total_tokens == .number) {
+            if (input_tokens == .number and output_tokens == .number) {
                 tokens_used = types.TokenUsage{
-                    .prompt_tokens = @intFromFloat(prompt_tokens.number),
-                    .completion_tokens = @intFromFloat(completion_tokens.number),
-                    .total_tokens = @intFromFloat(total_tokens.number),
+                    .prompt_tokens = @intFromFloat(input_tokens.number),
+                    .completion_tokens = @intFromFloat(output_tokens.number),
+                    .total_tokens = @intFromFloat(input_tokens.number + output_tokens.number),
                 };
             }
         }
 
         return types.FunctionResult{
             .function_name = try allocator.dupe(u8, function_name.string),
-            .arguments = args_parsed.value,
+            .arguments = input,
             .raw_response = try allocator.dupe(u8, response_body),
-            .provider = try allocator.dupe(u8, "openai"),
+            .provider = try allocator.dupe(u8, "anthropic"),
             .model = try allocator.dupe(u8, self.model),
             .tokens_used = tokens_used,
         };
@@ -281,27 +273,28 @@ pub const OpenAIProvider = struct {
     }
 };
 
-test "openai_provider_initialization" {
-    const config = OpenAIProvider.Config{
+test "anthropic_provider_initialization" {
+    const config = AnthropicProvider.Config{
         .api_key = "test-key",
-        .model = "gpt-4",
+        .model = "claude-3-5-sonnet-20241022",
     };
 
-    const provider = try OpenAIProvider.init(std.testing.allocator, config);
+    const provider = try AnthropicProvider.init(std.testing.allocator, config);
     provider.deinit(std.testing.allocator);
 
     try std.testing.expect(true); // If we got here, initialization worked
 }
 
-test "openai_provider_capabilities" {
-    const config = OpenAIProvider.Config{
+test "anthropic_provider_capabilities" {
+    const config = AnthropicProvider.Config{
         .api_key = "test-key",
     };
 
-    var provider = try OpenAIProvider.init(std.testing.allocator, config);
+    var provider = try AnthropicProvider.init(std.testing.allocator, config);
     defer provider.deinit(std.testing.allocator);
 
     const caps = provider.get_capabilities();
     try std.testing.expect(caps.supports_function_calling);
     try std.testing.expect(caps.supports_parallel_calls);
+    try std.testing.expectEqual(@as(u32, 200000), caps.max_context_length);
 }

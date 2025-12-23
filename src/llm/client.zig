@@ -5,105 +5,163 @@
 
 const std = @import("std");
 
+pub const types = @import("types.zig");
+pub const function = @import("function.zig");
+
+const OpenAIProvider = @import("providers/openai.zig").OpenAIProvider;
+const AnthropicProvider = @import("providers/anthropic.zig").AnthropicProvider;
+const LocalProvider = @import("providers/local.zig").LocalProvider;
+
+/// Provider-agnostic LLM provider union
 pub const LLMProvider = union(enum) {
     openai: OpenAIProvider,
     anthropic: AnthropicProvider,
     local: LocalProvider,
 
-    pub fn call_function(provider: *const LLMProvider, schema: FunctionSchema, params: Value) anyerror!FunctionResult {
+    /// Call a function through the LLM provider
+    pub fn call_function(
+        provider: *const LLMProvider,
+        schema: function.FunctionSchema,
+        params: types.Value,
+        allocator: std.mem.Allocator
+    ) anyerror!types.FunctionResult {
         switch (provider.*) {
-            .openai => |*p| return try p.call_function(schema, params),
-            .anthropic => |*p| return try p.call_function(schema, params),
-            .local => |*p| return try p.call_function(schema, params),
+            .openai => |*p| return try p.call_function(schema, params, allocator),
+            .anthropic => |*p| return try p.call_function(schema, params, allocator),
+            .local => |*p| return try p.call_function(schema, params, allocator),
         }
     }
 
-    pub fn validate_response(provider: *const LLMProvider, response: FunctionResult) anyerror!ValidationResult {
+    /// Validate a function response
+    pub fn validate_response(
+        provider: *const LLMProvider,
+        response: types.FunctionResult,
+        allocator: std.mem.Allocator
+    ) anyerror!types.ValidationResult {
         switch (provider.*) {
-            .openai => |*p| return try p.validate_response(response),
-            .anthropic => |*p| return try p.validate_response(response),
-            .local => |*p| return try p.validate_response(response),
+            .openai => |*p| return try p.validate_response(response, allocator),
+            .anthropic => |*p| return try p.validate_response(response, allocator),
+            .local => |*p| return try p.validate_response(response, allocator),
         }
     }
-};
 
-// Placeholder types - will be implemented according to ai_plugins_v1.md specification
-pub const FunctionSchema = struct {};
-pub const Value = struct {};
-pub const FunctionResult = struct {};
-pub const ValidationResult = struct {};
-
-pub const OpenAIProvider = struct {
-    // Implementation for OpenAI API compatibility
-    client: void, // placeholder
-
-    pub fn call_function(provider: *const OpenAIProvider, schema: FunctionSchema, params: Value) !FunctionResult {
-        _ = provider;
-        _ = schema;
-        _ = params;
-        return error.NotImplemented;
+    /// Get provider capabilities
+    pub fn get_capabilities(provider: *const LLMProvider) types.ProviderCapabilities {
+        return switch (provider.*) {
+            .openai => |*p| p.get_capabilities(),
+            .anthropic => |*p| p.get_capabilities(),
+            .local => |*p| p.get_capabilities(),
+        };
     }
 
-    pub fn validate_response(provider: *const OpenAIProvider, response: FunctionResult) !ValidationResult {
-        _ = provider;
-        _ = response;
-        return error.NotImplemented;
-    }
-};
-
-pub const AnthropicProvider = struct {
-    // Implementation for Anthropic Claude API compatibility
-    client: void, // placeholder
-
-    pub fn call_function(provider: *const AnthropicProvider, schema: FunctionSchema, params: Value) !FunctionResult {
-        _ = provider;
-        _ = schema;
-        _ = params;
-        return error.NotImplemented;
+    /// Clean up provider resources
+    pub fn deinit(provider: *LLMProvider, allocator: std.mem.Allocator) void {
+        switch (provider.*) {
+            .openai => |*p| p.deinit(allocator),
+            .anthropic => |*p| p.deinit(allocator),
+            .local => |*p| p.deinit(allocator),
+        }
     }
 
-    pub fn validate_response(provider: *const AnthropicProvider, response: FunctionResult) !ValidationResult {
-        _ = provider;
-        _ = response;
-        return error.NotImplemented;
+    /// Get provider name
+    pub fn name(provider: *const LLMProvider) []const u8 {
+        return switch (provider.*) {
+            .openai => "openai",
+            .anthropic => "anthropic",
+            .local => "local",
+        };
     }
 };
 
-pub const LocalProvider = struct {
-    // Implementation for local model execution
-    runtime: void, // placeholder
-
-    pub fn call_function(provider: *const LocalProvider, schema: FunctionSchema, params: Value) !FunctionResult {
-        _ = provider;
-        _ = schema;
-        _ = params;
-        return error.NotImplemented;
+/// Create an LLM provider from configuration
+pub fn createProvider(
+    allocator: std.mem.Allocator,
+    provider_type: []const u8,
+    config: types.ProviderConfig
+) !LLMProvider {
+    if (std.mem.eql(u8, provider_type, "openai")) {
+        var openai_config = OpenAIProvider.Config{
+            .api_key = try allocator.dupe(u8, config.api_key),
+            .model = try allocator.dupe(u8, config.model),
+            .base_url = try allocator.dupe(u8, config.base_url),
+            .timeout_ms = config.timeout_ms,
+            .max_retries = config.max_retries,
+        };
+        const provider = try OpenAIProvider.init(allocator, openai_config);
+        return LLMProvider{ .openai = provider };
+    } else if (std.mem.eql(u8, provider_type, "anthropic")) {
+        var anthropic_config = AnthropicProvider.Config{
+            .api_key = try allocator.dupe(u8, config.api_key),
+            .model = try allocator.dupe(u8, config.model),
+            .base_url = try allocator.dupe(u8, config.base_url),
+            .timeout_ms = config.timeout_ms,
+            .max_retries = config.max_retries,
+        };
+        const provider = try AnthropicProvider.init(allocator, anthropic_config);
+        return LLMProvider{ .anthropic = provider };
+    } else if (std.mem.eql(u8, provider_type, "local")) {
+        var local_config = LocalProvider.Config{
+            .model_path = try allocator.dupe(u8, config.api_key), // reuse api_key for path
+            .timeout_ms = config.timeout_ms,
+        };
+        const provider = try LocalProvider.init(allocator, local_config);
+        return LLMProvider{ .local = provider };
+    } else {
+        return error.InvalidProviderType;
     }
+}
 
-    pub fn validate_response(provider: *const LocalProvider, response: FunctionResult) !ValidationResult {
-        _ = provider;
-        _ = response;
-        return error.NotImplemented;
-    }
-};
-
-test "provider_agnostic_interface" {
-    // Test that all providers implement the same interface
-    const openai_provider = OpenAIProvider{ .client = undefined };
-    const anthropic_provider = AnthropicProvider{ .client = undefined };
-    const local_provider = LocalProvider{ .runtime = undefined };
-
-    const providers = [_]*const LLMProvider{
-        &.{ .openai = openai_provider },
-        &.{ .anthropic = anthropic_provider },
-        &.{ .local = local_provider },
+test "provider_factory_openai" {
+    var config = types.ProviderConfig{
+        .api_key = "test-key",
+        .model = "gpt-4",
+        .base_url = "https://api.openai.com/v1",
     };
+    defer config.deinit(std.testing.allocator);
 
-    for (providers) |provider| {
-        // Test that interface methods exist (will fail with NotImplementedError)
-        const schema = FunctionSchema{};
-        const params = Value{};
-        const result = provider.call_function(schema, params);
-        try std.testing.expectError(error.NotImplemented, result);
-    }
+    const provider = createProvider(
+        std.testing.allocator,
+        "openai",
+        config
+    ) catch |err| {
+        // Expected to fail without actual API setup
+        try std.testing.expect(err == error.NetworkError or err == error.InvalidConfiguration);
+        return;
+    };
+    defer provider.deinit(std.testing.allocator);
+
+    try std.testing.expect(provider == .openai);
+}
+
+test "provider_factory_invalid_type" {
+    var config = types.ProviderConfig{
+        .api_key = "test-key",
+        .model = "gpt-4",
+        .base_url = "https://api.openai.com/v1",
+    };
+    defer config.deinit(std.testing.allocator);
+
+    const result = createProvider(
+        std.testing.allocator,
+        "invalid_provider",
+        config
+    );
+
+    try std.testing.expectError(error.InvalidProviderType, result);
+}
+
+test "provider_name" {
+    // Create mock providers to test name function
+    var config = types.ProviderConfig{
+        .api_key = "test-key",
+        .model = "test-model",
+        .base_url = "https://example.com",
+    };
+    defer config.deinit(std.testing.allocator);
+
+    // Test that name function compiles for each type
+    _ = LLMProvider{ .local = undefined }.name();
+    try std.testing.expectEqualStrings("local", LLMProvider{ .local = undefined }.name());
+    try std.testing.expectEqualStrings("openai", LLMProvider{ .openai = undefined }.name());
+    try std.testing.expectEqualStrings("anthropic", LLMProvider{ .anthropic = undefined }.name());
 }
