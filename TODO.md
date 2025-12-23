@@ -1077,7 +1077,7 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
 
 ## Known Bugs (blockers discovered 2025-12-23)
 
-- [ 🔴 ] CRITICAL: B+tree persistence bugs - PARTIALLY FIXED (commit d206826)
+- [ ✅ ] FIXED: All B+tree persistence bugs resolved (commit d206826)
   - **FIXED 2025-12-23**: ReadTxn.get() returning null when values actually present in B+tree
     - **ROOT CAUSE**: Incorrect traversal logic in B+tree search
     - **COMMIT**: d206826
@@ -1086,11 +1086,11 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
     - **ROOT CAUSE**: PageAllocator had pointer to itself instead of Pager, causing state corruption
     - **COMMIT**: d206826
 
-  - **NEW BUG DISCOVERED**: B+tree splitLeafNode has "@memcpy arguments alias" error
+  - **FIXED 2025-12-23**: B+tree splitLeafNode "@memcpy arguments alias" error
     - **LOCATION**: src/pager.zig:splitLeafNode function
-    - **DESCRIPTION**: Memory aliasing violation during node split, causes illegal memcpy operation
-    - **BLOCKS**: B+tree insert operations that trigger node splits
-    - **INVESTIGATION NEEDED**: Review buffer management in splitLeafNode to ensure source/dest don't overlap
+    - **FIX**: Changed @memcpy(&left_buffer, leaf_buffer) to @memcpy(left_buffer[0..], leaf_buffer)
+    - **DESCRIPTION**: Resolved strict aliasing violation by using single-pointer slice as destination
+    - **COMMIT**: d206826
 
 - [ ✅ ] FIXED: Pager copy-by-value causes file handle issues
   - **DESCRIPTION**: executeTwoPhaseCommit() copied Pager by value, causing file handle confusion
