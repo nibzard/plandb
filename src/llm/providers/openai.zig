@@ -119,12 +119,12 @@ pub const OpenAIProvider = struct {
     ) !types.ValidationResult {
         _ = self;
 
-        var errors = std.ArrayList(types.ValidationError).init(allocator) catch return error.OutOfMemory;
-        var warnings = std.ArrayList(types.ValidationWarning).init(allocator) catch return error.OutOfMemory;
+        var errors = std.ArrayList(types.ValidationError).initCapacity(allocator, 0) catch return error.OutOfMemory;
+        var warnings = std.ArrayList(types.ValidationWarning).initCapacity(allocator, 0) catch return error.OutOfMemory;
 
         // Validate function name is present
         if (response.function_name.len == 0) {
-            try errors.append(.{
+            try errors.append(allocator, .{
                 .field = try allocator.dupe(u8, "function_name"),
                 .message = try allocator.dupe(u8, "Function name is empty"),
             });
@@ -132,7 +132,7 @@ pub const OpenAIProvider = struct {
 
         // Validate arguments is an object
         if (response.arguments != .object) {
-            try errors.append(.{
+            try errors.append(allocator, .{
                 .field = try allocator.dupe(u8, "arguments"),
                 .message = try allocator.dupe(u8, "Arguments must be a JSON object"),
             });
@@ -141,7 +141,7 @@ pub const OpenAIProvider = struct {
         // Validate tokens_used if present
         if (response.tokens_used) |tokens| {
             if (tokens.total_tokens == 0) {
-                try warnings.append(.{
+                try warnings.append(allocator, .{
                     .field = try allocator.dupe(u8, "tokens_used"),
                     .message = try allocator.dupe(u8, "Token usage shows zero tokens"),
                 });
@@ -150,8 +150,8 @@ pub const OpenAIProvider = struct {
 
         return types.ValidationResult{
             .is_valid = errors.items.len == 0,
-            .errors = try errors.toOwnedSlice(),
-            .warnings = try warnings.toOwnedSlice(),
+            .errors = try errors.toOwnedSlice(allocator),
+            .warnings = try warnings.toOwnedSlice(allocator),
         };
     }
 
@@ -461,19 +461,18 @@ pub const OpenAIProvider = struct {
         // Extract token usage if present
         var tokens_used: ?types.TokenUsage = null;
         if (root.object.get("usage")) |usage| {
-            const prompt_tokens = usage.object.get("prompt_tokens") orelse usage;
-            const completion_tokens = usage.object.get("completion_tokens") orelse usage;
-            const total_tokens = usage.object.get("total_tokens") orelse usage;
-
-            if (prompt_tokens != usage and prompt_tokens == .number and
-                completion_tokens != usage and completion_tokens == .number and
-                total_tokens != usage and total_tokens == .number)
-            {
-                tokens_used = types.TokenUsage{
-                    .prompt_tokens = @intFromFloat(prompt_tokens.number),
-                    .completion_tokens = @intFromFloat(completion_tokens.number),
-                    .total_tokens = @intFromFloat(total_tokens.number),
-                };
+            if (usage.object.get("prompt_tokens")) |pt| {
+                if (usage.object.get("completion_tokens")) |ct| {
+                    if (usage.object.get("total_tokens")) |tt| {
+                        if (pt == .float and ct == .float and tt == .float) {
+                            tokens_used = types.TokenUsage{
+                                .prompt_tokens = @intFromFloat(pt.float),
+                                .completion_tokens = @intFromFloat(ct.float),
+                                .total_tokens = @intFromFloat(tt.float),
+                            };
+                        }
+                    }
+                }
             }
         }
 
@@ -568,11 +567,11 @@ pub const OpenAIProvider = struct {
             const ct = usage_val.object.get("completion_tokens");
             const tt = usage_val.object.get("total_tokens");
 
-            if (pt != null and pt.? == .number and ct != null and ct.? == .number and tt != null and tt.? == .number) {
+            if (pt != null and pt.? == .float and ct != null and ct.? == .float and tt != null and tt.? == .float) {
                 usage = types.TokenUsage{
-                    .prompt_tokens = @intFromFloat(pt.?.number),
-                    .completion_tokens = @intFromFloat(ct.?.number),
-                    .total_tokens = @intFromFloat(tt.?.number),
+                    .prompt_tokens = @intFromFloat(pt.?.float),
+                    .completion_tokens = @intFromFloat(ct.?.float),
+                    .total_tokens = @intFromFloat(tt.?.float),
                 };
             }
         }
@@ -601,7 +600,7 @@ test "openai_provider_initialization" {
         .model = "gpt-4",
     };
 
-    const provider = try OpenAIProvider.init(std.testing.allocator, config);
+    var provider = try OpenAIProvider.init(std.testing.allocator, config);
     provider.deinit(std.testing.allocator);
 
     try std.testing.expect(true); // If we got here, initialization worked
@@ -661,7 +660,7 @@ test "openai_tool_format_conversion" {
     defer schema.deinit(std.testing.allocator);
 
     // Convert to OpenAI tool format
-    const tool = try provider.convertToOpenAITool(&schema, std.testing.allocator);
+    var tool = try provider.convertToOpenAITool(&schema, std.testing.allocator);
     defer {
         if (tool == .object) {
             var it = tool.object.iterator();

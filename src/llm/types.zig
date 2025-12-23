@@ -48,7 +48,7 @@ pub const FunctionResult = struct {
         allocator.free(self.raw_response);
         allocator.free(self.provider);
         allocator.free(self.model);
-        if (self.tokens_used) |*tokens| tokens.deinit(allocator);
+        if (self.tokens_used) |tokens| tokens.deinit(allocator);
     }
 };
 
@@ -58,7 +58,7 @@ pub const TokenUsage = struct {
     completion_tokens: u32,
     total_tokens: u32,
 
-    pub fn deinit(self: *TokenUsage, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: TokenUsage, allocator: std.mem.Allocator) void {
         _ = allocator;
         _ = self;
     }
@@ -70,7 +70,7 @@ pub const ValidationResult = struct {
     errors: []const ValidationError,
     warnings: []const ValidationWarning,
 
-    pub fn deinit(self: *ValidationResult, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: ValidationResult, allocator: std.mem.Allocator) void {
         for (self.errors) |*err| err.deinit(allocator);
         allocator.free(self.errors);
         for (self.warnings) |*warn| warn.deinit(allocator);
@@ -82,7 +82,7 @@ pub const ValidationError = struct {
     field: []const u8,
     message: []const u8,
 
-    pub fn deinit(self: *ValidationError, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: ValidationError, allocator: std.mem.Allocator) void {
         allocator.free(self.field);
         allocator.free(self.message);
     }
@@ -92,7 +92,7 @@ pub const ValidationWarning = struct {
     field: []const u8,
     message: []const u8,
 
-    pub fn deinit(self: *ValidationWarning, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: ValidationWarning, allocator: std.mem.Allocator) void {
         allocator.free(self.field);
         allocator.free(self.message);
     }

@@ -99,7 +99,8 @@ pub fn createProvider(
         return LLMProvider{ .anthropic = provider };
     } else if (std.mem.eql(u8, provider_type, "local")) {
         const local_config = LocalProvider.Config{
-            .model_path = try allocator.dupe(u8, config.api_key), // reuse api_key for path
+            .base_url = try allocator.dupe(u8, config.base_url),
+            .model = try allocator.dupe(u8, config.model),
             .timeout_ms = config.timeout_ms,
         };
         const provider = try LocalProvider.init(allocator, local_config);
@@ -110,12 +111,11 @@ pub fn createProvider(
 }
 
 test "provider_factory_openai" {
-    var config = types.ProviderConfig{
+    const config = types.ProviderConfig{
         .api_key = "test-key",
         .model = "gpt-4",
         .base_url = "https://api.openai.com/v1",
     };
-    defer config.deinit(std.testing.allocator);
 
     const provider = createProvider(
         std.testing.allocator,
@@ -135,12 +135,11 @@ test "provider_factory_openai" {
 }
 
 test "provider_factory_invalid_type" {
-    var config = types.ProviderConfig{
+    const config = types.ProviderConfig{
         .api_key = "test-key",
         .model = "gpt-4",
         .base_url = "https://api.openai.com/v1",
     };
-    defer config.deinit(std.testing.allocator);
 
     const result = createProvider(
         std.testing.allocator,
@@ -152,14 +151,6 @@ test "provider_factory_invalid_type" {
 }
 
 test "provider_name" {
-    // Create mock providers to test name function
-    var config = types.ProviderConfig{
-        .api_key = "test-key",
-        .model = "test-model",
-        .base_url = "https://example.com",
-    };
-    defer config.deinit(std.testing.allocator);
-
     // Test that name function compiles for each type
     var local_provider = LLMProvider{ .local = undefined };
     var openai_provider = LLMProvider{ .openai = undefined };

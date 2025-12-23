@@ -599,7 +599,15 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED**: Function registry
   - **COMPLETED**: on_commit/on_query hook execution
   - **COMPLETED**: Comprehensive tests
-- [ ] 🔴 Extend commit record processing with plugin hooks
+- [ ✅ ] 🔴 Extend commit record processing with plugin hooks
+  - **COMPLETED**: Integrated plugin on_commit hooks into commit record processing in src/db.zig
+  - **COMPLETED**: Plugins receive commit notifications with proper context (txn_id, mutations)
+  - **COMPLETED**: Graceful error handling - plugin errors logged but don't prevent commit
+  - **COMPLETED**: Added tests validating plugin hooks are called during commit operations
+  - **COMPLETED**: Verified no performance degradation in commit path when no plugins loaded
+  - **COMPLETED**: executeTwoPhaseCommit now triggers PluginRegistry.onCommit after persistence
+  - **STATUS**: Plugin commit hooks fully integrated and tested
+  - Committed with hash 93b95d5
 - [ ] 🟠 Add Anthropic and local model provider support
 - [ ] 🟠 Implement asynchronous plugin execution with error isolation
 - [ ] 🟡 Add plugin development framework and debugging tools
