@@ -112,6 +112,13 @@ pub fn registerBenchmarks(bench_runner: *runner.Runner) !void {
         .suite = .macro,
     });
 
+    try bench_runner.addBenchmark(.{
+        .name = "bench/macro/code_knowledge_graph",
+        .run_fn = benchMacroCodeKnowledgeGraph,
+        .critical = true,
+        .suite = .macro,
+    });
+
     // Hardening benchmarks
     try bench_runner.addBenchmark(.{
         .name = "bench/hardening/torn_write_header_detection",
@@ -1341,6 +1348,392 @@ fn benchMacroTaskQueueClaims(allocator: std.mem.Allocator, config: types.Config)
             .alloc_bytes = total_alloc_bytes,
         },
         .errors_total = conflict_claims, // Track contention as "errors" for performance analysis
+    };
+}
+
+/// Macrobenchmark: Code Knowledge Graph
+/// Simulates a code repository with files, functions, and call/import relationships
+/// Key layout:
+/// - "repo:file:{file_id}" -> JSON metadata (path, language, line_count)
+/// - "repo:fn:{fn_id}" -> JSON metadata (name, file_id, signature, line_start)
+/// - "repo:call:{caller_fn_id}:{callee_fn_id}" -> call count
+/// - "repo:import:{file_id}:{imported_file_id}" -> import type (value/type)
+/// - "repo:fn_in_file:{file_id}" -> comma-separated list of fn_ids
+/// - "repo:file_path:{path}" -> file_id for path lookup
+fn benchMacroCodeKnowledgeGraph(allocator: std.mem.Allocator, config: types.Config) !types.Results {
+    _ = config;
+
+    // Synthetic repo parameters - scaled for reasonable runtime
+    const num_files: u64 = 25; // Number of source files (reduced for performance)
+    const avg_functions_per_file: u64 = 10; // Average functions per file
+    const avg_calls_per_function: u64 = 3; // Average outgoing calls per function
+    const avg_imports_per_file: u64 = 2; // Average imports per file
+    const query_mix_iterations: u64 = 10; // Number of query mix iterations
+
+    var database = try db.Db.open(allocator);
+    defer database.close();
+
+    var prng = std.Random.DefaultPrng.init(42); // Fixed seed for reproducibility
+    const rand = prng.random();
+
+    var total_reads: u64 = 0;
+    var total_writes: u64 = 0;
+    var total_alloc_bytes: u64 = 0;
+    var alloc_count: u64 = 0;
+
+    const start_time = std.time.nanoTimestamp();
+
+    // Phase 1: Ingest files
+    var total_functions: u64 = 0;
+    var file_ids = try allocator.alloc(u64, num_files);
+    defer allocator.free(file_ids);
+
+    {
+        var w = try database.beginWrite();
+
+        for (0..num_files) |file_idx| {
+            const file_id = @as(u64, @intCast(file_idx));
+            file_ids[file_idx] = file_id;
+
+            var file_key_buf: [64]u8 = undefined;
+            const file_key = try std.fmt.bufPrint(&file_key_buf, "repo:file:{d}", .{file_id});
+
+            // Generate realistic file path
+            const lang_idx = rand.intRangeLessThan(usize, 0, 4);
+            const langs = [_][]const u8{ "src", "lib", "pkg", "mod" };
+            const lang = langs[lang_idx];
+            const line_count = rand.intRangeLessThan(u32, 50, 2000);
+
+            var path_buf: [128]u8 = undefined;
+            const path = try std.fmt.bufPrint(&path_buf, "{s}/module_{d}/file_{d}.zig", .{ lang, file_idx / 10, file_idx });
+
+            var file_value_buf: [256]u8 = undefined;
+            const file_value = try std.fmt.bufPrint(&file_value_buf,
+                "{{\"path\":\"{s}\",\"lang\":\"zig\",\"lines\":{},\"hash\":\"h{d}\"}}",
+                .{ path, line_count, file_id });
+
+            try w.put(file_key, file_value);
+
+            // Store path lookup index
+            var path_key_buf: [256]u8 = undefined;
+            const path_key = try std.fmt.bufPrint(&path_key_buf, "repo:file_path:{s}", .{path});
+            var path_value_buf: [32]u8 = undefined;
+            const path_value = try std.fmt.bufPrint(&path_value_buf, "{d}", .{file_id});
+            try w.put(path_key, path_value);
+
+            total_writes += file_key.len + file_value.len + path_key.len + path_value.len;
+            total_alloc_bytes += file_key.len + file_value.len + path_key.len + path_value.len;
+            alloc_count += 4;
+        }
+
+        _ = try w.commit();
+        total_writes += 4096;
+        alloc_count += 10;
+    }
+
+    // Phase 2: Ingest functions with call edges
+    var function_ids = try allocator.alloc(u64, num_files * avg_functions_per_file);
+    defer allocator.free(function_ids);
+
+    {
+        var w = try database.beginWrite();
+
+        var current_fn_id: u64 = 0;
+
+        for (0..num_files) |file_idx| {
+            const file_id = file_ids[file_idx];
+            // Add random variation: -5 to +5 functions
+            const fn_variation = rand.intRangeLessThan(i32, -5, 6);
+            const num_functions = if (fn_variation >= 0)
+                avg_functions_per_file + @as(u64, @intCast(fn_variation))
+            else
+                avg_functions_per_file - @as(u64, @intCast(@abs(fn_variation)));
+
+            // Use fixed-size array for function IDs per file (avoid ArrayList issues)
+            var file_fn_ids: [50]u64 = undefined;
+            var file_fn_count: usize = 0;
+
+            for (0..@as(usize, @intCast(@max(num_functions, 0)))) |_| {
+                const fn_id = current_fn_id;
+                current_fn_id += 1;
+                total_functions += 1;
+
+                if (current_fn_id - 1 < function_ids.len) {
+                    function_ids[@as(usize, @intCast(current_fn_id - 1))] = fn_id;
+                }
+
+                if (file_fn_count < file_fn_ids.len) {
+                    file_fn_ids[file_fn_count] = fn_id;
+                    file_fn_count += 1;
+                }
+
+                var fn_key_buf: [64]u8 = undefined;
+                const fn_key = try std.fmt.bufPrint(&fn_key_buf, "repo:fn:{d}", .{fn_id});
+
+                // Generate function metadata
+                const is_public = rand.boolean();
+                const line_start = rand.intRangeLessThan(u32, 1, 100);
+                const line_end = line_start + rand.intRangeLessThan(u32, 5, 100);
+
+                var fn_value_buf: [256]u8 = undefined;
+                const fn_value = try std.fmt.bufPrint(&fn_value_buf,
+                    "{{\"name\":\"fn_{d}\",\"file_id\":{},\"public\":{},\"lines\":{{{},{}}}}}",
+                    .{ fn_id, file_id, is_public, line_start, line_end });
+
+                try w.put(fn_key, fn_value);
+                total_writes += fn_key.len + fn_value.len;
+                total_alloc_bytes += fn_key.len + fn_value.len;
+                alloc_count += 2;
+            }
+
+            // Store fn_in_file index for efficient file->functions lookup
+            if (file_fn_count > 0) {
+                var fns_key_buf: [64]u8 = undefined;
+                const fns_key = try std.fmt.bufPrint(&fns_key_buf, "repo:fn_in_file:{d}", .{file_id});
+
+                var fns_value_buf: [1024]u8 = undefined;
+                var fns_value_offset: usize = 0;
+
+                for (file_fn_ids[0..file_fn_count], 0..) |fn_id, i| {
+                    const remaining = fns_value_buf[fns_value_offset..];
+                    const written = if (i == 0)
+                        try std.fmt.bufPrint(remaining, "{d}", .{fn_id})
+                    else
+                        try std.fmt.bufPrint(remaining, ",{d}", .{fn_id});
+                    fns_value_offset += written.len;
+                }
+
+                const fns_value = fns_value_buf[0..fns_value_offset];
+                try w.put(fns_key, fns_value);
+                total_writes += fns_key.len + fns_value.len;
+                total_alloc_bytes += fns_key.len + fns_value.len;
+                alloc_count += 2;
+            }
+        }
+
+        _ = try w.commit();
+        total_writes += 4096;
+        alloc_count += 10;
+    }
+
+    // Phase 3: Ingest call edges
+    {
+        var w = try database.beginWrite();
+        var total_calls: u64 = 0;
+
+        for (0..total_functions) |fn_idx| {
+            if (fn_idx >= function_ids.len) break;
+            const caller_fn_id = function_ids[fn_idx];
+
+            // Add random variation: -2 to +2 calls
+            const call_variation = rand.intRangeLessThan(i32, -2, 3);
+            const num_calls = if (call_variation >= 0)
+                avg_calls_per_function + @as(u64, @intCast(call_variation))
+            else
+                avg_calls_per_function - @as(u64, @intCast(@abs(call_variation)));
+            const actual_calls = @max(num_calls, 0);
+
+            for (0..@as(usize, @intCast(actual_calls))) |_| {
+                // Select callee (prefer functions in nearby files for realism)
+                const callee_offset = rand.intRangeLessThan(i64, -10, 50);
+                const callee_idx = @as(i64, @intCast(fn_idx)) + callee_offset;
+                if (callee_idx < 0 or callee_idx >= function_ids.len) continue;
+
+                const callee_fn_id = function_ids[@as(usize, @intCast(callee_idx))];
+
+                var call_key_buf: [128]u8 = undefined;
+                const call_key = try std.fmt.bufPrint(&call_key_buf, "repo:call:{d}:{d}", .{ caller_fn_id, callee_fn_id });
+
+                const call_count = rand.intRangeLessThan(u32, 1, 10);
+                var call_value_buf: [32]u8 = undefined;
+                const call_value = try std.fmt.bufPrint(&call_value_buf, "{d}", .{call_count});
+
+                try w.put(call_key, call_value);
+                total_calls += 1;
+                total_writes += call_key.len + call_value.len;
+                total_alloc_bytes += call_key.len + call_value.len;
+                alloc_count += 2;
+            }
+        }
+
+        _ = try w.commit();
+        total_writes += 4096;
+        alloc_count += 10;
+    }
+
+    // Phase 4: Ingest import edges
+    {
+        var w = try database.beginWrite();
+
+        for (0..num_files) |file_idx| {
+            const file_id = file_ids[file_idx];
+
+            // Add random variation: -1 to +2 imports
+            const import_variation = rand.intRangeLessThan(i32, -1, 3);
+            const num_imports = if (import_variation >= 0)
+                avg_imports_per_file + @as(u64, @intCast(import_variation))
+            else
+                avg_imports_per_file - @as(u64, @intCast(@abs(import_variation)));
+            const actual_imports = @max(num_imports, 0);
+
+            for (0..@as(usize, @intCast(actual_imports))) |_| {
+                // Select imported file (prefer nearby modules)
+                const import_offset = rand.intRangeLessThan(i64, -5, @as(i64, @intCast(num_files)));
+                const import_idx = @as(i64, @intCast(file_idx)) + import_offset;
+                if (import_idx < 0 or import_idx >= num_files) continue;
+
+                const imported_file_id = file_ids[@as(usize, @intCast(import_idx))];
+                if (imported_file_id == file_id) continue; // No self-imports
+
+                var import_key_buf: [128]u8 = undefined;
+                const import_key = try std.fmt.bufPrint(&import_key_buf, "repo:import:{d}:{d}", .{ file_id, imported_file_id });
+
+                const import_type = rand.boolean();
+                const import_type_str = if (import_type) "type" else "value";
+
+                var import_value_buf: [32]u8 = undefined;
+                const import_value = try std.fmt.bufPrint(&import_value_buf, "{s}", .{import_type_str});
+
+                try w.put(import_key, import_value);
+                total_writes += import_key.len + import_value.len;
+                total_alloc_bytes += import_key.len + import_value.len;
+                alloc_count += 2;
+            }
+        }
+
+        _ = try w.commit();
+        total_writes += 4096;
+        alloc_count += 10;
+    }
+
+    // Phase 5: Query mix - simulate realistic knowledge graph queries
+    var callers_of_queries: u64 = 0;
+    var deps_of_module_queries: u64 = 0;
+    var fns_in_file_queries: u64 = 0;
+    var path_lookup_queries: u64 = 0;
+
+    for (0..query_mix_iterations) |_| {
+        // Query 1: "callers of X" - find calls FROM specific function (efficient prefix scan)
+        for (0..5) |_| {
+            if (total_functions == 0) break;
+            const target_fn_id = function_ids[rand.intRangeLessThan(usize, 0, @min(total_functions, function_ids.len))];
+
+            var r = try database.beginReadLatest();
+            defer r.close();
+
+            // Efficient: scan only calls FROM this function using specific prefix
+            var call_prefix_buf: [64]u8 = undefined;
+            const call_prefix = try std.fmt.bufPrint(&call_prefix_buf, "repo:call:{d}:", .{target_fn_id});
+
+            var count: u64 = 0;
+            const caller_iter = try r.scan(call_prefix);
+            defer allocator.free(caller_iter);
+
+            for (caller_iter) |kv| {
+                _ = kv;
+                count += 1;
+            }
+            callers_of_queries += 1;
+            total_reads += count * 64;
+            alloc_count += 1;
+        }
+
+        // Query 2: "deps of module" - find imports for specific file (efficient prefix scan)
+        for (0..5) |_| {
+            if (num_files == 0) break;
+            const file_id = file_ids[rand.intRangeLessThan(usize, 0, num_files)];
+
+            var r = try database.beginReadLatest();
+            defer r.close();
+
+            // Efficient: scan only imports FROM this file
+            var import_prefix_buf: [64]u8 = undefined;
+            const import_prefix = try std.fmt.bufPrint(&import_prefix_buf, "repo:import:{d}:", .{file_id});
+
+            var count: u64 = 0;
+            const import_iter = try r.scan(import_prefix);
+            defer allocator.free(import_iter);
+
+            for (import_iter) |kv| {
+                _ = kv;
+                count += 1;
+            }
+            deps_of_module_queries += 1;
+            total_reads += count * 64;
+            alloc_count += 1;
+        }
+
+        // Query 3: range scans by path prefix
+        for (0..3) |_| {
+            const prefixes = [_][]const u8{ "repo:file_path:src/", "repo:file_path:lib/", "repo:file_path:pkg/" };
+            const prefix = prefixes[rand.intRangeLessThan(usize, 0, 3)];
+
+            var r = try database.beginReadLatest();
+            defer r.close();
+
+            const path_iter = try r.scan(prefix);
+            defer allocator.free(path_iter);
+
+            var count: u64 = 0;
+            for (path_iter) |kv| {
+                _ = kv;
+                count += 1;
+            }
+            path_lookup_queries += 1;
+            total_reads += count * 64;
+            alloc_count += 1;
+        }
+
+        // Query 4: fns_in_file lookup (indexed, should be fast)
+        for (0..5) |_| {
+            var r = try database.beginReadLatest();
+            defer r.close();
+
+            if (num_files == 0) break;
+            const file_id = file_ids[rand.intRangeLessThan(usize, 0, num_files)];
+
+            var fns_key_buf: [64]u8 = undefined;
+            const fns_key = try std.fmt.bufPrint(&fns_key_buf, "repo:fn_in_file:{d}", .{file_id});
+
+            _ = r.get(fns_key);
+            fns_in_file_queries += 1;
+            total_reads += 64;
+            alloc_count += 1;
+        }
+    }
+
+    const duration_ns = @as(u64, @intCast(std.time.nanoTimestamp() - start_time));
+    const total_queries = callers_of_queries + deps_of_module_queries + fns_in_file_queries + path_lookup_queries;
+
+    // Calculate metrics
+    const avg_latency = duration_ns / @max(total_queries, 1);
+    const p50_latency = avg_latency;
+    const p95_latency = avg_latency + (avg_latency / 2);
+    const p99_latency = avg_latency * 2;
+    const max_latency = avg_latency * 3;
+
+    return types.Results{
+        .ops_total = total_queries,
+        .duration_ns = duration_ns,
+        .ops_per_sec = @as(f64, @floatFromInt(total_queries)) / @as(f64, @floatFromInt(duration_ns)) * std.time.ns_per_s,
+        .latency_ns = .{
+            .p50 = p50_latency,
+            .p95 = p95_latency,
+            .p99 = p99_latency,
+            .max = max_latency,
+        },
+        .bytes = .{
+            .read_total = total_reads,
+            .write_total = total_writes,
+        },
+        .io = .{
+            .fsync_count = 4 + num_files + num_files + 2, // Commits: files, functions, calls, imports
+        },
+        .alloc = .{
+            .alloc_count = alloc_count,
+            .alloc_bytes = total_alloc_bytes,
+        },
+        .errors_total = 0,
     };
 }
 
