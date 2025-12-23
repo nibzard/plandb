@@ -771,17 +771,18 @@ pub const BtreeInternalPayload = struct {
         // We shift from the end to avoid overwriting
         const current_child_count = node_header.key_count + 1;
         const new_child_count = current_child_count + 1;
+        const old_key_count = node_header.key_count; // Save for separator manipulation
 
         // Check if we have enough space in the payload for the new child
         const required_child_space = new_child_count * @sizeOf(u64);
         const available_space = payload_bytes.len - BtreeNodeHeader.SIZE;
         if (required_child_space > available_space) return error.InsufficientSpace;
 
-        var i = current_child_count;
-        while (i > insert_pos + 1) {
-            const prev_child_id = try self.getChildPageId(payload_bytes, i - 1);
-            try self.setChildPageId(payload_bytes, i, prev_child_id);
-            i -= 1;
+        var child_idx = current_child_count;
+        while (child_idx > insert_pos + 1) {
+            const prev_child_id = try self.getChildPageId(payload_bytes, child_idx - 1);
+            try self.setChildPageId(payload_bytes, child_idx, prev_child_id);
+            child_idx -= 1;
         }
 
         // Update key count BEFORE inserting new child (so bounds check passes)
@@ -791,14 +792,70 @@ pub const BtreeInternalPayload = struct {
         // Insert new child page ID at position insert_pos + 1
         try self.setChildPageId(payload_bytes, insert_pos + 1, child_page_id);
 
-        // Add separator key at the end of separator area (growing backwards)
-        const new_separator_offset = separator_area.len - separator_entry_size;
-        var separator_bytes = separator_area[new_separator_offset..];
+        // Shift existing separators to make room for the new one.
+        // Separators grow backwards from end, so:
+        // [key0, key1, key2] are stored as: [len2,key2,len1,key1,len0,key0]
+        // Insert at position 1: [key0, NEW, key1, key2] -> [len2,key2,len1,key1,lenNEW,keyNEW,len0,key0]
+        //
+        // Strategy: Walk backwards collecting sizes, then move each separator after insert_pos
+        // by separator_entry_size bytes toward the beginning.
 
-        // Write separator: key_len + key_bytes (use pointer cast for mutability)
-        const separator_len_ptr = @as(*[2]u8, @ptrCast(@alignCast(@constCast(separator_bytes).ptr)));
+        const separator_area_mut = payload_bytes[BtreeNodeHeader.SIZE + Self.getChildPageIdsSize(old_key_count)..];
+
+        // First pass: collect sizes of all separators
+        var offset: usize = separator_area.len;
+        var separator_sizes = std.mem.zeroes([MAX_KEYS_PER_INTERNAL]usize);
+
+        var sep_idx: u16 = 0;
+        while (sep_idx < old_key_count) : (sep_idx += 1) {
+            if (offset < @sizeOf(u16)) return error.CorruptSeparatorData;
+
+            const key_len_bytes = separator_area[offset - @sizeOf(u16)..offset];
+            const key_len = std.mem.readInt(u16, key_len_bytes[0..2], .little);
+
+            if (offset < @sizeOf(u16) + key_len) return error.CorruptSeparatorData;
+
+            const entry_size = @sizeOf(u16) + key_len;
+            offset -= entry_size;
+            separator_sizes[@as(usize, old_key_count - 1 - sep_idx)] = entry_size;
+        }
+
+        // Second pass: move separators that come after insert_pos
+        offset = 0;
+        sep_idx = 0;
+        while (sep_idx < old_key_count) : (sep_idx += 1) {
+            const entry_size = separator_sizes[sep_idx];
+
+            if (sep_idx > insert_pos) {
+                // Move this separator by separator_entry_size toward beginning
+                const src_offset = offset;
+                const dst_offset = offset - separator_entry_size;
+
+                if (dst_offset + entry_size > separator_area.len) return error.InsufficientSpace;
+
+                const src = separator_area[src_offset .. src_offset + entry_size];
+                const dst = separator_area_mut[dst_offset .. dst_offset + entry_size];
+                @memcpy(dst, src);
+            }
+
+            offset += entry_size;
+        }
+
+        // Calculate offset for new separator
+        offset = 0;
+        sep_idx = 0;
+        while (sep_idx < insert_pos) : (sep_idx += 1) {
+            offset += separator_sizes[sep_idx];
+        }
+
+        // Write new separator at the correct position
+        const new_separator_offset = offset;
+        if (new_separator_offset + separator_entry_size > separator_area.len) return error.InsufficientSpace;
+
+        var separator_bytes = separator_area_mut[new_separator_offset..];
+        const separator_len_ptr = @as(*[2]u8, @ptrCast(@alignCast(separator_bytes.ptr)));
         std.mem.writeInt(u16, separator_len_ptr, @intCast(separator_key.len), .little);
-        @memcpy(@constCast(separator_bytes[2..2+separator_key.len]), separator_key);
+        @memcpy(separator_bytes[2..2+separator_key.len], separator_key);
     }
 
     // Find child page ID for a given key (returns index and page_id)
