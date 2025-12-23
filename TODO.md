@@ -1132,3 +1132,43 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **FIXED**: Recalculate checksums for new internal root after leaf split
   - **FIXED**: Fix key_count increment order in addChild (before setChildPageId)
   - **FIXED**: Add header checksum update in copyOnWritePage
+
+- [ ✅ ] FIXED: PageOutOfBounds error in BtreeInternalPayload.addChild
+  - **FIXED 2025-12-23**: separator_area_mut calculation used old key_count
+  - **ROOT CAUSE**: separator_area_mut() called before key_count increment, but calculation needs new count
+  - **FIX**: Increment key_count first, then calculate separator_area_mut with updated count
+  - **LOCATION**: src/pager.zig:addChild (around line 850)
+  - **IMPACT**: Prevents out-of-bounds access when adding separators to internal nodes
+  - **STATUS**: COMPLETED
+
+- [ ✅ ] FIXED: Leaf splitting read-after-write bug
+  - **FIXED 2025-12-23**: Split pages not read back after modification
+  - **ROOT CAUSE**: splitLeafNode modified pages but didn't read them back before further operations
+  - **FIX**: Added readPage calls after split to reload modified pages from storage
+  - **LOCATION**: src/pager.zig splitLeafNode and splitInternalNode functions
+  - **IMPACT**: Ensures modifications are properly persisted and visible to subsequent operations
+  - **STATUS**: COMPLETED
+
+- [ ✅ ] FIXED: Checksum recalculation for split pages
+  - **FIXED 2025-12-23**: Modified split pages not recalculating checksums
+  - **ROOT CAUSE**: Page modifications during split didn't trigger checksum recalculation
+  - **FIX**: Added explicit checksum recalculation for all modified pages after split operations
+  - **LOCATION**: src/pager.zig splitLeafNode and splitInternalNode functions
+  - **IMPACT**: Ensures page integrity validation works correctly after splits
+  - **STATUS**: COMPLETED
+
+- [ ⚠️ ] BLOCKER: bench/pager/commit_meta_fsync - separator key corruption continues
+  - **DISCOVERED 2025-12-23**: Unit tests pass but commit_meta_fsync benchmark fails with CorruptSeparatorData
+  - **FIXED ATTEMPTS**:
+    - Commit 2d55636: Fixed payload_len recalculation after addChild in new root creation
+    - Commit 2d55636: Fixed separator area calculation in splitInternalNode (use full buffer)
+    - Commit 2d55636: Fixed insertIntoInternalNode payload expansion before addChild
+    - Commit 2d55636: Removed redundant space check in addChild
+  - **REMAINING ISSUE**: Separator keys still corrupted during commit operations
+  - **NEXT STEPS**:
+    - Run benchmark with detailed logging to pinpoint exact corruption point
+    - Verify getSeparatorKey reads correct offset after payload_len updates
+    - Check if separator key data is overwritten by subsequent operations
+    - Validate checksum calculation includes full expanded payload
+  - **STATUS**: Partial fix committed, corruption persists - needs deeper investigation
+  - **PRIORITY**: Critical - blocks all commit/replay correctness validation
