@@ -238,14 +238,14 @@ pub const LocalProvider = struct {
         try root.put(try allocator.dupe(u8, "model"), .{ .string = self.model });
         try root.put(try allocator.dupe(u8, "stream"), .{ .bool = false });
 
-        var messages = std.ArrayList(types.Value).init(allocator);
+        var messages = std.array_list.Managed(types.Value).init(allocator);
         var user_msg = std.StringHashMap(types.Value).init(allocator);
         try user_msg.put(try allocator.dupe(u8, "role"), .{ .string = try allocator.dupe(u8, "user") });
         try user_msg.put(try allocator.dupe(u8, "content"), .{ .string = try allocator.dupe(u8, "Please execute the requested function.") });
         try messages.append(.{ .object = user_msg });
         try root.put(try allocator.dupe(u8, "messages"), .{ .array = messages });
 
-        var tools = std.ArrayList(types.Value).init(allocator);
+        var tools = std.array_list.Managed(types.Value).init(allocator);
         try tools.append(local_tool);
         try root.put(try allocator.dupe(u8, "tools"), .{ .array = tools });
 
@@ -270,7 +270,7 @@ pub const LocalProvider = struct {
         try root.put(try allocator.dupe(u8, "model"), .{ .string = self.model });
         try root.put(try allocator.dupe(u8, "stream"), .{ .bool = false });
 
-        var msg_array = std.ArrayList(types.Value).init(allocator);
+        var msg_array = std.array_list.Managed(types.Value).init(allocator);
         for (messages) |msg| {
             var msg_obj = std.StringHashMap(types.Value).init(allocator);
             try msg_obj.put(try allocator.dupe(u8, "role"), .{ .string = try allocator.dupe(u8, msg.role) });
@@ -280,7 +280,7 @@ pub const LocalProvider = struct {
         try root.put(try allocator.dupe(u8, "messages"), .{ .array = msg_array });
 
         if (tools) |schemas| {
-            var tools_array = std.ArrayList(types.Value).init(allocator);
+            var tools_array = std.array_list.Managed(types.Value).init(allocator);
             for (schemas) |schema| {
                 const tool = try self.convertToLocalTool(&schema, allocator);
                 try tools_array.append(tool);
@@ -312,7 +312,7 @@ pub const LocalProvider = struct {
 
         const uri = try std.Uri.parse(url);
 
-        var headers = std.ArrayList(std.http.Header).init(allocator);
+        var headers = std.array_list.Managed(std.http.Header).init(allocator);
         defer {
             for (headers.items) |h| {
                 allocator.free(@constCast(h.name));
@@ -331,7 +331,7 @@ pub const LocalProvider = struct {
         try request.writeAll(payload_str);
         try request.finish();
 
-        var response_body = std.ArrayList(u8).init(allocator);
+        var response_body = std.array_list.Managed(u8).init(allocator);
         try request.reader().readAllArrayList(&response_body, 1024 * 1024);
 
         if (request.response.status != .ok) {

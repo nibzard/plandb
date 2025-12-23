@@ -25,8 +25,8 @@ pub const CartridgeBuilder = struct {
         return CartridgeBuilder{
             .allocator = allocator,
             .pattern_detector = pattern_detector,
-            .build_queue = std.ArrayList(BuildTask).init(allocator),
-            .active_builds = std.ArrayList(ActiveBuild).init(allocator),
+            .build_queue = std.array_list.Managed(BuildTask).init(allocator),
+            .active_builds = std.array_list.Managed(ActiveBuild).init(allocator),
             .config = config,
         };
     }
@@ -274,7 +274,7 @@ pub const CartridgeMaintainer = struct {
         return CartridgeMaintainer{
             .allocator = allocator,
             .builder = builder,
-            .maintenance_schedule = std.ArrayList(ScheduledTask).init(allocator),
+            .maintenance_schedule = std.array_list.Managed(ScheduledTask).init(allocator),
             .stats = MaintenanceStats{},
         };
     }

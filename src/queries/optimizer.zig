@@ -167,7 +167,7 @@ pub const QueryStatistics = struct {
 
     /// Get most accessed patterns
     pub fn getTopPatterns(self: *const Self, limit: usize) ![]const PatternEntry {
-        var entries = std.ArrayList(PatternEntry).init(self.allocator);
+        var entries = std.array_list.Managed(PatternEntry).init(self.allocator);
 
         var it = self.pattern_stats.iterator();
         while (it.next()) |entry| {
@@ -219,7 +219,7 @@ pub const QueryOptimizer = struct {
 
     /// Optimize a query plan
     pub fn optimize(self: *Self, plan: *const QueryPlan) !OptimizationResult {
-        var improvements = std.ArrayList(OptimizationSuggestion).init(self.allocator);
+        var improvements = std.array_list.Managed(OptimizationSuggestion).init(self.allocator);
 
         // Check cache for similar queries
         const cache_key = try self.buildCacheKey(plan);
@@ -241,7 +241,7 @@ pub const QueryOptimizer = struct {
         try self.analyzeForBatching(plan, &improvements);
 
         // Build optimized plan
-        var optimized_steps = std.ArrayList(QueryPlan.PlanStep).init(self.allocator);
+        var optimized_steps = std.array_list.Managed(QueryPlan.PlanStep).init(self.allocator);
         var total_cost: f64 = 0;
 
         for (plan.steps) |*step| {
@@ -275,7 +275,7 @@ pub const QueryOptimizer = struct {
 
     /// Get optimization recommendations based on statistics
     pub fn getRecommendations(self: *Self) ![]const Recommendation {
-        var recommendations = std.ArrayList(Recommendation).init(self.allocator);
+        var recommendations = std.array_list.Managed(Recommendation).init(self.allocator);
 
         // Analyze cache hit rate
         const hit_rate = self.stats.getCacheHitRate();
@@ -362,7 +362,7 @@ pub const QueryOptimizer = struct {
     }
 
     fn buildCacheKey(self: *Self, plan: *const QueryPlan) ![]const u8 {
-        var key_parts = std.ArrayList([]const u8).init(self.allocator);
+        var key_parts = std.array_list.Managed([]const u8).init(self.allocator);
         defer {
             for (key_parts.items) |p| self.allocator.free(p);
             key_parts.deinit();

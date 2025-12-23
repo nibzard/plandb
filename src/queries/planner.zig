@@ -347,16 +347,16 @@ pub const QueryPlanner = struct {
     }
 
     fn planTopicSearch(self: *Self, input: []const u8) !PlanningResult {
-        var steps = std.ArrayList(ExecutionStep).init(self.allocator);
+        var steps = std.array_list.Managed(ExecutionStep).init(self.allocator);
 
         // Extract topic from input
         const topic = try extractSearchTerm(self.allocator, input);
 
-        var terms = std.ArrayList([]const u8).init(self.allocator);
+        var terms = std.array_list.Managed([]const u8).init(self.allocator);
         try terms.append(topic);
 
-        var operators = std.ArrayList(TopicQuery.BooleanOp).init(self.allocator);
-        var filters = std.ArrayList(ScopeFilter).init(self.allocator);
+        var operators = std.array_list.Managed(TopicQuery.BooleanOp).init(self.allocator);
+        var filters = std.array_list.Managed(ScopeFilter).init(self.allocator);
 
         const topic_query = TopicQuery{
             .terms = try terms.toOwnedSlice(),
@@ -379,7 +379,7 @@ pub const QueryPlanner = struct {
 
         try steps.append(step);
 
-        var cartridge_reqs = std.ArrayList(CartridgeRequirement).init(self.allocator);
+        var cartridge_reqs = std.array_list.Managed(CartridgeRequirement).init(self.allocator);
         try cartridge_reqs-append(.{
             .cartridge_type = .topic_index,
             .access_pattern = .read_only,

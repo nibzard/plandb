@@ -21,7 +21,7 @@ pub const RegressionDetector = struct {
             .allocator = allocator,
             .baselines = std.StringHashMap(PerformanceBaseline).init(allocator),
             .metrics_history = std.StringHashMap(std.ArrayList(MetricSnapshot)).init(allocator),
-            .alerts = std.ArrayList(RegressionAlert).init(allocator),
+            .alerts = std.array_list.Managed(RegressionAlert).init(allocator),
             .config = config,
         };
     }
@@ -63,7 +63,7 @@ pub const RegressionDetector = struct {
         const entry = try self.metrics_history.getOrPut(key);
         if (!entry.found_existing) {
             entry.key_ptr.* = try self.allocator.dupe(u8, key);
-            entry.value_ptr.* = std.ArrayList(MetricSnapshot).init(self.allocator);
+            entry.value_ptr.* = std.array_list.Managed(MetricSnapshot).init(self.allocator);
         }
 
         const snapshot_copy = try metrics.copy(self.allocator);
@@ -78,7 +78,7 @@ pub const RegressionDetector = struct {
 
     /// Check for regressions across all tracked metrics
     pub fn detectRegressions(self: *Self) ![]const RegressionAlert {
-        var new_alerts = std.ArrayList(RegressionAlert).init(self.allocator);
+        var new_alerts = std.array_list.Managed(RegressionAlert).init(self.allocator);
 
         var it = self.metrics_history.iterator();
         while (it.next()) |entry| {
@@ -291,7 +291,7 @@ pub const AutoTuner = struct {
         return AutoTuner{
             .allocator = allocator,
             .detector = detector,
-            .tuning_history = std.ArrayList(TuningAction).init(allocator),
+            .tuning_history = std.array_list.Managed(TuningAction).init(allocator),
             .config = config,
         };
     }
@@ -340,7 +340,7 @@ pub const AutoTuner = struct {
 
     /// Get recommended tuning actions without applying
     pub fn getRecommendations(self: *Self) ![]const TuningRecommendation {
-        var recommendations = std.ArrayList(TuningRecommendation).init(self.allocator);
+        var recommendations = std.array_list.Managed(TuningRecommendation).init(self.allocator);
 
         // Check for cache tuning opportunities
         if (self.config.current_cache_hit_rate < self.config.min_cache_hit_rate) {

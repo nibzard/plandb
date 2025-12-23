@@ -29,7 +29,7 @@ pub const CartridgeSelector = struct {
         return CartridgeSelector{
             .allocator = allocator,
             .cartridge_stats = std.StringHashMap(CartridgeStats).init(allocator),
-            .routing_rules = std.ArrayList(RoutingRule).init(allocator),
+            .routing_rules = std.array_list.Managed(RoutingRule).init(allocator),
         };
     }
 
@@ -48,7 +48,7 @@ pub const CartridgeSelector = struct {
 
     /// Select best cartridge for a query
     pub fn selectCartridge(self: *Self, query: *const RoutedQuery) !CartridgeSelection {
-        var scores = std.ArrayList(CartridgeScore).init(self.allocator);
+        var scores = std.array_list.Managed(CartridgeScore).init(self.allocator);
         defer {
             for (scores.items) |*s| {
                 self.allocator.free(s.cartridge_id);
@@ -92,7 +92,7 @@ pub const CartridgeSelector = struct {
     /// Score a cartridge for the given query
     fn scoreCartridge(self: *Self, scores: *std.ArrayList(CartridgeScore), cartridge_type: CartridgeType, query: *const RoutedQuery) !void {
         var score: f32 = 0;
-        var reasons = std.ArrayList([]const u8).init(self.allocator);
+        var reasons = std.array_list.Managed([]const u8).init(self.allocator);
         defer {
             for (reasons.items) |r| self.allocator.free(r);
             reasons.deinit();
@@ -159,7 +159,7 @@ pub const CartridgeSelector = struct {
             }
         }
 
-        var reasoning = try std.ArrayList(u8).init(self.allocator);
+        var reasoning = try std.array_list.Managed(u8).init(self.allocator);
         for (reasons.items, 0..) |r, i| {
             if (i > 0) try reasoning.appendSlice("; ");
             try reasoning.appendSlice(r);
@@ -343,7 +343,7 @@ pub const QueryRouter = struct {
 
     /// Batch route multiple queries
     pub fn routeBatch(self: *Self, queries: []const []const u8) ![]RouteResult {
-        var results = std.ArrayList(RouteResult).init(self.allocator);
+        var results = std.array_list.Managed(RouteResult).init(self.allocator);
 
         for (queries) |query| {
             const result = try self.route(query) catch |err| {
@@ -383,7 +383,7 @@ pub const QueryRouter = struct {
         _ = self;
 
         // Simple parsing - in production would use NLToQueryConverter
-        var terms_list = std.ArrayList([]const u8).init(self.allocator);
+        var terms_list = std.array_list.Managed([]const u8).init(self.allocator);
         errdefer {
             for (terms_list.items) |t| self.allocator.free(t);
             terms_list.deinit();

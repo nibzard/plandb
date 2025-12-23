@@ -240,7 +240,7 @@ test "ObservabilityManager exportJson" {
     var manager = try ObservabilityManager.init(std.testing.allocator, .{});
     defer manager.deinit();
 
-    var buffer = std.ArrayList(u8).init(std.testing.allocator);
+    var buffer = std.array_list.Managed(u8).init(std.testing.allocator);
     defer buffer.deinit();
 
     try manager.exportJson(buffer.writer());
@@ -254,7 +254,7 @@ test "ObservabilityManager exportOpenMetrics" {
     var manager = try ObservabilityManager.init(std.testing.allocator, .{});
     defer manager.deinit();
 
-    var buffer = std.ArrayList(u8).init(std.testing.allocator);
+    var buffer = std.array_list.Managed(u8).init(std.testing.allocator);
     defer buffer.deinit();
 
     try manager.exportOpenMetrics(buffer.writer());

@@ -66,7 +66,7 @@ pub const MigrationRegistry = struct {
 
     pub fn init(allocator: std.mem.Allocator) Self {
         var registry = MigrationRegistry{
-            .migrations = std.ArrayList(MigrationStep).init(allocator),
+            .migrations = std.array_list.Managed(MigrationStep).init(allocator),
         };
         registry.registerBuiltinMigrations() catch {};
         return registry;
@@ -194,7 +194,7 @@ pub const CartridgeMigrator = struct {
         // Apply migrations sequentially
         var current_data = input;
         var entries_migrated: usize = 0;
-        var errors = std.ArrayList(MigrationError).init(self.allocator);
+        var errors = std.array_list.Managed(MigrationError).init(self.allocator);
 
         for (path) |step| {
             const result = step.migrate_fn(self.allocator, current_data, header.cartridge_type) catch |err| {

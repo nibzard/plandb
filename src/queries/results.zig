@@ -125,7 +125,7 @@ pub const ResultSummarizer = struct {
         _ = results;
 
         // Build prompt with results
-        var prompt = std.ArrayList(u8).init(self.allocator);
+        var prompt = std.array_list.Managed(u8).init(self.allocator);
         defer prompt.deinit();
 
         try prompt.appendSlice("Summarize these query results, preserving key insights:\n\n");
@@ -145,7 +145,7 @@ pub const ResultSummarizer = struct {
 
     /// Fallback summarization (truncation)
     fn summarizeFallback(self: *Self, results: []const []const u8) !SummaryResult {
-        var summary = std.ArrayList(u8).init(self.allocator);
+        var summary = std.array_list.Managed(u8).init(self.allocator);
         errdefer summary.deinit();
 
         var chars_used: usize = 0;
@@ -240,7 +240,7 @@ pub const RelevanceRanker = struct {
 
     /// Rank results by relevance
     pub fn rank(self: *Self, results: []RawResult, query: []const u8) ![]RankedResult {
-        var ranked = std.ArrayList(RankedResult).init(self.allocator);
+        var ranked = std.array_list.Managed(RankedResult).init(self.allocator);
 
         // Compute scores
         for (results, 0..) |result, i| {
@@ -289,7 +289,7 @@ pub const RelevanceRanker = struct {
 
         const count = @min(k, ranked.len);
 
-        var top = std.ArrayList(RankedResult).init(self.allocator);
+        var top = std.array_list.Managed(RankedResult).init(self.allocator);
 
         for (ranked[0..count]) |r| {
             const cloned = RankedResult{
@@ -345,13 +345,13 @@ pub const RelevanceRanker = struct {
         _ = self;
 
         // Word overlap similarity
-        var text_words = std.ArrayList([]const u8).init(self.allocator);
+        var text_words = std.array_list.Managed([]const u8).init(self.allocator);
         defer {
             for (text_words.items) |w| self.allocator.free(w);
             text_words.deinit();
         }
 
-        var query_words = std.ArrayList([]const u8).init(self.allocator);
+        var query_words = std.array_list.Managed([]const u8).init(self.allocator);
         defer {
             for (query_words.items) |w| self.allocator.free(w);
             query_words.deinit();
@@ -434,7 +434,7 @@ pub const ResultProcessor = struct {
         }
 
         // Extract result strings for summarization
-        var result_strings = std.ArrayList([]const u8).init(self.allocator);
+        var result_strings = std.array_list.Managed([]const u8).init(self.allocator);
         defer {
             for (result_strings.items) |s| self.allocator.free(s);
             result_strings.deinit();
@@ -454,7 +454,7 @@ pub const ResultProcessor = struct {
     }
 
     fn dupeRanked(self: *Self, ranked: []const RankedResult) ![]RankedResult {
-        var duped = std.ArrayList(RankedResult).init(self.allocator);
+        var duped = std.array_list.Managed(RankedResult).init(self.allocator);
 
         for (ranked) |r| {
             const cloned = RankedResult{
@@ -626,7 +626,7 @@ test "computeSimilarity" {
 }
 
 test "ProcessedResult deinit" {
-    var results = std.ArrayList(RawResult).init(std.testing.allocator);
+    var results = std.array_list.Managed(RawResult).init(std.testing.allocator);
 
     var processor = ResultProcessor.init(std.testing.allocator, null);
 

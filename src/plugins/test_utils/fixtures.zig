@@ -274,7 +274,7 @@ pub const ExtractionValidation = struct {
         expected: []const ExpectedEntities.Entity,
         allocator: std.mem.Allocator
     ) !ValidationResult {
-        var errors = std.ArrayList([]const u8).init(allocator);
+        var errors = std.array_list.Managed([]const u8).init(allocator);
         defer {
             for (errors.items) |err| allocator.free(err);
             errors.deinit();

@@ -155,12 +155,12 @@ pub const NLToQueryConverter = struct {
         const topic_dupe = try self.allocator.dupe(u8, topic);
         errdefer self.allocator.free(topic_dupe);
 
-        var terms = std.ArrayList([]const u8).init(self.allocator);
+        var terms = std.array_list.Managed([]const u8).init(self.allocator);
         try terms.append(topic_dupe);
 
-        var operators = std.ArrayList(TopicQuery.BooleanOp).init(self.allocator);
+        var operators = std.array_list.Managed(TopicQuery.BooleanOp).init(self.allocator);
 
-        var filters = std.ArrayList(ScopeFilter).init(self.allocator);
+        var filters = std.array_list.Managed(ScopeFilter).init(self.allocator);
 
         if (entity_type) |et| {
             const filter = ScopeFilter{
@@ -197,7 +197,7 @@ pub const NLToQueryConverter = struct {
         const terms_value = obj.get("terms") orelse return null;
         if (terms_value != .array) return null;
 
-        var terms = std.ArrayList([]const u8).init(self.allocator);
+        var terms = std.array_list.Managed([]const u8).init(self.allocator);
         errdefer {
             for (terms.items) |t| self.allocator.free(t);
             terms.deinit();
@@ -210,7 +210,7 @@ pub const NLToQueryConverter = struct {
         }
 
         // Extract filters array
-        var filters = std.ArrayList(ScopeFilter).init(self.allocator);
+        var filters = std.array_list.Managed(ScopeFilter).init(self.allocator);
         errdefer {
             for (filters.items) |*f| f.deinit(self.allocator);
             filters.deinit();
@@ -238,7 +238,7 @@ pub const NLToQueryConverter = struct {
 
         // Build operators (default to AND)
         const operators_len = if (terms.items.len > 0) terms.items.len - 1 else 0;
-        var operators = std.ArrayList(TopicQuery.BooleanOp).init(self.allocator);
+        var operators = std.array_list.Managed(TopicQuery.BooleanOp).init(self.allocator);
         errdefer operators.deinit();
 
         var i: usize = 0;

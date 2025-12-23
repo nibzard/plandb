@@ -177,9 +177,9 @@ pub const ScopeParser = struct {
     }
 
     pub fn parse(self: *Self) !TopicQuery {
-        var terms = std.ArrayList([]const u8).init(self.allocator);
-        var operators = std.ArrayList(TopicQuery.BooleanOp).init(self.allocator);
-        var filters = std.ArrayList(ScopeFilter).init(self.allocator);
+        var terms = std.array_list.Managed([]const u8).init(self.allocator);
+        var operators = std.array_list.Managed(TopicQuery.BooleanOp).init(self.allocator);
+        var filters = std.array_list.Managed(ScopeFilter).init(self.allocator);
 
         errdefer {
             for (terms.items) |t| self.allocator.free(t);

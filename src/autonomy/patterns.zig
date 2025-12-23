@@ -69,7 +69,7 @@ pub const PatternDetector = struct {
 
     /// Detect hot entities (frequently accessed)
     pub fn detectHotEntities(self: *Self, threshold: u64) ![]EntityHotness {
-        var results = std.ArrayList(EntityHotness).init(self.allocator);
+        var results = std.array_list.Managed(EntityHotness).init(self.allocator);
 
         var it = self.entity_patterns.iterator();
         while (it.next()) |entry| {
@@ -95,7 +95,7 @@ pub const PatternDetector = struct {
 
     /// Detect cold entities (rarely accessed)
     pub fn detectColdEntities(self: *Self, threshold_age_ms: u64) ![]EntityColdness {
-        var results = std.ArrayList(EntityColdness).init(self.allocator);
+        var results = std.array_list.Managed(EntityColdness).init(self.allocator);
 
         const now = @as(u64, @intCast(std.time.nanoTimestamp() / 1_000_000));
 
@@ -126,7 +126,7 @@ pub const PatternDetector = struct {
 
     /// Detect performance bottlenecks
     pub fn detectBottlenecks(self: *Self, latency_threshold_ms: f64) ![]Bottleneck {
-        var results = std.ArrayList(Bottleneck).init(self.allocator);
+        var results = std.array_list.Managed(Bottleneck).init(self.allocator);
 
         var it = self.query_patterns.iterator();
         while (it.next()) |entry| {
@@ -154,7 +154,7 @@ pub const PatternDetector = struct {
 
     /// Get recommendations based on patterns
     pub fn getRecommendations(self: *Self) ![]Recommendation {
-        var recommendations = std.ArrayList(Recommendation).init(self.allocator);
+        var recommendations = std.array_list.Managed(Recommendation).init(self.allocator);
 
         // Check for hot entities needing caching
         const hot = try self.detectHotEntities(self.config.hot_threshold);
@@ -356,7 +356,7 @@ pub const TemporalPatternTracker = struct {
     pub fn init(allocator: std.mem.Allocator) TemporalPatternTracker {
         var tracker: TemporalPatternTracker = undefined;
         for (&tracker.hourly_records) |*hour| {
-            hour.* = std.ArrayList(TemporalRecord).init(allocator);
+            hour.* = std.array_list.Managed(TemporalRecord).init(allocator);
         }
         tracker.allocator = allocator;
         return tracker;

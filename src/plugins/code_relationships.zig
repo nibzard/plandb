@@ -30,7 +30,7 @@ pub const CodeRelationshipPlugin = struct {
             .config = config,
             .state = PluginState{
                 .pattern_cache = std.StringHashMap(PatternCache).init(allocator),
-                .relationship_buffer = std.ArrayList(Relationship).init(allocator),
+                .relationship_buffer = std.array_list.Managed(Relationship).init(allocator),
                 .stats = Statistics{},
             },
         };
@@ -52,7 +52,7 @@ pub const CodeRelationshipPlugin = struct {
 
     /// Extract relationships from code mutation
     pub fn extractFromMutation(self: *Self, mutation: CodeMutation) ![]ExtractedRelationship {
-        var relationships = std.ArrayList(ExtractedRelationship).init(self.allocator);
+        var relationships = std.array_list.Managed(ExtractedRelationship).init(self.allocator);
 
         // Extract based on mutation type
         switch (mutation.mutation_type) {
@@ -84,7 +84,7 @@ pub const CodeRelationshipPlugin = struct {
 
     /// Extract relationships from a batch of mutations
     pub fn extractFromBatch(self: *Self, mutations: []const CodeMutation) ![][]ExtractedRelationship {
-        var all_relationships = std.ArrayList([]ExtractedRelationship).init(self.allocator);
+        var all_relationships = std.array_list.Managed([]ExtractedRelationship).init(self.allocator);
 
         for (mutations) |mutation| {
             const rels = try self.extractFromMutation(mutation);
@@ -96,7 +96,7 @@ pub const CodeRelationshipPlugin = struct {
 
     /// Analyze import/dependency patterns
     pub fn analyzeImports(self: *Self, code: []const u8, source_entity: EntityId) ![]ImportRelationship {
-        var imports = std.ArrayList(ImportRelationship).init(self.allocator);
+        var imports = std.array_list.Managed(ImportRelationship).init(self.allocator);
 
         // Find import statements
         var lines = mem.splitScalar(u8, code, '\n');
@@ -128,7 +128,7 @@ pub const CodeRelationshipPlugin = struct {
 
     /// Find function call relationships
     pub fn findFunctionCalls(self: *Self, code: []const u8, caller: EntityId) ![]FunctionCallRelationship {
-        var calls = std.ArrayList(FunctionCallRelationship).init(self.allocator);
+        var calls = std.array_list.Managed(FunctionCallRelationship).init(self.allocator);
 
         // Simple pattern matching for function calls
         // In production, would use proper AST parsing
@@ -163,7 +163,7 @@ pub const CodeRelationshipPlugin = struct {
 
     /// Get buffered relationships
     pub fn getBufferedRelationships(self: *Self) ![]ExtractedRelationship {
-        var result = std.ArrayList(ExtractedRelationship).init(self.allocator);
+        var result = std.array_list.Managed(ExtractedRelationship).init(self.allocator);
 
         for (self.state.relationship_buffer.items) |rel| {
             try result.append(try self.cloneRelationship(rel));

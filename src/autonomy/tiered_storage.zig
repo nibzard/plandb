@@ -297,7 +297,7 @@ pub const TieredStorageManager = struct {
 
     /// Get optimization recommendations
     pub fn getRecommendations(self: *Self) ![]Recommendation {
-        var recommendations = std.ArrayList(Recommendation).init(self.allocator);
+        var recommendations = std.array_list.Managed(Recommendation).init(self.allocator);
 
         const cost_breakdown = self.getCostBreakdown();
 
@@ -423,7 +423,7 @@ pub const TierState = struct {
     pub fn init(allocator: std.mem.Allocator, tier: StorageTier, config: TierConfig) !TierState {
         return TierState{
             .config = config,
-            .placements = std.ArrayList(DataPlacement).init(allocator),
+            .placements = std.array_list.Managed(DataPlacement).init(allocator),
             .current_bytes = 0,
             .stats = TierStats{},
         };

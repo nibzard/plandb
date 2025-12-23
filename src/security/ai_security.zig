@@ -306,7 +306,7 @@ pub const AISecurityManager = struct {
 
     /// Export security events for audit
     pub fn exportSecurityEvents(self: *Self, start_time: i128, end_time: i128) ![]SecurityEvent {
-        var events = std.ArrayList(SecurityEvent).init(self.allocator);
+        var events = std.array_list.Managed(SecurityEvent).init(self.allocator);
 
         for (self.state.security_events.items) |event| {
             if (event.timestamp >= start_time and event.timestamp <= end_time) {

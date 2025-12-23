@@ -365,7 +365,7 @@ pub const PrefetchEngine = struct {
             .allocator = allocator,
             .cache = cache,
             .strategy = strategy,
-            .prefetch_queue = std.ArrayList(PrefetchTask).init(allocator),
+            .prefetch_queue = std.array_list.Managed(PrefetchTask).init(allocator),
             .stats = PrefetchStats{},
         };
     }
@@ -479,7 +479,7 @@ pub const Cache = struct {
             .allocator = allocator,
             .entries = std.StringHashMap(CacheEntry).init(allocator),
             .max_size = max_size,
-            .access_order = std.ArrayList([]const u8).init(allocator),
+            .access_order = std.array_list.Managed([]const u8).init(allocator),
         };
     }
 

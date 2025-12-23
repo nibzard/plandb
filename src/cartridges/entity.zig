@@ -61,7 +61,7 @@ pub const EntityCartridge = struct {
         // Update type index
         const type_list = try self.type_index.getOrPut(entity_type.toString());
         if (!type_list.found_existing) {
-            type_list.value_ptr.* = std.ArrayList(EntityId).init(self.allocator);
+            type_list.value_ptr.* = std.array_list.Managed(EntityId).init(self.allocator);
         }
         try type_list.value_ptr.*.append(entity_id);
 

@@ -111,7 +111,7 @@ pub const ContextSummarizerPlugin = struct {
 
     /// Summarize multiple items
     pub fn summarizeBatch(self: *Self, items: []const []const u8, target_tokens_per_item: usize) ![]SummaryResult {
-        var results = std.ArrayList(SummaryResult).init(self.allocator);
+        var results = std.array_list.Managed(SummaryResult).init(self.allocator);
 
         for (items) |item| {
             const result = try self.summarizeContext(item, target_tokens_per_item);
@@ -150,7 +150,7 @@ pub const ContextSummarizerPlugin = struct {
         _ = target_tokens;
 
         // Build prompt
-        var prompt = std.ArrayList(u8).init(self.allocator);
+        var prompt = std.array_list.Managed(u8).init(self.allocator);
         defer prompt.deinit();
 
         try prompt.appendSlice("Summarize the following text, preserving key information:\n\n");
@@ -203,7 +203,7 @@ pub const ContextSummarizerPlugin = struct {
         const window_size = (target_tokens * 4) / 2; // Half from start, half from end
         const window_count = 3; // Number of windows
 
-        var summary = std.ArrayList(u8).init(self.allocator);
+        var summary = std.array_list.Managed(u8).init(self.allocator);
 
         try summary.appendSlice("[SUMMARY: ");
 
@@ -247,7 +247,7 @@ pub const ContextSummarizerPlugin = struct {
     fn summarizeHierarchical(self: *Self, context: []const u8, target_tokens: usize) !SummaryResult {
         // Split into chunks
         const chunk_size = 10000;
-        var chunks = std.ArrayList([]const u8).init(self.allocator);
+        var chunks = std.array_list.Managed([]const u8).init(self.allocator);
         defer {
             for (chunks.items) |c| self.allocator.free(c);
             chunks.deinit();
@@ -261,7 +261,7 @@ pub const ContextSummarizerPlugin = struct {
         }
 
         // Summarize each chunk
-        var chunk_summaries = std.ArrayList([]const u8).init(self.allocator);
+        var chunk_summaries = std.array_list.Managed([]const u8).init(self.allocator);
         defer {
             for (chunk_summaries.items) |s| self.allocator.free(s);
             chunk_summaries.deinit();
@@ -278,7 +278,7 @@ pub const ContextSummarizerPlugin = struct {
         }
 
         // Combine summaries
-        var combined = std.ArrayList(u8).init(self.allocator);
+        var combined = std.array_list.Managed(u8).init(self.allocator);
         try combined.appendSlice("[HIERARCHICAL SUMMARY:\n");
 
         for (chunk_summaries.items, 0..) |summary, i| {

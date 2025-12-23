@@ -704,7 +704,7 @@ pub fn crashHarnessTaskQueue(db_path: []const u8, allocator: std.mem.Allocator, 
 pub fn runAllHardeningTests(allocator: std.mem.Allocator) ![]TestResult {
     const test_log_prefix = "hardening_test";
 
-    var results = std.ArrayList(TestResult).init(allocator);
+    var results = std.array_list.Managed(TestResult).init(allocator);
     defer results.deinit();
 
     // Test 1: Torn write header
@@ -1333,7 +1333,7 @@ pub fn concurrencyReadWriteStress(allocator: std.mem.Allocator, config: Concurre
 
 /// Run all concurrency torture tests
 pub fn runAllConcurrencyTests(allocator: std.mem.Allocator) ![]TestResult {
-    var results = std.ArrayList(TestResult).init(allocator);
+    var results = std.array_list.Managed(TestResult).init(allocator);
     defer results.deinit();
 
     const default_config = ConcurrencyConfig{

@@ -20,8 +20,8 @@ pub const PredictionEngine = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         return PredictionEngine{
             .allocator = allocator,
-            .pattern_history = std.ArrayList(PatternObservation).init(allocator),
-            .predictions = std.ArrayList(Prediction).init(allocator),
+            .pattern_history = std.array_list.Managed(PatternObservation).init(allocator),
+            .predictions = std.array_list.Managed(Prediction).init(allocator),
             .config = PredictionConfig.default(),
         };
     }
@@ -129,7 +129,7 @@ pub const PredictionEngine = struct {
 
     /// Get cartridges to build proactively
     pub fn getCartridgesToBuild(self: *Self, limit: usize) ![]const BuildAction {
-        var actions = std.ArrayList(BuildAction).init(self.allocator);
+        var actions = std.array_list.Managed(BuildAction).init(self.allocator);
 
         const predictions = try self.generatePredictions();
 
@@ -272,7 +272,7 @@ pub const ProactiveBuilder = struct {
         return ProactiveBuilder{
             .allocator = allocator,
             .engine = PredictionEngine.init(allocator),
-            .build_queue = std.ArrayList(BuildAction).init(allocator),
+            .build_queue = std.array_list.Managed(BuildAction).init(allocator),
             .stats = BuildStats{},
         };
     }
@@ -405,7 +405,7 @@ pub const TimeBasedPredictor = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         var predictor: TimeBasedPredictor = undefined;
         for (&predictor.hourly_patterns) |*hour| {
-            hour.* = std.ArrayList(PatternObservation).init(allocator);
+            hour.* = std.array_list.Managed(PatternObservation).init(allocator);
         }
         predictor.allocator = allocator;
         return predictor;
@@ -436,7 +436,7 @@ pub const TimeBasedPredictor = struct {
 
     /// Predict patterns for current hour
     pub fn predictForHour(self: *Self, hour: usize, limit: usize) ![]const Prediction {
-        var predictions = std.ArrayList(Prediction).init(self.allocator);
+        var predictions = std.array_list.Managed(Prediction).init(self.allocator);
 
         if (hour >= 24) return error.InvalidHour;
 

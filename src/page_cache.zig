@@ -191,7 +191,7 @@ pub const PageCache = struct {
 
     /// Clear all unpinned pages from the cache
     pub fn clear(self: *Self) void {
-        var to_remove = std.ArrayList(u64).init(self.allocator) catch return;
+        var to_remove = std.array_list.Managed(u64).init(self.allocator);
         defer to_remove.deinit();
 
         var it = self.entries.iterator();

@@ -58,7 +58,7 @@ pub const ArchiveManager = struct {
             self.allocator.free(cold_entities);
         }
 
-        var candidates = std.ArrayList(ArchivalCandidate).init(self.allocator);
+        var candidates = std.array_list.Managed(ArchivalCandidate).init(self.allocator);
 
         for (cold_entities) |cold| {
             // Check if already archived
@@ -194,7 +194,7 @@ pub const ArchiveManager = struct {
 
         // Simplified compression - in real implementation would use LZ4
         // For now, just return the data as-is with a marker
-        var compressed = std.ArrayList(u8).init(self.allocator);
+        var compressed = std.array_list.Managed(u8).init(self.allocator);
         try compressed.appendSlice("COMPRESSED:");
         try compressed.appendSlice(data);
 

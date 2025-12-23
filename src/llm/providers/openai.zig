@@ -303,7 +303,7 @@ pub const OpenAIProvider = struct {
         try root.put(try allocator.dupe(u8, "model"), .{ .string = self.model });
 
         // Messages
-        var messages = std.ArrayList(types.Value).init(allocator);
+        var messages = std.array_list.Managed(types.Value).init(allocator);
         var user_msg = std.StringHashMap(types.Value).init(allocator);
         try user_msg.put(try allocator.dupe(u8, "role"), .{ .string = try allocator.dupe(u8, "user") });
         try user_msg.put(try allocator.dupe(u8, "content"), .{ .string = try allocator.dupe(u8, "Please execute the requested function.") });
@@ -311,7 +311,7 @@ pub const OpenAIProvider = struct {
         try root.put(try allocator.dupe(u8, "messages"), .{ .array = messages });
 
         // Tools (modern format)
-        var tools = std.ArrayList(types.Value).init(allocator);
+        var tools = std.array_list.Managed(types.Value).init(allocator);
         try tools.append(openai_tool);
         try root.put(try allocator.dupe(u8, "tools"), .{ .array = tools });
 
@@ -341,7 +341,7 @@ pub const OpenAIProvider = struct {
         try root.put(try allocator.dupe(u8, "model"), .{ .string = self.model });
 
         // Messages
-        var msg_array = std.ArrayList(types.Value).init(allocator);
+        var msg_array = std.array_list.Managed(types.Value).init(allocator);
         for (messages) |msg| {
             var msg_obj = std.StringHashMap(types.Value).init(allocator);
             try msg_obj.put(try allocator.dupe(u8, "role"), .{ .string = try allocator.dupe(u8, msg.role) });
@@ -352,7 +352,7 @@ pub const OpenAIProvider = struct {
 
         // Tools if provided
         if (tools) |schemas| {
-            var tools_array = std.ArrayList(types.Value).init(allocator);
+            var tools_array = std.array_list.Managed(types.Value).init(allocator);
             for (schemas) |schema| {
                 const tool = try self.convertToOpenAITool(&schema, allocator);
                 try tools_array.append(tool);
@@ -390,7 +390,7 @@ pub const OpenAIProvider = struct {
         const uri = try std.Uri.parse(url);
 
         // Prepare request
-        var headers = std.ArrayList(std.http.Header).init(allocator);
+        var headers = std.array_list.Managed(std.http.Header).init(allocator);
         defer {
             for (headers.items) |h| {
                 allocator.free(@constCast(h.name));
@@ -415,7 +415,7 @@ pub const OpenAIProvider = struct {
         try request.finish();
 
         // Read response body
-        var response_body = std.ArrayList(u8).init(allocator);
+        var response_body = std.array_list.Managed(u8).init(allocator);
         try request.reader().readAllArrayList(&response_body, 1024 * 1024);
 
         // Check status
@@ -505,7 +505,7 @@ pub const OpenAIProvider = struct {
         const choices = root.object.get("choices") orelse return error.InvalidJsonStructure;
 
         // Parse choices
-        var choice_list = std.ArrayList(ChatResponse.Choice).init(allocator);
+        var choice_list = std.array_list.Managed(ChatResponse.Choice).init(allocator);
         errdefer {
             for (choice_list.items) |*c| c.deinit(allocator);
             choice_list.deinit();
@@ -522,7 +522,7 @@ pub const OpenAIProvider = struct {
             // Parse tool calls if present
             var tool_calls: ?[]const ToolCall = null;
             if (message.object.get("tool_calls")) |tc_val| {
-                var tc_list = std.ArrayList(ToolCall).init(allocator);
+                var tc_list = std.array_list.Managed(ToolCall).init(allocator);
                 for (tc_val.array.items) |tc| {
                     const tc_id = tc.object.get("id") orelse return error.InvalidJsonStructure;
                     const tc_type = tc.object.get("type") orelse return error.InvalidJsonStructure;

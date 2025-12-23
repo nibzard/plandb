@@ -232,14 +232,14 @@ pub const AnthropicProvider = struct {
         try root.put(try allocator.dupe(u8, "model"), .{ .string = self.model });
         try root.put(try allocator.dupe(u8, "max_tokens"), .{ .integer = 4096 });
 
-        var messages = std.ArrayList(types.Value).init(allocator);
+        var messages = std.array_list.Managed(types.Value).init(allocator);
         var user_msg = std.StringHashMap(types.Value).init(allocator);
         try user_msg.put(try allocator.dupe(u8, "role"), .{ .string = try allocator.dupe(u8, "user") });
         try user_msg.put(try allocator.dupe(u8, "content"), .{ .string = try allocator.dupe(u8, "Please execute the requested tool.") });
         try messages.append(.{ .object = user_msg });
         try root.put(try allocator.dupe(u8, "messages"), .{ .array = messages });
 
-        var tools = std.ArrayList(types.Value).init(allocator);
+        var tools = std.array_list.Managed(types.Value).init(allocator);
         try tools.append(anthropic_tool);
         try root.put(try allocator.dupe(u8, "tools"), .{ .array = tools });
 
@@ -264,12 +264,12 @@ pub const AnthropicProvider = struct {
         try root.put(try allocator.dupe(u8, "model"), .{ .string = self.model });
         try root.put(try allocator.dupe(u8, "max_tokens"), .{ .integer = 4096 });
 
-        var msg_array = std.ArrayList(types.Value).init(allocator);
+        var msg_array = std.array_list.Managed(types.Value).init(allocator);
         for (messages) |msg| {
             var msg_obj = std.StringHashMap(types.Value).init(allocator);
             try msg_obj.put(try allocator.dupe(u8, "role"), .{ .string = try allocator.dupe(u8, msg.role) });
 
-            var content_array = std.ArrayList(types.Value).init(allocator);
+            var content_array = std.array_list.Managed(types.Value).init(allocator);
             var content_block = std.StringHashMap(types.Value).init(allocator);
             try content_block.put(try allocator.dupe(u8, "type"), .{ .string = try allocator.dupe(u8, "text") });
             try content_block.put(try allocator.dupe(u8, "text"), .{ .string = try allocator.dupe(u8, msg.content) });
@@ -281,7 +281,7 @@ pub const AnthropicProvider = struct {
         try root.put(try allocator.dupe(u8, "messages"), .{ .array = msg_array });
 
         if (tools) |schemas| {
-            var tools_array = std.ArrayList(types.Value).init(allocator);
+            var tools_array = std.array_list.Managed(types.Value).init(allocator);
             for (schemas) |schema| {
                 const tool = try self.convertToAnthropicTool(&schema, allocator);
                 try tools_array.append(tool);
@@ -313,7 +313,7 @@ pub const AnthropicProvider = struct {
 
         const uri = try std.Uri.parse(url);
 
-        var headers = std.ArrayList(std.http.Header).init(allocator);
+        var headers = std.array_list.Managed(std.http.Header).init(allocator);
         defer {
             for (headers.items) |h| {
                 allocator.free(@constCast(h.name));
@@ -334,7 +334,7 @@ pub const AnthropicProvider = struct {
         try request.writeAll(payload_str);
         try request.finish();
 
-        var response_body = std.ArrayList(u8).init(allocator);
+        var response_body = std.array_list.Managed(u8).init(allocator);
         try request.reader().readAllArrayList(&response_body, 1024 * 1024);
 
         if (request.response.status != .ok) {
@@ -420,7 +420,7 @@ pub const AnthropicProvider = struct {
         const model = root.object.get("model") orelse return error.InvalidJsonStructure;
         const stop_reason = root.object.get("stop_reason") orelse return error.InvalidJsonStructure;
 
-        var content_blocks = std.ArrayList(ChatResponse.ContentBlock).init(allocator);
+        var content_blocks = std.array_list.Managed(ChatResponse.ContentBlock).init(allocator);
         errdefer {
             for (content_blocks.items) |*c| c.deinit(allocator);
             content_blocks.deinit();
