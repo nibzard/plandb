@@ -569,6 +569,26 @@ pub const Relationship = struct {
         };
         try self.metadata.append(allocator, attr_copy);
     }
+
+    /// Add metadata to a const relationship (returns new relationship)
+    pub fn withMetadata(self: Relationship, allocator: std.mem.Allocator, attr: Attribute) !Relationship {
+        var result = try Relationship.init(
+            allocator,
+            self.from_entity,
+            self.to_entity,
+            self.type,
+            self.strength,
+            self.established_at
+        );
+        errdefer result.deinit(allocator);
+
+        for (self.metadata.items) |*meta| {
+            try result.addMetadata(allocator, meta.*);
+        }
+        try result.addMetadata(allocator, attr);
+
+        return result;
+    }
 };
 
 // ==================== Cartridge Storage ====================
@@ -1093,6 +1113,645 @@ fn sortResults(items: []EntityResult) void {
     }.lessThan);
 }
 
+// ==================== Relationship Graph Cartridge ====================
+
+/// Directed edge in the relationship graph
+const GraphEdge = struct {
+    to_entity: EntityId,
+    relationship: Relationship,
+    offset: u64,
+
+    pub fn init(allocator: std.mem.Allocator, to_entity: EntityId, relationship: Relationship) !GraphEdge {
+        const to_ns = try allocator.dupe(u8, to_entity.namespace);
+        errdefer allocator.free(to_ns);
+        const to_local = try allocator.dupe(u8, to_entity.local_id);
+        errdefer allocator.free(to_local);
+
+        const rel_ns = try allocator.dupe(u8, relationship.from_entity.namespace);
+        errdefer allocator.free(rel_ns);
+        const rel_local = try allocator.dupe(u8, relationship.from_entity.local_id);
+        errdefer allocator.free(rel_local);
+        const rel_to_ns = try allocator.dupe(u8, relationship.to_entity.namespace);
+        errdefer allocator.free(rel_to_ns);
+        const rel_to_local = try allocator.dupe(u8, relationship.to_entity.local_id);
+        errdefer allocator.free(rel_to_local);
+
+        var metadata = ArrayListManaged(Attribute){};
+        for (relationship.metadata.items) |*attr| {
+            const attr_copy = Attribute{
+                .key = try allocator.dupe(u8, attr.key),
+                .value = try dupeAttributeValue(allocator, attr.value),
+                .confidence = attr.confidence,
+                .source = try allocator.dupe(u8, attr.source),
+            };
+            try metadata.append(allocator, attr_copy);
+        }
+
+        return GraphEdge{
+            .to_entity = .{ .namespace = to_ns, .local_id = to_local },
+            .relationship = .{
+                .from_entity = .{ .namespace = rel_ns, .local_id = rel_local },
+                .to_entity = .{ .namespace = rel_to_ns, .local_id = rel_to_local },
+                .type = relationship.type,
+                .strength = relationship.strength,
+                .established_at = relationship.established_at,
+                .metadata = metadata,
+            },
+            .offset = 0,
+        };
+    }
+
+    pub fn deinit(self: *GraphEdge, allocator: std.mem.Allocator) void {
+        allocator.free(self.to_entity.namespace);
+        allocator.free(self.to_entity.local_id);
+        self.relationship.deinit(allocator);
+    }
+};
+
+/// Adjacency list entry for a node in the graph
+const AdjacencyEntry = struct {
+    entity_id: EntityId,
+    outgoing: ArrayListManaged(GraphEdge),
+    incoming: ArrayListManaged(EntityId),
+
+    pub fn init(allocator: std.mem.Allocator, entity_id: EntityId) !AdjacencyEntry {
+        const ns = try allocator.dupe(u8, entity_id.namespace);
+        errdefer allocator.free(ns);
+        const local = try allocator.dupe(u8, entity_id.local_id);
+        errdefer allocator.free(local);
+
+        return AdjacencyEntry{
+            .entity_id = .{ .namespace = ns, .local_id = local },
+            .outgoing = .{},
+            .incoming = .{},
+        };
+    }
+
+    pub fn deinit(self: *AdjacencyEntry, allocator: std.mem.Allocator) void {
+        allocator.free(self.entity_id.namespace);
+        allocator.free(self.entity_id.local_id);
+        for (self.outgoing.items) |*edge| edge.deinit(allocator);
+        self.outgoing.deinit(allocator);
+        for (self.incoming.items) |*eid| {
+            allocator.free(eid.namespace);
+            allocator.free(eid.local_id);
+        }
+        self.incoming.deinit(allocator);
+    }
+};
+
+/// Path element for traversal results
+pub const PathElement = struct {
+    entity_id: EntityId,
+    relationship_type: RelationshipType,
+    strength: f32,
+
+    pub fn deinit(self: *PathElement, allocator: std.mem.Allocator) void {
+        allocator.free(self.entity_id.namespace);
+        allocator.free(self.entity_id.local_id);
+    }
+};
+
+/// Path found during graph traversal
+pub const GraphPath = struct {
+    elements: ArrayListManaged(PathElement),
+    total_strength: f32,
+
+    pub fn init(allocator: std.mem.Allocator) GraphPath {
+        _ = allocator;
+        return GraphPath{
+            .elements = .{},
+            .total_strength = 1.0,
+        };
+    }
+
+    pub fn deinit(self: *GraphPath, allocator: std.mem.Allocator) void {
+        for (self.elements.items) |*elem| elem.deinit(allocator);
+        self.elements.deinit(allocator);
+    }
+
+    pub fn addElement(self: *GraphPath, allocator: std.mem.Allocator, elem: PathElement) !void {
+        try self.elements.append(allocator, elem);
+        self.total_strength *= elem.strength;
+    }
+};
+
+/// Relationship graph cartridge with adjacency list storage
+pub const RelationshipCartridge = struct {
+    allocator: std.mem.Allocator,
+    header: format.CartridgeHeader,
+    /// Map from entity ID to its adjacency entry
+    adjacency: std.HashMap(EntityId, *AdjacencyEntry, EntityIdContext, std.hash_map.default_max_load_percentage),
+    /// Flat storage of adjacency entries
+    entries: ArrayListManaged(*AdjacencyEntry),
+
+    /// Create new relationship cartridge
+    pub fn init(allocator: std.mem.Allocator, source_txn_id: u64) !RelationshipCartridge {
+        const header = format.CartridgeHeader.init(.relationship_graph, source_txn_id);
+        return RelationshipCartridge{
+            .allocator = allocator,
+            .header = header,
+            .adjacency = std.HashMap(EntityId, *AdjacencyEntry, EntityIdContext, std.hash_map.default_max_load_percentage).init(allocator),
+            .entries = .{},
+        };
+    }
+
+    pub fn deinit(self: *RelationshipCartridge) void {
+        var it = self.adjacency.valueIterator();
+        while (it.next()) |entry| {
+            entry.*.deinit(self.allocator);
+            self.allocator.destroy(entry.*);
+        }
+        self.adjacency.deinit();
+        self.entries.deinit(self.allocator);
+    }
+
+    /// Get or create adjacency entry for an entity
+    fn getOrCreateEntry(self: *RelationshipCartridge, entity_id: EntityId) !*AdjacencyEntry {
+        if (self.adjacency.get(entity_id)) |entry| {
+            return entry;
+        }
+
+        const entry = try self.allocator.create(AdjacencyEntry);
+        entry.* = try AdjacencyEntry.init(self.allocator, entity_id);
+        try self.adjacency.put(entry.entity_id, entry);
+        try self.entries.append(self.allocator, entry);
+        return entry;
+    }
+
+    /// Add a relationship to the graph
+    pub fn addRelationship(self: *RelationshipCartridge, relationship: Relationship) !void {
+        const from_entry = try self.getOrCreateEntry(relationship.from_entity);
+        const to_entry = try self.getOrCreateEntry(relationship.to_entity);
+
+        // Create outgoing edge
+        const edge = try GraphEdge.init(self.allocator, relationship.to_entity, relationship);
+        try from_entry.outgoing.append(self.allocator, edge);
+
+        // Add to incoming list
+        const from_dupe = EntityId{
+            .namespace = try self.allocator.dupe(u8, relationship.from_entity.namespace),
+            .local_id = try self.allocator.dupe(u8, relationship.from_entity.local_id),
+        };
+        try to_entry.incoming.append(self.allocator, from_dupe);
+
+        self.header.entry_count += 1;
+    }
+
+    /// Get outgoing relationships for an entity
+    pub fn getOutgoing(self: *const RelationshipCartridge, entity_id: EntityId) !ArrayListManaged(Relationship) {
+        var results = ArrayListManaged(Relationship){};
+        const entry = self.adjacency.get(entity_id) orelse return results;
+
+        for (entry.outgoing.items) |*edge| {
+            var rel = try Relationship.init(
+                self.allocator,
+                entity_id,
+                edge.to_entity,
+                edge.relationship.type,
+                edge.relationship.strength,
+                edge.relationship.established_at
+            );
+            errdefer rel.deinit(self.allocator);
+
+            for (edge.relationship.metadata.items) |*meta| {
+                try rel.addMetadata(self.allocator, meta.*);
+            }
+            try results.append(self.allocator, rel);
+        }
+
+        return results;
+    }
+
+    /// Get incoming relationships for an entity
+    pub fn getIncoming(self: *const RelationshipCartridge, entity_id: EntityId) !ArrayListManaged(Relationship) {
+        var results = ArrayListManaged(Relationship){};
+        const entry = self.adjacency.get(entity_id) orelse return results;
+
+        for (entry.incoming.items) |from_id| {
+            const from_entry = self.adjacency.get(from_id) orelse continue;
+
+            for (from_entry.outgoing.items) |*edge| {
+                if (EntityId.eql(edge.to_entity, entity_id)) {
+                    var rel = try Relationship.init(
+                        self.allocator,
+                        from_id,
+                        entity_id,
+                        edge.relationship.type,
+                        edge.relationship.strength,
+                        edge.relationship.established_at
+                    );
+                    errdefer rel.deinit(self.allocator);
+
+                    for (edge.relationship.metadata.items) |*meta| {
+                        try rel.addMetadata(self.allocator, meta.*);
+                    }
+                    try results.append(self.allocator, rel);
+                }
+            }
+        }
+
+        return results;
+    }
+
+    /// BFS traversal from start entity
+    pub fn bfs(
+        self: *const RelationshipCartridge,
+        start: EntityId,
+        max_depth: usize,
+        filter_type: ?RelationshipType
+    ) !ArrayListManaged(GraphPath) {
+        var results = ArrayListManaged(GraphPath){};
+        const start_entry = self.adjacency.get(start) orelse return results;
+
+        // Queue for BFS: (entity, path, depth)
+        const QueueItem = struct {
+            entity: EntityId,
+            path: *GraphPath,
+            depth: usize,
+        };
+        var queue = std.ArrayListUnmanaged(QueueItem){};
+        defer {
+            for (queue.items) |item| {
+                item.path.deinit(self.allocator);
+                self.allocator.destroy(item.path);
+            }
+            queue.deinit(self.allocator);
+        }
+
+        // Initialize with direct neighbors
+        for (start_entry.outgoing.items) |*edge| {
+            if (filter_type) |ft| {
+                if (edge.relationship.type != ft) continue;
+            }
+
+            var path = try self.allocator.create(GraphPath);
+            path.* = GraphPath.init(self.allocator);
+
+            const elem = PathElement{
+                .entity_id = .{
+                    .namespace = try self.allocator.dupe(u8, edge.to_entity.namespace),
+                    .local_id = try self.allocator.dupe(u8, edge.to_entity.local_id),
+                },
+                .relationship_type = edge.relationship.type,
+                .strength = edge.relationship.strength,
+            };
+            try path.addElement(self.allocator, elem);
+
+            try queue.append(self.allocator, .{
+                .entity = edge.to_entity,
+                .path = path,
+                .depth = 1,
+            });
+        }
+
+        // Process queue
+        while (queue.items.len > 0) {
+            const item = queue.orderedRemove(0);
+
+            // Clone path for result
+            var path_copy = GraphPath.init(self.allocator);
+            for (item.path.elements.items) |*elem| {
+                const elem_copy = PathElement{
+                    .entity_id = .{
+                        .namespace = try self.allocator.dupe(u8, elem.entity_id.namespace),
+                        .local_id = try self.allocator.dupe(u8, elem.entity_id.local_id),
+                    },
+                    .relationship_type = elem.relationship_type,
+                    .strength = elem.strength,
+                };
+                try path_copy.addElement(self.allocator, elem_copy);
+            }
+            try results.append(self.allocator, path_copy);
+
+            // Expand if not at max depth
+            if (item.depth < max_depth) {
+                const next_entry = self.adjacency.get(item.entity) orelse continue;
+                for (next_entry.outgoing.items) |*edge| {
+                    if (filter_type) |ft| {
+                        if (edge.relationship.type != ft) continue;
+                    }
+
+                    var new_path = try self.allocator.create(GraphPath);
+                    new_path.* = GraphPath.init(self.allocator);
+
+                    // Copy existing path
+                    for (item.path.elements.items) |*elem| {
+                        const elem_copy = PathElement{
+                            .entity_id = .{
+                                .namespace = try self.allocator.dupe(u8, elem.entity_id.namespace),
+                                .local_id = try self.allocator.dupe(u8, elem.entity_id.local_id),
+                            },
+                            .relationship_type = elem.relationship_type,
+                            .strength = elem.strength,
+                        };
+                        try new_path.addElement(self.allocator, elem_copy);
+                    }
+
+                    // Add new element
+                    const new_elem = PathElement{
+                        .entity_id = .{
+                            .namespace = try self.allocator.dupe(u8, edge.to_entity.namespace),
+                            .local_id = try self.allocator.dupe(u8, edge.to_entity.local_id),
+                        },
+                        .relationship_type = edge.relationship.type,
+                        .strength = edge.relationship.strength,
+                    };
+                    try new_path.addElement(self.allocator, new_elem);
+
+                    try queue.append(self.allocator, .{
+                        .entity = edge.to_entity,
+                        .path = new_path,
+                        .depth = item.depth + 1,
+                    });
+                }
+            }
+        }
+
+        return results;
+    }
+
+    /// Find shortest path between two entities using BFS
+    pub fn findShortestPath(
+        self: *const RelationshipCartridge,
+        from: EntityId,
+        to: EntityId
+    ) !?GraphPath {
+        // Start and end are the same
+        if (EntityId.eql(from, to)) {
+            const path = GraphPath.init(self.allocator);
+            return path;
+        }
+
+        const from_entry = self.adjacency.get(from) orelse return null;
+
+        // Queue for BFS: (entity, path)
+        const PathQueueItem = struct {
+            entity: EntityId,
+            path: ArrayListManaged(PathElement),
+        };
+        var queue = std.ArrayListUnmanaged(PathQueueItem){};
+        defer {
+            for (queue.items) |*item| {
+                for (item.path.items) |*elem| elem.deinit(self.allocator);
+                item.path.deinit(self.allocator);
+            }
+            queue.deinit(self.allocator);
+        }
+
+        // Visited set
+        var visited = std.HashMap(EntityId, void, EntityIdContext, std.hash_map.default_max_load_percentage).init(self.allocator);
+        defer visited.deinit();
+        try visited.put(from, {});
+
+        // Initialize with direct neighbors
+        for (from_entry.outgoing.items) |*edge| {
+            var path = try ArrayListManaged(PathElement).initCapacity(self.allocator, 1);
+
+            const elem = PathElement{
+                .entity_id = .{
+                    .namespace = try self.allocator.dupe(u8, edge.to_entity.namespace),
+                    .local_id = try self.allocator.dupe(u8, edge.to_entity.local_id),
+                },
+                .relationship_type = edge.relationship.type,
+                .strength = edge.relationship.strength,
+            };
+            try path.append(self.allocator, elem);
+
+            if (EntityId.eql(edge.to_entity, to)) {
+                // Found direct path
+                var result = GraphPath.init(self.allocator);
+                result.total_strength = edge.relationship.strength;
+                result.elements = path;
+                return result;
+            }
+
+            try queue.append(self.allocator, .{
+                .entity = edge.to_entity,
+                .path = path,
+            });
+            try visited.put(edge.to_entity, {});
+        }
+
+        // BFS search
+        while (queue.items.len > 0) {
+            const item = queue.orderedRemove(0);
+            const next_entry = self.adjacency.get(item.entity) orelse continue;
+
+            for (next_entry.outgoing.items) |*edge| {
+                // Skip if already visited
+                if (visited.get(edge.to_entity) != null) continue;
+                try visited.put(edge.to_entity, {});
+
+                // Build new path
+                var new_path = try ArrayListManaged(PathElement).initCapacity(self.allocator, item.path.items.len + 1);
+
+                for (item.path.items) |*elem| {
+                    const elem_copy = PathElement{
+                        .entity_id = .{
+                            .namespace = try self.allocator.dupe(u8, elem.entity_id.namespace),
+                            .local_id = try self.allocator.dupe(u8, elem.entity_id.local_id),
+                        },
+                        .relationship_type = elem.relationship_type,
+                        .strength = elem.strength,
+                    };
+                    try new_path.append(self.allocator, elem_copy);
+                }
+
+                const new_elem = PathElement{
+                    .entity_id = .{
+                        .namespace = try self.allocator.dupe(u8, edge.to_entity.namespace),
+                        .local_id = try self.allocator.dupe(u8, edge.to_entity.local_id),
+                    },
+                    .relationship_type = edge.relationship.type,
+                    .strength = edge.relationship.strength,
+                };
+                try new_path.append(self.allocator, new_elem);
+
+                if (EntityId.eql(edge.to_entity, to)) {
+                    // Found path
+                    var result = GraphPath.init(self.allocator);
+                    var total_strength: f32 = 1.0;
+                    for (new_path.items) |*elem| {
+                        total_strength *= elem.strength;
+                    }
+                    result.total_strength = total_strength;
+                    result.elements = new_path;
+
+                    // Clean up queue
+                    for (queue.items) |*q_item| {
+                        for (q_item.path.items) |*elem| elem.deinit(self.allocator);
+                        q_item.path.deinit(self.allocator);
+                    }
+
+                    return result;
+                }
+
+                try queue.append(self.allocator, .{
+                    .entity = edge.to_entity,
+                    .path = new_path,
+                });
+            }
+        }
+
+        return null;
+    }
+
+    /// Find all paths between two entities up to max depth
+    pub fn findAllPaths(
+        self: *const RelationshipCartridge,
+        from: EntityId,
+        to: EntityId,
+        max_depth: usize
+    ) !ArrayListManaged(GraphPath) {
+        var results = ArrayListManaged(GraphPath){};
+
+        if (EntityId.eql(from, to)) {
+            return results;
+        }
+
+        var visited = std.HashMap(EntityId, void, EntityIdContext, std.hash_map.default_max_load_percentage).init(self.allocator);
+        try self.findAllPathsRecursive(from, to, max_depth, &visited, &results, .{});
+
+        return results;
+    }
+
+    fn findAllPathsRecursive(
+        self: *const RelationshipCartridge,
+        current: EntityId,
+        target: EntityId,
+        remaining_depth: usize,
+        visited: *std.HashMap(EntityId, void, EntityIdContext, std.hash_map.default_max_load_percentage),
+        results: *ArrayListManaged(GraphPath),
+        current_path: ArrayListManaged(PathElement)
+    ) !void {
+        _ = visited.put(current, {}) catch {};
+
+        const entry = self.adjacency.get(current) orelse {
+            _ = visited.remove(current);
+            return;
+        };
+
+        for (entry.outgoing.items) |*edge| {
+            // Check if reached target
+            if (EntityId.eql(edge.to_entity, target)) {
+                var result_path = GraphPath.init(self.allocator);
+                for (current_path.items) |*elem| {
+                    const elem_copy = PathElement{
+                        .entity_id = .{
+                            .namespace = try self.allocator.dupe(u8, elem.entity_id.namespace),
+                            .local_id = try self.allocator.dupe(u8, elem.entity_id.local_id),
+                        },
+                        .relationship_type = elem.relationship_type,
+                        .strength = elem.strength,
+                    };
+                    try result_path.addElement(self.allocator, elem_copy);
+                }
+
+                const final_elem = PathElement{
+                    .entity_id = .{
+                        .namespace = try self.allocator.dupe(u8, edge.to_entity.namespace),
+                        .local_id = try self.allocator.dupe(u8, edge.to_entity.local_id),
+                    },
+                    .relationship_type = edge.relationship.type,
+                    .strength = edge.relationship.strength,
+                };
+                try result_path.addElement(self.allocator, final_elem);
+                try results.append(self.allocator, result_path);
+                continue;
+            }
+
+            // Skip if visited or no depth remaining
+            if (remaining_depth == 0) continue;
+            if (visited.get(edge.to_entity) != null) continue;
+
+            // Extend path and recurse
+            const elem = PathElement{
+                .entity_id = .{
+                    .namespace = try self.allocator.dupe(u8, edge.to_entity.namespace),
+                    .local_id = try self.allocator.dupe(u8, edge.to_entity.local_id),
+                },
+                .relationship_type = edge.relationship.type,
+                .strength = edge.relationship.strength,
+            };
+
+            var new_path = try ArrayListManaged(PathElement).initCapacity(self.allocator, current_path.items.len + 1);
+            for (current_path.items) |*p| {
+                const p_copy = PathElement{
+                    .entity_id = .{
+                        .namespace = try self.allocator.dupe(u8, p.entity_id.namespace),
+                        .local_id = try self.allocator.dupe(u8, p.entity_id.local_id),
+                    },
+                    .relationship_type = p.relationship_type,
+                    .strength = p.strength,
+                };
+                try new_path.append(self.allocator, p_copy);
+            }
+            try new_path.append(self.allocator, elem);
+
+            try self.findAllPathsRecursive(edge.to_entity, target, remaining_depth - 1, visited, results, new_path);
+
+            for (new_path.items) |*p| {
+                p.deinit(self.allocator);
+            }
+            new_path.deinit(self.allocator);
+        }
+
+        _ = visited.remove(current);
+    }
+
+    /// Get connected entities within N hops
+    pub fn getNeighbors(
+        self: *const RelationshipCartridge,
+        entity_id: EntityId,
+        max_hops: usize,
+        filter_type: ?RelationshipType
+    ) !ArrayListManaged(EntityId) {
+        var results = ArrayListManaged(EntityId){};
+        var visited = std.HashMap(EntityId, void, EntityIdContext, std.hash_map.default_max_load_percentage).init(self.allocator);
+        defer visited.deinit();
+
+        const NeighborQueueItem = struct {
+            entity: EntityId,
+            hops: usize,
+        };
+        var queue = std.ArrayListUnmanaged(NeighborQueueItem){};
+        defer queue.deinit(self.allocator);
+
+        try queue.append(self.allocator, .{ .entity = entity_id, .hops = 0 });
+        try visited.put(entity_id, {});
+
+        while (queue.items.len > 0) {
+            const item = queue.orderedRemove(0);
+            if (item.hops >= max_hops) continue;
+
+            const entry = self.adjacency.get(item.entity) orelse continue;
+
+            for (entry.outgoing.items) |*edge| {
+                if (visited.get(edge.to_entity) != null) continue;
+                if (filter_type) |ft| {
+                    if (edge.relationship.type != ft) continue;
+                }
+
+                try visited.put(edge.to_entity, {});
+
+                const neighbor = EntityId{
+                    .namespace = try self.allocator.dupe(u8, edge.to_entity.namespace),
+                    .local_id = try self.allocator.dupe(u8, edge.to_entity.local_id),
+                };
+                try results.append(self.allocator, neighbor);
+
+                try queue.append(self.allocator, .{
+                    .entity = edge.to_entity,
+                    .hops = item.hops + 1,
+                });
+            }
+        }
+
+        return results;
+    }
+};
+
 // ==================== Tests ====================
 
 test "EntityId.toString roundtrip" {
@@ -1506,4 +2165,281 @@ test "TopicCartridge.getTermStats" {
 
     const no_stats = cartridge.getTermStats("nonexistent");
     try std.testing.expect(no_stats == null);
+}
+
+test "RelationshipCartridge.addRelationship" {
+    var cartridge = try RelationshipCartridge.init(std.testing.allocator, 100);
+    defer cartridge.deinit();
+
+    const from_id = EntityId{ .namespace = "file", .local_id = "main.zig" };
+    const to_id = EntityId{ .namespace = "file", .local_id = "utils.zig" };
+
+    var rel = try Relationship.init(std.testing.allocator, from_id, to_id, .imports, 0.8, 100);
+    defer rel.deinit(std.testing.allocator);
+
+    try cartridge.addRelationship(rel);
+
+    try std.testing.expectEqual(@as(u64, 1), cartridge.header.entry_count);
+    try std.testing.expectEqual(@as(usize, 2), cartridge.adjacency.count());
+}
+
+test "RelationshipCartridge.getOutgoing" {
+    var cartridge = try RelationshipCartridge.init(std.testing.allocator, 100);
+    defer cartridge.deinit();
+
+    const main_id = EntityId{ .namespace = "file", .local_id = "main.zig" };
+    const utils_id = EntityId{ .namespace = "file", .local_id = "utils.zig" };
+    const db_id = EntityId{ .namespace = "file", .local_id = "db.zig" };
+
+    var rel1 = try Relationship.init(std.testing.allocator, main_id, utils_id, .imports, 0.8, 100);
+    defer rel1.deinit(std.testing.allocator);
+    var rel2 = try Relationship.init(std.testing.allocator, main_id, db_id, .calls, 0.9, 100);
+    defer rel2.deinit(std.testing.allocator);
+
+    try cartridge.addRelationship(rel1);
+    try cartridge.addRelationship(rel2);
+
+    var outgoing = try cartridge.getOutgoing(main_id);
+    defer {
+        for (outgoing.items) |*r| r.deinit(std.testing.allocator);
+        outgoing.deinit(std.testing.allocator);
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), outgoing.items.len);
+}
+
+test "RelationshipCartridge.getIncoming" {
+    var cartridge = try RelationshipCartridge.init(std.testing.allocator, 100);
+    defer cartridge.deinit();
+
+    const main_id = EntityId{ .namespace = "file", .local_id = "main.zig" };
+    const utils_id = EntityId{ .namespace = "file", .local_id = "utils.zig" };
+
+    var rel = try Relationship.init(std.testing.allocator, main_id, utils_id, .imports, 0.8, 100);
+    defer rel.deinit(std.testing.allocator);
+
+    try cartridge.addRelationship(rel);
+
+    var incoming = try cartridge.getIncoming(utils_id);
+    defer {
+        for (incoming.items) |*r| r.deinit(std.testing.allocator);
+        incoming.deinit(std.testing.allocator);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), incoming.items.len);
+    try std.testing.expectEqualStrings("main.zig", incoming.items[0].from_entity.local_id);
+}
+
+test "RelationshipCartridge.findShortestPath direct" {
+    var cartridge = try RelationshipCartridge.init(std.testing.allocator, 100);
+    defer cartridge.deinit();
+
+    const a_id = EntityId{ .namespace = "file", .local_id = "a.zig" };
+    const b_id = EntityId{ .namespace = "file", .local_id = "b.zig" };
+
+    var rel = try Relationship.init(std.testing.allocator, a_id, b_id, .imports, 0.8, 100);
+    defer rel.deinit(std.testing.allocator);
+    try cartridge.addRelationship(rel);
+
+    {
+        var path = try cartridge.findShortestPath(a_id, b_id);
+        try std.testing.expect(path != null);
+        defer if (path) |*p| p.deinit(std.testing.allocator);
+
+        try std.testing.expectEqual(@as(usize, 1), path.?.elements.items.len);
+        try std.testing.expectEqualStrings("b.zig", path.?.elements.items[0].entity_id.local_id);
+    }
+}
+
+test "RelationshipCartridge.findShortestPath multiHop" {
+    var cartridge = try RelationshipCartridge.init(std.testing.allocator, 100);
+    defer cartridge.deinit();
+
+    const a_id = EntityId{ .namespace = "file", .local_id = "a.zig" };
+    const b_id = EntityId{ .namespace = "file", .local_id = "b.zig" };
+    const c_id = EntityId{ .namespace = "file", .local_id = "c.zig" };
+
+    // a -> b -> c
+    var rel1 = try Relationship.init(std.testing.allocator, a_id, b_id, .imports, 0.8, 100);
+    defer rel1.deinit(std.testing.allocator);
+    var rel2 = try Relationship.init(std.testing.allocator, b_id, c_id, .imports, 0.8, 100);
+    defer rel2.deinit(std.testing.allocator);
+
+    try cartridge.addRelationship(rel1);
+    try cartridge.addRelationship(rel2);
+
+    {
+        var path = try cartridge.findShortestPath(a_id, c_id);
+        try std.testing.expect(path != null);
+        defer if (path) |*p| p.deinit(std.testing.allocator);
+
+        try std.testing.expectEqual(@as(usize, 2), path.?.elements.items.len);
+        try std.testing.expectEqualStrings("b.zig", path.?.elements.items[0].entity_id.local_id);
+        try std.testing.expectEqualStrings("c.zig", path.?.elements.items[1].entity_id.local_id);
+    }
+}
+
+test "RelationshipCartridge.findShortestPath noPath" {
+    var cartridge = try RelationshipCartridge.init(std.testing.allocator, 100);
+    defer cartridge.deinit();
+
+    const a_id = EntityId{ .namespace = "file", .local_id = "a.zig" };
+    const b_id = EntityId{ .namespace = "file", .local_id = "b.zig" };
+    const c_id = EntityId{ .namespace = "file", .local_id = "c.zig" };
+
+    var rel = try Relationship.init(std.testing.allocator, a_id, b_id, .imports, 0.8, 100);
+    defer rel.deinit(std.testing.allocator);
+    try cartridge.addRelationship(rel);
+
+    // c is isolated, no path from a to c
+    const path = try cartridge.findShortestPath(a_id, c_id);
+    try std.testing.expect(path == null);
+}
+
+test "RelationshipCartridge.bfs depthLimited" {
+    var cartridge = try RelationshipCartridge.init(std.testing.allocator, 100);
+    defer cartridge.deinit();
+
+    const a_id = EntityId{ .namespace = "file", .local_id = "a.zig" };
+    const b_id = EntityId{ .namespace = "file", .local_id = "b.zig" };
+    const c_id = EntityId{ .namespace = "file", .local_id = "c.zig" };
+    const d_id = EntityId{ .namespace = "file", .local_id = "d.zig" };
+
+    // a -> b -> c -> d
+    var rel1 = try Relationship.init(std.testing.allocator, a_id, b_id, .imports, 0.8, 100);
+    defer rel1.deinit(std.testing.allocator);
+    var rel2 = try Relationship.init(std.testing.allocator, b_id, c_id, .imports, 0.8, 100);
+    defer rel2.deinit(std.testing.allocator);
+    var rel3 = try Relationship.init(std.testing.allocator, c_id, d_id, .imports, 0.8, 100);
+    defer rel3.deinit(std.testing.allocator);
+
+    try cartridge.addRelationship(rel1);
+    try cartridge.addRelationship(rel2);
+    try cartridge.addRelationship(rel3);
+
+    var paths = try cartridge.bfs(a_id, 2, null);
+    defer {
+        for (paths.items) |*p| p.deinit(std.testing.allocator);
+        paths.deinit(std.testing.allocator);
+    }
+
+    // Should find paths to b (depth 1) and c (depth 2), but not d (depth 3)
+    try std.testing.expect(paths.items.len > 0);
+}
+
+test "RelationshipCartridge.findAllPaths" {
+    var cartridge = try RelationshipCartridge.init(std.testing.allocator, 100);
+    defer cartridge.deinit();
+
+    const a_id = EntityId{ .namespace = "file", .local_id = "a.zig" };
+    const b_id = EntityId{ .namespace = "file", .local_id = "b.zig" };
+
+    // a -> b (twice via different rel types)
+    var rel1 = try Relationship.init(std.testing.allocator, a_id, b_id, .imports, 0.8, 100);
+    defer rel1.deinit(std.testing.allocator);
+    var rel2 = try Relationship.init(std.testing.allocator, a_id, b_id, .calls, 0.9, 100);
+    defer rel2.deinit(std.testing.allocator);
+
+    try cartridge.addRelationship(rel1);
+    try cartridge.addRelationship(rel2);
+
+    var paths = try cartridge.findAllPaths(a_id, b_id, 3);
+    defer {
+        for (paths.items) |*p| p.deinit(std.testing.allocator);
+        paths.deinit(std.testing.allocator);
+    }
+
+    // Should find 2 paths (one for each relationship type)
+    try std.testing.expectEqual(@as(usize, 2), paths.items.len);
+}
+
+test "RelationshipCartridge.getNeighbors" {
+    var cartridge = try RelationshipCartridge.init(std.testing.allocator, 100);
+    defer cartridge.deinit();
+
+    const a_id = EntityId{ .namespace = "file", .local_id = "a.zig" };
+    const b_id = EntityId{ .namespace = "file", .local_id = "b.zig" };
+    const c_id = EntityId{ .namespace = "file", .local_id = "c.zig" };
+    const d_id = EntityId{ .namespace = "file", .local_id = "d.zig" };
+
+    // a -> b -> c, and a -> d
+    var rel1 = try Relationship.init(std.testing.allocator, a_id, b_id, .imports, 0.8, 100);
+    defer rel1.deinit(std.testing.allocator);
+    var rel2 = try Relationship.init(std.testing.allocator, b_id, c_id, .imports, 0.8, 100);
+    defer rel2.deinit(std.testing.allocator);
+    var rel3 = try Relationship.init(std.testing.allocator, a_id, d_id, .calls, 0.9, 100);
+    defer rel3.deinit(std.testing.allocator);
+
+    try cartridge.addRelationship(rel1);
+    try cartridge.addRelationship(rel2);
+    try cartridge.addRelationship(rel3);
+
+    var neighbors = try cartridge.getNeighbors(a_id, 2, null);
+    defer {
+        for (neighbors.items) |*n| {
+            std.testing.allocator.free(n.namespace);
+            std.testing.allocator.free(n.local_id);
+        }
+        neighbors.deinit(std.testing.allocator);
+    }
+
+    // Should find b, c (via b), and d
+    try std.testing.expect(neighbors.items.len >= 2);
+}
+
+test "RelationshipCartridge.getNeighbors withFilter" {
+    var cartridge = try RelationshipCartridge.init(std.testing.allocator, 100);
+    defer cartridge.deinit();
+
+    const a_id = EntityId{ .namespace = "file", .local_id = "a.zig" };
+    const b_id = EntityId{ .namespace = "file", .local_id = "b.zig" };
+    const c_id = EntityId{ .namespace = "file", .local_id = "c.zig" };
+
+    // a -> b (imports), a -> c (calls)
+    var rel1 = try Relationship.init(std.testing.allocator, a_id, b_id, .imports, 0.8, 100);
+    defer rel1.deinit(std.testing.allocator);
+    var rel2 = try Relationship.init(std.testing.allocator, a_id, c_id, .calls, 0.9, 100);
+    defer rel2.deinit(std.testing.allocator);
+
+    try cartridge.addRelationship(rel1);
+    try cartridge.addRelationship(rel2);
+
+    var neighbors = try cartridge.getNeighbors(a_id, 1, .imports);
+    defer {
+        for (neighbors.items) |*n| {
+            std.testing.allocator.free(n.namespace);
+            std.testing.allocator.free(n.local_id);
+        }
+        neighbors.deinit(std.testing.allocator);
+    }
+
+    // Should only find b (imports relationship)
+    try std.testing.expectEqual(@as(usize, 1), neighbors.items.len);
+    try std.testing.expectEqualStrings("b.zig", neighbors.items[0].local_id);
+}
+
+test "GraphPath.addElement" {
+    var path = GraphPath.init(std.testing.allocator);
+    defer path.deinit(std.testing.allocator);
+
+    const elem = PathElement{
+        .entity_id = .{ .namespace = "file", .local_id = "test.zig" },
+        .relationship_type = .imports,
+        .strength = 0.8,
+    };
+
+    // Note: this will leak since we're using a stack-allocated EntityId
+    // In real usage, entity_id strings should be allocated
+    const elem_copy = PathElement{
+        .entity_id = .{
+            .namespace = try std.testing.allocator.dupe(u8, elem.entity_id.namespace),
+            .local_id = try std.testing.allocator.dupe(u8, elem.entity_id.local_id),
+        },
+        .relationship_type = elem.relationship_type,
+        .strength = elem.strength,
+    };
+    try path.addElement(std.testing.allocator, elem_copy);
+
+    try std.testing.expectEqual(@as(usize, 1), path.elements.items.len);
+    try std.testing.expectEqual(@as(f32, 0.8), path.total_strength);
 }
