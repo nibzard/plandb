@@ -127,7 +127,13 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED**: Forced yield points at lock boundaries and page cache access
   - **COMPLETED**: Tests verify serializable isolation and detect race conditions
   - Completed 2025-12-23
-- [ ] 🟡 Add metamorphic test generators for all API operations
+- [ ✅ ] 🟡 Add metamorphic test generators for all API operations
+  - **COMPLETED**: Metamorphic test generators implemented for all API operations
+  - **COMPLETED**: Comprehensive test coverage for DB operations (get, put, delete, iterators)
+  - **COMPLETED**: Metamorphic property validation (idempotence, commutativity, associativity)
+  - **COMPLETED**: Tests verify equivalent operations produce identical results
+  - **COMPLETED**: Randomized input generation with deterministic seed-based testing
+  - Committed with hash f9aa03b
 
 ## Phase 1 — Pager (V0)
 - [✅] 🔴 Define page header and meta structs per `spec/file_format_v0.md`
@@ -797,7 +803,18 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **FEATURES**: Configurable tier thresholds and promotion/demotion policies
   - **STATUS**: Complete and tested, provides autonomous storage cost optimization
   - Committed 2025-12-23
-- [ ] 🟠 Implement performance regression detection and auto-tuning
+- [ ✅ ] 🟠 Implement performance regression detection and auto-tuning
+  - **COMPLETED**: Implemented comprehensive regression detection and auto-tuning in src/autonomy/regression_detection.zig
+  - **COMPLETED**: RegressionDetector with EWMA-based metric tracking and anomaly detection
+  - **COMPLETED**: AutoTuner for automatic parameter adjustment (cache sizes, buffer pools, connection limits)
+  - **COMPLETED**: TuningManager as unified orchestrator coordinating detection and tuning
+  - **COMPLETED**: Baseline establishment, drift detection, and multi-tier response strategies
+  - **COMPLETED**: Full test coverage including metric collection, regression detection, and tuning actions
+  - **FEATURES**: Configurable thresholds, detection windows, and tuning strategies
+  - **FEATURES**: Graceful degradation and parameter rollback support
+  - **FEATURES**: Statistics tracking for regression events and tuning operations
+  - **STATUS**: Complete and tested, provides autonomous performance optimization
+  - Committed 2025-12-23
 - [ ] 🟡 Add comprehensive AI operation observability and debugging
 
 ### Advanced AI Plugins
@@ -960,5 +977,10 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED**: All benchmarks emit proper JSON files with metrics
   - **COMPLETED**: Stable filename format with repeat indexing
   - **IMPACT**: Enables automated comparison and regression detection
-- [ ] 🟠 Implement suite summary report and pass/fail counts
+- [ ✅ ] 🟠 Implement suite summary report and pass/fail counts
+  - **COMPLETED 2025-12-23**: SuiteSummary struct with totals (passed/failed/skipped/comparisons)
+  - **COMPLETED**: BenchmarkComparison struct for individual comparison results
+  - **COMPLETED**: runWithSummary() method returns summary data
+  - **COMPLETED**: printSummary() method displays formatted results
+  - **COMPLETED**: run() auto-prints summary when baseline comparison done
 - [ ] 🟡 Optional CSV export for quick spreadsheet analysis
