@@ -76,6 +76,7 @@ fn printUsage() !void {
         \\  --suite <type>        Filter by suite (micro|macro|hardening)
         \\  --output <dir>        Output directory for JSON results
         \\  --baseline <dir>      Baseline directory for comparison
+        \\  --csv                 Export results as CSV files alongside JSON
         \\  --seed <n>            Random seed
         \\  --warmup-ops <n>      Number of warmup operations before measurement
         \\  --warmup-ns <n>       Warmup time in nanoseconds before measurement
@@ -85,6 +86,7 @@ fn printUsage() !void {
         \\  --filter <pattern>    Filter benchmarks by name
         \\  --suite <type>        Filter by suite (micro|macro|hardening)
         \\  --output <dir>        Output directory for JSON results
+        \\  --csv                 Export results as CSV files alongside JSON
         \\  --seed <n>            Random seed
         \\  --warmup-ops <n>      Number of warmup operations before measurement
         \\  --warmup-ns <n>       Warmup time in nanoseconds before measurement
@@ -143,6 +145,8 @@ fn runBenchmarks(allocator: std.mem.Allocator, args: []const []const u8) !void {
         } else if (std.mem.eql(u8, args[i], "--warmup-ns") and i + 1 < args.len) {
             runner_args.config.warmup_ns = try std.fmt.parseInt(u64, args[i + 1], 10);
             i += 1;
+        } else if (std.mem.eql(u8, args[i], "--csv")) {
+            runner_args.csv_output = true;
         } else {
             std.debug.print("Unknown option: {s}\n", .{args[i]});
             return;
@@ -272,6 +276,8 @@ fn gateSuite(allocator: std.mem.Allocator, args: []const []const u8) !void {
         } else if (std.mem.eql(u8, args[i], "--threshold-fsync") and i + 1 < args.len) {
             runner_args.max_fsync_increase_pct = try std.fmt.parseFloat(f64, args[i + 1]);
             i += 1;
+        } else if (std.mem.eql(u8, args[i], "--csv")) {
+            runner_args.csv_output = true;
         } else {
             std.debug.print("Unknown option: {s}\n", .{args[i]});
             return;

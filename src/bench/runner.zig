@@ -291,6 +291,27 @@ pub const Runner = struct {
                     try self.writeJson(file.writer(buf), result);
                 }
 
+                // Output CSV if requested
+                if (args.csv_output) {
+                    const csv_filename = try std.fmt.allocPrint(self.allocator, "{s}.csv", .{bench.name});
+                    defer self.allocator.free(csv_filename);
+                    const csv_path = try std.fs.path.join(self.allocator, &.{ dir, csv_filename });
+                    defer self.allocator.free(csv_path);
+
+                    const csv_file = try std.fs.cwd().createFile(csv_path, .{});
+                    defer csv_file.close();
+
+                    // Write CSV header
+                    try csv_file.writeAll("bench_name,repeat_index,repeat_count,ops_per_sec,p50_ns,p95_ns,p99_ns,max_ns,alloc_count,alloc_bytes,fsync_count,read_bytes,write_bytes,errors_total\n");
+
+                    // Write all results to single CSV file
+                    const csv_buf = try self.allocator.alloc(u8, 1024);
+                    defer self.allocator.free(csv_buf);
+                    for (results) |result| {
+                        try self.writeCsv(csv_file.writer(csv_buf), result);
+                    }
+                }
+
                 // Compare aggregated baseline if provided
                 if (args.baseline_dir) |baseline_dir| {
                     const baseline_filename = try std.fmt.allocPrint(self.allocator, "{s}.json", .{bench.name});
@@ -493,6 +514,27 @@ pub const Runner = struct {
                     const buf = try self.allocator.alloc(u8, 4096);
                     defer self.allocator.free(buf);
                     try self.writeJson(file.writer(buf), result);
+                }
+
+                // Output CSV if requested
+                if (args.csv_output) {
+                    const csv_filename = try std.fmt.allocPrint(self.allocator, "{s}.csv", .{bench.name});
+                    defer self.allocator.free(csv_filename);
+                    const csv_path = try std.fs.path.join(self.allocator, &.{ dir, csv_filename });
+                    defer self.allocator.free(csv_path);
+
+                    const csv_file = try std.fs.cwd().createFile(csv_path, .{});
+                    defer csv_file.close();
+
+                    // Write CSV header
+                    try csv_file.writeAll("bench_name,repeat_index,repeat_count,ops_per_sec,p50_ns,p95_ns,p99_ns,max_ns,alloc_count,alloc_bytes,fsync_count,read_bytes,write_bytes,errors_total\n");
+
+                    // Write all results to single CSV file
+                    const csv_buf = try self.allocator.alloc(u8, 1024);
+                    defer self.allocator.free(csv_buf);
+                    for (results) |result| {
+                        try self.writeCsv(csv_file.writer(csv_buf), result);
+                    }
                 }
             }
 
@@ -919,6 +961,37 @@ pub const Runner = struct {
         return timestamp_str[0..len.len];
     }
 
+    fn writeCsv(self: *Runner, writer: anytype, result: types.BenchmarkResult) !void {
+        _ = self;
+        // CSV header row (commented out - write once per file)
+        // try writer.writeAll("bench_name,repeat_index,repeat_count,ops_per_sec,p50_ns,p95_ns,p99_ns,max_ns,alloc_count,alloc_bytes,fsync_count,read_bytes,write_bytes,errors_total\n");
+
+        // Write single result row
+        var csv_buf: [512]u8 = undefined;
+        const csv_line = try std.fmt.bufPrint(&csv_buf, "{s},{d},{d},{d:.6},{d},{d},{d},{d},{d},{d},{d},{d},{d},{d}\n", .{
+            result.bench_name,
+            result.repeat_index,
+            result.repeat_count,
+            result.results.ops_per_sec,
+            result.results.latency_ns.p50,
+            result.results.latency_ns.p95,
+            result.results.latency_ns.p99,
+            result.results.latency_ns.max,
+            result.results.alloc.alloc_count,
+            result.results.alloc.alloc_bytes,
+            result.results.io.fsync_count,
+            result.results.bytes.read_total,
+            result.results.bytes.write_total,
+            result.results.errors_total,
+        });
+        // For file writers, access the underlying file directly
+        if (@TypeOf(writer) == std.fs.File.Writer) {
+            try writer.file.writeAll(csv_line);
+        } else {
+            try writer.writeAll(csv_line);
+        }
+    }
+
     fn writeJson(self: *Runner, writer: anytype, result: types.BenchmarkResult) !void {
         // Validate against schema before writing
         try self.validateResult(result);
@@ -1169,6 +1242,7 @@ pub const RunArgs = struct {
     output_dir: ?[]const u8 = null,
     baseline_dir: ?[]const u8 = null,
     seed: ?u32 = null,
+    csv_output: bool = false,
     // CI thresholds for regression detection
     max_throughput_regression_pct: f64 = 5.0,
     max_p99_latency_regression_pct: f64 = 10.0,
