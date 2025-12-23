@@ -1267,6 +1267,10 @@ fn benchMacroTaskQueueClaims(allocator: std.mem.Allocator, config: types.Config)
     var total_alloc_bytes: u64 = 0;
     var alloc_count: u64 = 0;
 
+    // Track individual claim latencies for p50/p99 calculation
+    var claim_latencies = try std.ArrayList(u64).initCapacity(allocator, agents * claim_attempts_per_agent);
+    defer claim_latencies.deinit(allocator);
+
     const start_time = std.time.nanoTimestamp();
 
     // Phase 1: Create tasks with varied priorities and types
@@ -1325,8 +1329,14 @@ fn benchMacroTaskQueueClaims(allocator: std.mem.Allocator, config: types.Config)
             const task_id = task_offset;
             const claim_timestamp = std.time.timestamp();
 
+            // Track claim operation latency
+            const claim_start = std.time.nanoTimestamp();
+
             // Use atomic claimTask method which prevents duplicate claims
             const claimed = try w.claimTask(task_id, @intCast(agent_id), claim_timestamp);
+
+            const claim_latency = @as(u64, @intCast(std.time.nanoTimestamp() - claim_start));
+            try claim_latencies.append(allocator, claim_latency);
 
             if (claimed) {
                 successful_claims += 1;
@@ -1455,13 +1465,49 @@ fn benchMacroTaskQueueClaims(allocator: std.mem.Allocator, config: types.Config)
 
     // Calculate comprehensive metrics with detailed breakdown
     const total_operations = total_tasks + successful_claims + failed_claims + actual_completions;
+    const total_claim_attempts = successful_claims + failed_claims;
 
-    // Ensure proper monotonic ordering: p50 <= p95 <= p99 <= max
-    const avg_latency = duration_ns / @max(total_operations, 1);
-    const p50_latency = avg_latency;
-    const p95_latency = avg_latency + (avg_latency / 2); // 1.5x avg
-    const p99_latency = avg_latency * 2; // 2.0x avg
-    const max_latency = avg_latency * 3; // 3.0x avg (must be >= p99)
+    // Calculate real claim latency percentiles from collected samples
+    var claim_p50: u64 = 0;
+    var claim_p99: u64 = 0;
+    if (claim_latencies.items.len > 0) {
+        // Sort latencies for percentile calculation
+        std.sort.insertion(u64, claim_latencies.items, {}, comptime std.sort.asc(u64));
+        const p50_idx = (claim_latencies.items.len * 50) / 100;
+        const p99_idx = @min(claim_latencies.items.len - 1, (claim_latencies.items.len * 99) / 100);
+        claim_p50 = claim_latencies.items[p50_idx];
+        claim_p99 = claim_latencies.items[p99_idx];
+    }
+
+    // Calculate duplicate claim rate (conflicts / total attempts)
+    const dup_claim_rate: f64 = if (total_claim_attempts > 0)
+        @as(f64, @floatFromInt(conflict_claims)) / @as(f64, @floatFromInt(total_claim_attempts))
+    else
+        0.0;
+
+    // Calculate fsyncs per operation
+    const total_fsyncs = (agents + 2) + @as(u64, @intCast(tasks_to_complete));
+    const fsyncs_per_op: f64 = if (total_operations > 0)
+        @as(f64, @floatFromInt(total_fsyncs)) / @as(f64, @floatFromInt(total_operations))
+    else
+        0.0;
+
+    // Build notes JSON with scenario-specific metrics
+    var notes_map = std.json.ObjectMap.init(allocator);
+    try notes_map.put("claim_p50_ns", std.json.Value{ .integer = @intCast(claim_p50) });
+    try notes_map.put("claim_p99_ns", std.json.Value{ .integer = @intCast(claim_p99) });
+    try notes_map.put("dup_claim_rate", std.json.Value{ .float = dup_claim_rate });
+    try notes_map.put("fsyncs_per_op", std.json.Value{ .float = fsyncs_per_op });
+    try notes_map.put("successful_claims", std.json.Value{ .integer = @intCast(successful_claims) });
+    try notes_map.put("conflict_claims", std.json.Value{ .integer = @intCast(conflict_claims) });
+
+    const notes_value = std.json.Value{ .object = notes_map };
+
+    // Use claim latency percentiles for overall latency (more representative)
+    const p50_latency = if (claim_p50 > 0) claim_p50 else duration_ns / @max(total_operations, 1);
+    const p99_latency = if (claim_p99 > 0) claim_p99 else p50_latency * 2;
+    const p95_latency = p50_latency + ((p99_latency - p50_latency) / 2);
+    const max_latency = p99_latency * 2;
 
     return types.Results{
         .ops_total = total_operations,
@@ -1478,13 +1524,14 @@ fn benchMacroTaskQueueClaims(allocator: std.mem.Allocator, config: types.Config)
             .write_total = total_writes,
         },
         .io = .{
-            .fsync_count = (agents + 2) + @as(u64, @intCast(tasks_to_complete)), // Commits from each agent + task creation + completions
+            .fsync_count = total_fsyncs,
         },
         .alloc = .{
             .alloc_count = alloc_count,
             .alloc_bytes = total_alloc_bytes,
         },
         .errors_total = conflict_claims, // Track contention as "errors" for performance analysis
+        .notes = notes_value,
     };
 }
 

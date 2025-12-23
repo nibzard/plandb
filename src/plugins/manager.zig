@@ -3,9 +3,9 @@
 //! Manages plugin lifecycle, registration, and execution according to ai_plugins_v1.md
 
 const std = @import("std");
-const llm = @import("llm/types.zig");
-const client = @import("llm/client.zig");
-const txn = @import("txn.zig");
+const llm = @import("../llm/types.zig");
+const client = @import("../llm/client.zig");
+const txn = @import("../txn.zig");
 
 pub const PluginManager = struct {
     allocator: std.mem.Allocator,
@@ -292,7 +292,7 @@ pub const FunctionSchema = struct {
     description: []const u8,
     parameters: llm_function.JSONSchema,
 
-    const llm_function = @import("llm/function.zig");
+    const llm_function = @import("../llm/function.zig");
 
     pub fn init(allocator: std.mem.Allocator, name: []const u8, description: []const u8, parameters: llm_function.JSONSchema) !FunctionSchema {
         return FunctionSchema{

@@ -119,8 +119,8 @@ pub const OpenAIProvider = struct {
     ) !types.ValidationResult {
         _ = self;
 
-        var errors = std.ArrayList(types.ValidationError).init(allocator);
-        var warnings = std.ArrayList(types.ValidationWarning).init(allocator);
+        var errors = std.ArrayList(types.ValidationError).init(allocator) catch return error.OutOfMemory;
+        var warnings = std.ArrayList(types.ValidationWarning).init(allocator) catch return error.OutOfMemory;
 
         // Validate function name is present
         if (response.function_name.len == 0) {

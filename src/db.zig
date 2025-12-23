@@ -10,6 +10,7 @@ const txn = @import("txn.zig");
 const wal = @import("wal.zig");
 const pager_mod = @import("pager.zig");
 const snapshot = @import("snapshot.zig");
+const plugins = @import("plugins/manager.zig");
 const testing = std.testing;
 
 pub const WriteBusy = error{
@@ -25,6 +26,7 @@ pub const Db = struct {
     snapshot_registry: ?snapshot.SnapshotRegistry,
     writer_active: bool,
     log_path: ?[]const u8, // Phase 4: Path to separate .log file
+    plugin_manager: ?*plugins.PluginManager, // Phase 7: AI plugin system
 
     pub fn open(allocator: std.mem.Allocator) !Db {
         return .{
@@ -36,6 +38,7 @@ pub const Db = struct {
             .snapshot_registry = null, // In-memory databases don't need snapshot registry
             .writer_active = false,
             .log_path = null, // In-memory databases don't need log file
+            .plugin_manager = null, // No plugins by default
         };
     }
 
@@ -92,6 +95,7 @@ pub const Db = struct {
             .snapshot_registry = snapshot_registry,
             .writer_active = false,
             .log_path = log_path,
+            .plugin_manager = null, // No plugins by default
         };
     }
 
@@ -116,6 +120,13 @@ pub const Db = struct {
         if (self.log_path) |log_path| {
             self.allocator.free(log_path);
         }
+        // Note: plugin_manager is not owned by Db, owner is responsible for cleanup
+    }
+
+    /// Attach a plugin manager to the database for AI intelligence integration
+    /// The plugin_manager is not owned by Db - caller is responsible for cleanup
+    pub fn attachPluginManager(self: *Db, manager: *plugins.PluginManager) void {
+        self.plugin_manager = manager;
     }
 
     pub fn beginReadLatest(self: *Db) !ReadTxn {
@@ -269,6 +280,32 @@ pub const Db = struct {
         // Register new snapshot in snapshot registry
         if (self.snapshot_registry) |*registry| {
             try registry.registerSnapshot(commit_record.txn_id, new_root_page_id);
+        }
+
+        // Phase 7: Execute plugin on_commit hooks
+        // Plugin errors should not prevent commit - they're logged but don't fail the transaction
+        if (self.plugin_manager) |manager| {
+            var commit_ctx = plugins.CommitContext{
+                .txn_id = commit_record.txn_id,
+                .mutations = txn_ctx.mutations.items,
+                .timestamp = @intCast(std.time.nanoTimestamp()),
+                .metadata = std.StringHashMap([]const u8).init(self.allocator),
+            };
+            defer commit_ctx.deinit(self.allocator);
+
+            const result = manager.execute_on_commit_hooks(commit_ctx) catch |err| {
+                // Log the error but don't fail the commit
+                std.log.err("Plugin hook execution failed: {}", .{err});
+                return commit_record.txn_id;
+            };
+            defer result.deinit(self.allocator);
+
+            if (!result.success) {
+                // Log plugin errors but don't fail the commit
+                for (result.errors) |plugin_err| {
+                    std.log.err("Plugin '{s}' on_commit hook failed: {}", .{plugin_err.plugin_name, plugin_err.err});
+                }
+            }
         }
 
         return commit_record.txn_id; // Return txn_id as LSN since we're not using WAL anymore
@@ -1337,4 +1374,267 @@ test "complete_task_atomic_semantics" {
         try testing.expect(!completed);
         _ = try w.commit();
     }
+}
+
+test "plugin_hooks_called_during_commit" {
+    const test_db = "test_plugin_hooks.db";
+    const test_wal = "test_plugin_hooks.wal";
+    defer {
+        std.fs.cwd().deleteFile(test_db) catch {};
+        std.fs.cwd().deleteFile(test_wal) catch {};
+    }
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // Create plugin with on_commit hook
+    const test_plugin = plugins.Plugin{
+        .name = "test_hook_plugin",
+        .version = "0.1.0",
+        .on_commit = struct {
+            fn hook(allocator: std.mem.Allocator, ctx: plugins.CommitContext) anyerror!plugins.PluginResult {
+                _ = allocator;
+                return plugins.PluginResult{
+                    .success = true,
+                    .operations_processed = ctx.mutations.len,
+                    .cartridges_updated = 0,
+                };
+            }
+        }.hook,
+        .on_query = null,
+        .on_schedule = null,
+        .get_functions = null,
+    };
+
+    // Create plugin manager
+    const plugin_config = plugins.PluginConfig{
+        .llm_provider = .{
+            .provider_type = "local",
+            .model = "test-model",
+        },
+        .fallback_on_error = true,
+        .performance_isolation = true,
+    };
+
+    var plugin_manager = try plugins.PluginManager.init(arena.allocator(), plugin_config);
+    defer plugin_manager.deinit();
+
+    try plugin_manager.register_plugin(test_plugin);
+
+    // Open database and attach plugin manager
+    var db = try Db.openWithFile(arena.allocator(), test_db, test_wal);
+    defer db.close();
+    db.attachPluginManager(&plugin_manager);
+
+    // Perform a commit - should not fail
+    var w = try db.beginWrite();
+    try w.put("key1", "value1");
+    try w.put("key2", "value2");
+    const lsn = try w.commit();
+
+    // Verify commit succeeded (hook was called without error)
+    try testing.expect(lsn > 0);
+}
+
+test "plugin_hook_error_does_not_prevent_commit" {
+    const test_db = "test_plugin_error.db";
+    const test_wal = "test_plugin_error.wal";
+    defer {
+        std.fs.cwd().deleteFile(test_db) catch {};
+        std.fs.cwd().deleteFile(test_wal) catch {};
+    }
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // Create plugin that fails
+    const failing_plugin = plugins.Plugin{
+        .name = "failing_plugin",
+        .version = "0.1.0",
+        .on_commit = struct {
+            fn hook(allocator: std.mem.Allocator, ctx: plugins.CommitContext) anyerror!plugins.PluginResult {
+                _ = allocator;
+                _ = ctx;
+                return error.PluginFailed;
+            }
+        }.hook,
+        .on_query = null,
+        .on_schedule = null,
+        .get_functions = null,
+    };
+
+    const plugin_config = plugins.PluginConfig{
+        .llm_provider = .{
+            .provider_type = "local",
+            .model = "test-model",
+        },
+        .fallback_on_error = true,
+    };
+
+    var plugin_manager = try plugins.PluginManager.init(arena.allocator(), plugin_config);
+    defer plugin_manager.deinit();
+
+    try plugin_manager.register_plugin(failing_plugin);
+
+    var db = try Db.openWithFile(arena.allocator(), test_db, test_wal);
+    defer db.close();
+    db.attachPluginManager(&plugin_manager);
+
+    // Commit should succeed even though plugin fails
+    var w = try db.beginWrite();
+    try w.put("key1", "value1");
+    const lsn = try w.commit();
+
+    // Verify commit succeeded
+    try testing.expect(lsn > 0);
+
+    // Verify data was persisted
+    var r = try db.beginReadLatest();
+    defer r.close();
+    const value = r.get("key1");
+    try testing.expect(value != null);
+    try testing.expectEqualStrings("value1", value.?);
+}
+
+test "plugin_hooks_with_no_plugins_registered" {
+    const test_db = "test_no_plugins.db";
+    const test_wal = "test_no_plugins.wal";
+    defer {
+        std.fs.cwd().deleteFile(test_db) catch {};
+        std.fs.cwd().deleteFile(test_wal) catch {};
+    }
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // Create plugin manager but don't register any plugins
+    const plugin_config = plugins.PluginConfig{
+        .llm_provider = .{
+            .provider_type = "local",
+            .model = "test-model",
+        },
+    };
+
+    var plugin_manager = try plugins.PluginManager.init(arena.allocator(), plugin_config);
+    defer plugin_manager.deinit();
+
+    var db = try Db.openWithFile(arena.allocator(), test_db, test_wal);
+    defer db.close();
+    db.attachPluginManager(&plugin_manager);
+
+    // Commit should work normally
+    var w = try db.beginWrite();
+    try w.put("key1", "value1");
+    const lsn = try w.commit();
+
+    try testing.expect(lsn > 0);
+}
+
+test "plugin_hooks_with_no_plugin_manager_attached" {
+    const test_db = "test_no_manager.db";
+    const test_wal = "test_no_manager.wal";
+    defer {
+        std.fs.cwd().deleteFile(test_db) catch {};
+        std.fs.cwd().deleteFile(test_wal) catch {};
+    }
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var db = try Db.openWithFile(arena.allocator(), test_db, test_wal);
+    defer db.close();
+
+    // No plugin manager attached - commit should work normally
+    var w = try db.beginWrite();
+    try w.put("key1", "value1");
+    const lsn = try w.commit();
+
+    try testing.expect(lsn > 0);
+}
+
+test "plugin_hooks_multiple_plugins" {
+    const test_db = "test_multi_plugins.db";
+    const test_wal = "test_multi_plugins.wal";
+    defer {
+        std.fs.cwd().deleteFile(test_db) catch {};
+        std.fs.cwd().deleteFile(test_wal) catch {};
+    }
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    // Create a simple no-op plugin
+    const createPlugin = struct {
+        fn create(name: []const u8) plugins.Plugin {
+            return plugins.Plugin{
+                .name = name,
+                .version = "0.1.0",
+                .on_commit = struct {
+                    fn hook(allocator: std.mem.Allocator, ctx: plugins.CommitContext) anyerror!plugins.PluginResult {
+                        _ = allocator;
+                        _ = ctx;
+                        return plugins.PluginResult{
+                            .success = true,
+                            .operations_processed = 1,
+                            .cartridges_updated = 0,
+                        };
+                    }
+                }.hook,
+                .on_query = null,
+                .on_schedule = null,
+                .get_functions = null,
+            };
+        }
+    };
+
+    const plugin_config = plugins.PluginConfig{
+        .llm_provider = .{
+            .provider_type = "local",
+            .model = "test-model",
+        },
+    };
+
+    var plugin_manager = try plugins.PluginManager.init(arena.allocator(), plugin_config);
+    defer plugin_manager.deinit();
+
+    // Register multiple plugins
+    try plugin_manager.register_plugin(createPlugin.create("plugin1"));
+    try plugin_manager.register_plugin(createPlugin.create("plugin2"));
+    try plugin_manager.register_plugin(createPlugin.create("plugin3"));
+
+    var db = try Db.openWithFile(arena.allocator(), test_db, test_wal);
+    defer db.close();
+    db.attachPluginManager(&plugin_manager);
+
+    var w = try db.beginWrite();
+    try w.put("key1", "value1");
+    const lsn = try w.commit();
+
+    // Commit should succeed with all plugins called
+    try testing.expect(lsn > 0);
+}
+
+test "attachPluginManager_method" {
+    var db = try Db.open(std.testing.allocator);
+    defer db.close();
+
+    const plugin_config = plugins.PluginConfig{
+        .llm_provider = .{
+            .provider_type = "local",
+            .model = "test-model",
+        },
+    };
+
+    var plugin_manager = try plugins.PluginManager.init(std.testing.allocator, plugin_config);
+    defer plugin_manager.deinit();
+
+    // Initially no plugin manager
+    try testing.expect(db.plugin_manager == null);
+
+    // Attach plugin manager
+    db.attachPluginManager(&plugin_manager);
+
+    // Should now have plugin manager
+    try testing.expect(db.plugin_manager != null);
+    try testing.expectEqual(@ptrCast(db.plugin_manager.?), @ptrCast(&plugin_manager));
 }

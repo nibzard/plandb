@@ -57,9 +57,7 @@ pub const LLMProvider = union(enum) {
     /// Clean up provider resources
     pub fn deinit(provider: *LLMProvider, allocator: std.mem.Allocator) void {
         switch (provider.*) {
-            .openai => |*p| p.deinit(allocator),
-            .anthropic => |*p| p.deinit(allocator),
-            .local => |*p| p.deinit(allocator),
+            inline else => |*p| p.deinit(allocator),
         }
     }
 
@@ -80,7 +78,7 @@ pub fn createProvider(
     config: types.ProviderConfig
 ) !LLMProvider {
     if (std.mem.eql(u8, provider_type, "openai")) {
-        var openai_config = OpenAIProvider.Config{
+        const openai_config = OpenAIProvider.Config{
             .api_key = try allocator.dupe(u8, config.api_key),
             .model = try allocator.dupe(u8, config.model),
             .base_url = try allocator.dupe(u8, config.base_url),
@@ -90,7 +88,7 @@ pub fn createProvider(
         const provider = try OpenAIProvider.init(allocator, openai_config);
         return LLMProvider{ .openai = provider };
     } else if (std.mem.eql(u8, provider_type, "anthropic")) {
-        var anthropic_config = AnthropicProvider.Config{
+        const anthropic_config = AnthropicProvider.Config{
             .api_key = try allocator.dupe(u8, config.api_key),
             .model = try allocator.dupe(u8, config.model),
             .base_url = try allocator.dupe(u8, config.base_url),
@@ -100,7 +98,7 @@ pub fn createProvider(
         const provider = try AnthropicProvider.init(allocator, anthropic_config);
         return LLMProvider{ .anthropic = provider };
     } else if (std.mem.eql(u8, provider_type, "local")) {
-        var local_config = LocalProvider.Config{
+        const local_config = LocalProvider.Config{
             .model_path = try allocator.dupe(u8, config.api_key), // reuse api_key for path
             .timeout_ms = config.timeout_ms,
         };
@@ -128,7 +126,10 @@ test "provider_factory_openai" {
         try std.testing.expect(err == error.NetworkError or err == error.InvalidConfiguration);
         return;
     };
-    defer provider.deinit(std.testing.allocator);
+    defer {
+        var p = provider;
+        p.deinit(std.testing.allocator);
+    }
 
     try std.testing.expect(provider == .openai);
 }
@@ -160,8 +161,11 @@ test "provider_name" {
     defer config.deinit(std.testing.allocator);
 
     // Test that name function compiles for each type
-    _ = LLMProvider{ .local = undefined }.name();
-    try std.testing.expectEqualStrings("local", LLMProvider{ .local = undefined }.name());
-    try std.testing.expectEqualStrings("openai", LLMProvider{ .openai = undefined }.name());
-    try std.testing.expectEqualStrings("anthropic", LLMProvider{ .anthropic = undefined }.name());
+    var local_provider = LLMProvider{ .local = undefined };
+    var openai_provider = LLMProvider{ .openai = undefined };
+    var anthropic_provider = LLMProvider{ .anthropic = undefined };
+    _ = local_provider.name();
+    try std.testing.expectEqualStrings("local", local_provider.name());
+    try std.testing.expectEqualStrings("openai", openai_provider.name());
+    try std.testing.expectEqualStrings("anthropic", anthropic_provider.name());
 }

@@ -45,7 +45,7 @@ pub const AnthropicProvider = struct {
         allocator.free(self.base_url);
     }
 
-    pub fn get_capabilities(self: *const Self) types.ProviderCapabilities {
+    pub fn get_capabilities(_: *const Self) types.ProviderCapabilities {
         return .{
             .max_tokens = 8192,
             .supports_streaming = true,
@@ -213,7 +213,6 @@ pub const AnthropicProvider = struct {
         response_body: []const u8,
         allocator: std.mem.Allocator
     ) !types.FunctionResult {
-        _ = self;
 
         const parsed = try std.json.parseFromSlice(std.json.Value, allocator, response_body, .{});
         defer parsed.deinit();
@@ -244,15 +243,19 @@ pub const AnthropicProvider = struct {
         // Extract token usage if present
         var tokens_used: ?types.TokenUsage = null;
         if (root.object.get("usage")) |usage| {
-            const input_tokens = usage.object.get("input_tokens") orelse continue;
-            const output_tokens = usage.object.get("output_tokens") orelse continue;
+            const input_tokens_opt = usage.object.get("input_tokens");
+            const output_tokens_opt = usage.object.get("output_tokens");
 
-            if (input_tokens == .number and output_tokens == .number) {
-                tokens_used = types.TokenUsage{
-                    .prompt_tokens = @intFromFloat(input_tokens.number),
-                    .completion_tokens = @intFromFloat(output_tokens.number),
-                    .total_tokens = @intFromFloat(input_tokens.number + output_tokens.number),
-                };
+            if (input_tokens_opt != null and output_tokens_opt != null) {
+                const input_tokens = input_tokens_opt.?;
+                const output_tokens = output_tokens_opt.?;
+                if (input_tokens == .number and output_tokens == .number) {
+                    tokens_used = types.TokenUsage{
+                        .prompt_tokens = @intFromFloat(input_tokens.number),
+                        .completion_tokens = @intFromFloat(output_tokens.number),
+                        .total_tokens = @intFromFloat(input_tokens.number + output_tokens.number),
+                    };
+                }
             }
         }
 
@@ -279,7 +282,7 @@ test "anthropic_provider_initialization" {
         .model = "claude-3-5-sonnet-20241022",
     };
 
-    const provider = try AnthropicProvider.init(std.testing.allocator, config);
+    var provider = try AnthropicProvider.init(std.testing.allocator, config);
     provider.deinit(std.testing.allocator);
 
     try std.testing.expect(true); // If we got here, initialization worked

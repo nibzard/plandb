@@ -37,7 +37,7 @@ pub const LocalProvider = struct {
         allocator.free(self.model_path);
     }
 
-    pub fn get_capabilities(self: *const Self) types.ProviderCapabilities {
+    pub fn get_capabilities(_: *const Self) types.ProviderCapabilities {
         return .{
             .max_tokens = 2048,
             .supports_streaming = false,
@@ -49,14 +49,12 @@ pub const LocalProvider = struct {
     }
 
     pub fn call_function(
-        self: *const Self,
-        schema: function.FunctionSchema,
-        params: types.Value,
+        _: *const Self,
+        _: function.FunctionSchema,
+        _: types.Value,
         allocator: std.mem.Allocator
     ) !types.FunctionResult {
-        _ = self;
-        _ = schema;
-        _ = params;
+        _ = allocator;
 
         // TODO: Implement local model execution
         // This would involve:
@@ -130,7 +128,7 @@ test "local_provider_initialization" {
         .model_path = "/path/to/model.gguf",
     };
 
-    const provider = try LocalProvider.init(std.testing.allocator, config);
+    var provider = try LocalProvider.init(std.testing.allocator, config);
     provider.deinit(std.testing.allocator);
 
     try std.testing.expect(true); // If we got here, initialization worked
