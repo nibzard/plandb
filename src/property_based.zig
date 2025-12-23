@@ -7,6 +7,25 @@
 //!
 //! This framework complements unit tests and benchmarks by providing exhaustive
 //! validation of database correctness properties.
+//!
+//! ## Specification References
+//!
+//! This file validates the following specifications:
+//!
+//! - **spec/correctness_contracts_v0.md** - All correctness contracts via property testing
+//! - **spec/semantics_v0.md** - MVCC and time-travel properties
+//! - **spec/hardening_v0.md** - Crash equivalence validation
+//!
+//! ## Property Test Coverage
+//!
+//! | Property Test | Validates Spec | Contract |
+//! |---------------|----------------|----------|
+//! | `commutativityProperty` | correctness_contracts_v0.md | AC-001, CS-002 |
+//! | `batchEquivalenceProperty` | semantics_v0.md | AC-001 |
+//! | `crashEquivalenceProperty` | correctness_contracts_v0.md | DU-001, CS-002 |
+//! | `snapshotImmutabilityProperty` | semantics_v0.md | SI-001 |
+//! | `timeTravelCorrectnessProperty` | semantics_v0.md | SI-002 |
+//! | `concurrentSnapshotIsolationProperty` | semantics_v0.md | AC-002, SI-001 |
 
 const std = @import("std");
 const ref_model = @import("ref_model.zig");

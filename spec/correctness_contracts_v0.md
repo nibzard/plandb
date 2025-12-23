@@ -309,3 +309,28 @@ Each contract should have corresponding test implementations that:
 - Include edge cases and boundary conditions
 - Provide clear pass/fail criteria
 - Generate actionable failure diagnostics
+
+---
+
+## Code Validator Cross-References
+
+### Contract → Validator Mapping
+
+| Contract ID | Validator Function | Source File | Test Name |
+|-------------|-------------------|-------------|-----------|
+| AC-001 | `PropertyTestSuite.commutativityProperty` | src/property_based.zig:180 | "commutativity property test" |
+| AC-002 | `ConcurrencyConfig.manyReadersOneWriter` | src/hardening.zig:954 | "concurrency: many readers one writer" |
+| SI-001 | `PropertyTestSuite.snapshotImmutabilityProperty` | src/property_based.zig:380 | "snapshot immutability property" |
+| SI-002 | `PropertyTestSuite.timeTravelCorrectnessProperty` | src/property_based.zig:460 | "time travel correctness property" |
+| DU-001 | `crashHarnessTaskQueue` | src/hardening.zig:445 | "crash harness task queue" |
+| DU-002 | `benchPagerCommitMeta` | src/bench/suite.zig:1910 | "bench/pager/commit_meta_fsync" |
+| CS-001 | `PropertyTestSuite.crashEquivalenceProperty` | src/property_based.zig:540 | "crash equivalence property" |
+| CS-002 | `ReplayEngine.rebuildAll` | src/replay.zig:70 | "replay into memtable" |
+| MP-001 | `chooseBestMeta` | src/pager.zig:580 | "open chooses highest valid meta" |
+
+### Spec Document Links
+
+- **File Format**: spec/file_format_v0.md → validated by `validateBtreeLeafStructure` in src/btree.zig:780
+- **Commit Record**: spec/commit_record_v0.md → validated by `decodeCommitRecord` in src/wal.zig:320
+- **Semantics**: spec/semantics_v0.md → validated by `Model` in src/ref_model.zig:130
+- **Hardening**: spec/hardening_v0.md → validated by `runAllHardeningTests` in src/hardening.zig:684

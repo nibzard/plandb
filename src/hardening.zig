@@ -2,6 +2,26 @@
 //!
 //! Implements comprehensive tests for torn writes, short writes, and corruption
 //! scenarios to verify the replay engine's robustness and clean recovery capabilities.
+//!
+//! ## Specification References
+//!
+//! This file validates the following specifications:
+//!
+//! - **spec/hardening_v0.md** - Crash consistency torture, torn-write simulation, fuzz tests
+//! - **spec/correctness_contracts_v0.md** - DU-001 (Crash Recovery Durability), DU-002 (Fsync Ordering)
+//! - **spec/commit_record_v0.md** - Record validation and corruption detection
+//!
+//! ## Test Coverage
+//!
+//! | Test | Validates Spec | Contract |
+//! |------|----------------|----------|
+//! | `hardeningTornWriteHeader` | hardening_v0.md | DU-001 |
+//! | `hardeningTornWritePayload` | hardening_v0.md | DU-001 |
+//! | `hardeningShortWriteMissingTrailer` | commit_record_v0.md | DU-002 |
+//! | `crashHarnessTaskQueue` | hardening_v0.md | DU-001, CS-002 |
+//! | `goldenFileEmptyDbV0` | file_format_v0.md | MP-001 |
+//! | `concurrencyManyReadersOneWriter` | semantics_v0.md | AC-002, SI-001 |
+//! | `concurrencySnapshotIsolation` | semantics_v0.md | SI-001, SI-002 |
 
 const std = @import("std");
 const wal = @import("wal.zig");

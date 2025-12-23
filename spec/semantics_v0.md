@@ -214,6 +214,41 @@ These are the minimum required tests for semantics V0:
 
 ---
 
+## Code Validator Cross-References
+
+### Semantics Validators
+
+| Semantic Property | Validator Function | Source File | Test Name |
+|-------------------|-------------------|-------------|-----------|
+| Snapshot Isolation | `PropertyTestSuite.snapshotImmutabilityProperty` | src/property_based.zig:380 | "snapshot immutability property" |
+| Time Travel | `PropertyTestSuite.timeTravelCorrectnessProperty` | src/property_based.zig:460 | "time travel correctness property" |
+| Read-Your-Writes | `WriteTxn.get` | src/txn.zig:380 | "write txn reads own writes" |
+| Single Writer | `Db.beginWrite` (WriteBusy error) | src/db.zig:280 | "single writer enforcement" |
+| Concurrent Snapshot | `PropertyTestSuite.concurrentSnapshotIsolationProperty` | src/property_based.zig:640 | "concurrent snapshot isolation" |
+| Atomic Commit | `PropertyTestSuite.commutativityProperty` | src/property_based.zig:180 | "commutativity property test" |
+
+### Spec Document Links
+
+- **Correctness Contracts**: spec/correctness_contracts_v0.md → formal contract definitions
+- **File Format**: spec/file_format_v0.md → on-disk format specification
+- **Commit Record**: spec/commit_record_v0.md → commit stream format
+- **Hardening**: spec/hardening_v0.md → crash consistency tests
+
+### Reference Model
+
+The `src/ref_model.zig` file provides the reference implementation that validates:
+- MVCC snapshot semantics (Model.getSnapshotState)
+- Commit log replay (CommitLog.replayToTxnId)
+- Deterministic operation generation (SeededRng, OperationGenerator)
+
+### Related Test Files
+
+- `src/hardening.zig` - Concurrency and crash tests
+- `src/property_based.zig` - Property-based test suite
+- `src/txn.zig` - Transaction implementation tests
+
+---
+
 ## 9) Notes on Extension (Future Compatibility)
 
 This spec intentionally aligns with future upgrades:

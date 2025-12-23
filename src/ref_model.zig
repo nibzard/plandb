@@ -2,6 +2,23 @@
 //!
 //! Currently provides basic snapshot bookkeeping; full MVCC semantics and history
 //! cloning are stubbed out and will be expanded alongside the B+tree/MVCC work.
+//!
+//! ## Specification References
+//!
+//! This file implements the reference model for validating the following specifications:
+//!
+//! - **spec/correctness_contracts_v0.md** - RM-001 (Byte-Identical Equivalence)
+//! - **spec/semantics_v0.md** - MVCC snapshot semantics, time travel queries
+//! - **spec/ref_model_v0.md** - Reference model architecture
+//!
+//! ## Validation Coverage
+//!
+//! | Component | Validates Spec | Contract |
+//! |-----------|----------------|----------|
+//! | `Model.getSnapshotState` | semantics_v0.md | SI-001 (Snapshot Immutability) |
+//! | `CommitLog.replayToTxnId` | correctness_contracts_v0.md | CS-002 (Deterministic Replay) |
+//! | `OperationGenerator` | semantics_v0.md | RM-001 (Reference Equivalence) |
+//! | `compareStates` | correctness_contracts_v0.md | RM-001 |
 
 const std = @import("std");
 

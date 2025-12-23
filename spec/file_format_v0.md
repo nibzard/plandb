@@ -211,3 +211,30 @@ Unit tests:
 Hardening:
 - torn-write injection on meta page must not produce a "phantom commit"
 - torn-write injection on data page must be detected by checksum
+
+---
+
+## Code Validator Cross-References
+
+### Format Validators
+
+| Format Component | Validator Function | Source File | Test Name |
+|------------------|-------------------|-------------|-----------|
+| Page Header | `validatePageHeader` | src/pager.zig:420 | "page header checksum validates" |
+| Meta Encode/Decode | `encodeMetaPage`/`decodeMetaPage` | src/pager.zig:490 | "meta page roundtrip encode decode" |
+| B+tree Leaf | `decodeBtreeLeafPage` | src/btree.zig:240 | "btree leaf decode roundtrip" |
+| B+tree Internal | `decodeBtreeInternalNode` | src/btree.zig:560 | "btree internal node decode" |
+| CRC32C Checksum | `calculateCRC32C` | src/pager.zig:180 | "crc32c empty buffer is zero" |
+
+### Spec Document Links
+
+- **Correctness Contracts**: spec/correctness_contracts_v0.md → validates all invariants
+- **Semantics**: spec/semantics_v0.md → defines observable behavior
+- **Hardening**: spec/hardening_v0.md → crash consistency tests
+- **Commit Record**: spec/commit_record_v0.md → WAL format validation
+
+### Related Test Files
+
+- `src/hardening.zig` - Crash consistency and fault injection tests
+- `src/ref_model.zig` - Reference model for validation
+- `src/property_based.zig` - Property-based testing framework

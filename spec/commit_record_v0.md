@@ -204,6 +204,44 @@ Hardening:
 
 ---
 
+## Code Validator Cross-References
+
+### Commit Record Validators
+
+| Record Component | Validator Function | Source File | Test Name |
+|------------------|-------------------|-------------|-----------|
+| Record Encode/Decode | `encodeCommitRecord`/`decodeCommitRecord` | src/wal.zig:320 | "commit record encode decode roundtrip" |
+| Header Validation | `validateRecordHeader` | src/wal.zig:280 | "record header checksum validates" |
+| Payload Parsing | `decodeCommitPayload` | src/wal.zig:450 | "commit payload decodes mutations" |
+| Trailer Validation | `validateRecordTrailer` | src/wal.zig:380 | "record trailer validates" |
+| Replay Engine | `ReplayEngine.rebuildAll` | src/replay.zig:70 | "replay into memtable" |
+
+### Hardening Tests
+
+| Test Type | Validator Function | Source File | Test Name |
+|-----------|-------------------|-------------|-----------|
+| Torn Write Header | `hardeningTornWriteHeader` | src/hardening.zig:35 | "torn write header" |
+| Torn Write Payload | `hardeningTornWritePayload` | src/hardening.zig:85 | "torn write payload" |
+| Missing Trailer | `hardeningShortWriteMissingTrailer` | src/hardening.zig:140 | "missing trailer" |
+| Mixed Records | `hardeningMixedValidCorruptRecords` | src/hardening.zig:191 | "mixed valid corrupt records" |
+| Invalid Magic | `hardeningInvalidMagicNumber` | src/hardening.zig:272 | "invalid magic number" |
+
+### Spec Document Links
+
+- **Correctness Contracts**: spec/correctness_contracts_v0.md → CS-001, CS-002 contracts
+- **File Format**: spec/file_format_v0.md → overall storage format
+- **Semantics**: spec/semantics_v0.md → deterministic replay requirements
+- **Hardening**: spec/hardening_v0.md → crash consistency tests
+
+### Related Test Files
+
+- `src/wal.zig` - Write-ahead log implementation
+- `src/replay.zig` - Replay engine for commit records
+- `src/hardening.zig` - Hardening tests for log corruption
+- `src/property_based.zig` - Property-based crash equivalence tests
+
+---
+
 ## 8) Extension points
 
 Future versions may add:

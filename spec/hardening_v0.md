@@ -20,7 +20,7 @@ Must pass:
 Metrics recorded:
 	•	recovery time p50/p99
 	•	number of killed runs executed
-	•	smallest “prefix mismatch” if detected (helps debugging)
+	•	smallest "prefix mismatch" if detected (helps debugging)
 
 2) Torn-write simulation (critical nightly)
 
@@ -45,4 +45,57 @@ hard/fuzz/btree_node_decode
 hard/format/open_golden_v0
 	•	open known DB created by an earlier commit
 	•	verify enumerating keys matches expected hash
+
+---
+
+## Code Validator Cross-References
+
+### Hardening Test Functions
+
+| Test Category | Validator Function | Source File | Test Name |
+|---------------|-------------------|-------------|-----------|
+| Crash Torture | `crashHarnessTaskQueue` | src/hardening.zig:445 | "crash harness task queue" |
+| Torn Write Header | `hardeningTornWriteHeader` | src/hardening.zig:35 | "torn write header" |
+| Torn Write Payload | `hardeningTornWritePayload` | src/hardening.zig:85 | "torn write payload" |
+| Missing Trailer | `hardeningShortWriteMissingTrailer` | src/hardening.zig:140 | "missing trailer" |
+| Mixed Records | `hardeningMixedValidCorruptRecords` | src/hardening.zig:191 | "mixed valid corrupt records" |
+| Invalid Magic | `hardeningInvalidMagicNumber` | src/hardening.zig:272 | "invalid magic number" |
+| Golden File | `goldenFileEmptyDbV0` | src/hardening.zig:775 | "golden file: empty DB v0" |
+
+### Concurrency Tests
+
+| Test | Validator Function | Source File | Test Name |
+|------|-------------------|-------------|-----------|
+| Many Readers One Writer | `concurrencyManyReadersOneWriter` | src/hardening.zig:954 | "concurrency: many readers one writer" |
+| Snapshot Isolation | `concurrencySnapshotIsolation` | src/hardening.zig:1059 | "concurrency: snapshot isolation invariants" |
+| Forced Yields Stress | `concurrencyForcedYieldsStress` | src/hardening.zig:1163 | "concurrency: forced yields stress" |
+| Read Write Stress | `concurrencyReadWriteStress` | src/hardening.zig:1238 | "concurrency: read write stress" |
+
+### Spec Document Links
+
+- **Correctness Contracts**: spec/correctness_contracts_v0.md → DU-001, DU-002 contracts
+- **File Format**: spec/file_format_v0.md → corruption handling policy
+- **Semantics**: spec/semantics_v0.md → crash recovery rules
+- **Commit Record**: spec/commit_record_v0.md → torn-write detection
+
+### Related Test Files
+
+- `src/hardening.zig` - All hardening test implementations
+- `src/property_based.zig` - Crash equivalence property tests
+- `src/ref_model.zig` - Reference model for verification
+- `src/fuzz.zig` - Fuzzing harness for format validators
+
+### Test Orchestration
+
+Run all hardening tests:
+```bash
+zig test src/hardening.zig
+```
+
+Run specific test:
+```zig test
+zig test src/hardening.zig --test "crash harness task queue"
+```
+
+Nightly CI execution: `.github/workflows/nightly.yml`
 
