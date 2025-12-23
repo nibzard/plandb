@@ -629,7 +629,17 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED**: Added tests for async behavior
   - **STATUS**: Async plugin execution with error isolation fully implemented
   - Committed 2025-12-23
-- [ ] 🟡 Add plugin development framework and debugging tools
+- [ ✅ ] 🟡 Add plugin development framework and debugging tools
+  - **COMPLETED**: Added MockLLMProvider for deterministic testing with preset responses
+  - **COMPLETED**: Added TestHarness for end-to-end plugin testing
+  - **COMPLETED**: Added PluginTracer for execution tracing with timing/cost tracking
+  - **COMPLETED**: Added PluginValidator for schema compliance validation
+  - **COMPLETED**: Added CLI commands: list, test, validate, info, mock, trace
+  - **COMPLETED**: Added test fixtures for entity extraction examples in test_utils/fixtures.zig
+  - **COMPLETED**: Integrated plugin CLI into main benchmark harness
+  - **STATUS**: Plugin development framework fully implemented
+  - **BLOCKERS**: Zig 0.15.2 API compatibility fixes needed for ArrayListUnmanaged and std.io
+  - Committed 2025-12-23
 
 ### Structured Memory Cartridges
 - [ ] 🔴 Design entity-topic-relationship cartridge storage format

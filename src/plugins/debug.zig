@@ -9,9 +9,9 @@ const llm_types = @import("../llm/types.zig");
 /// Debug tracer for plugin execution
 pub const PluginTracer = struct {
     allocator: std.mem.Allocator,
-    events: std.ArrayList(TraceEvent),
+    events: std.ArrayListUnmanaged(TraceEvent),
     current_span: ?*TraceSpan,
-    root_spans: std.ArrayList(*TraceSpan),
+    root_spans: std.ArrayListUnmanaged(*TraceSpan),
     enabled: bool,
 
     const Self = @This();
@@ -19,22 +19,22 @@ pub const PluginTracer = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         return Self{
             .allocator = allocator,
-            .events = std.ArrayList(TraceEvent).init(allocator),
+            .events = std.ArrayListUnmanaged(TraceEvent){},
             .current_span = null,
-            .root_spans = std.ArrayList(*TraceSpan).init(allocator),
+            .root_spans = std.ArrayListUnmanaged(*TraceSpan){},
             .enabled = true,
         };
     }
 
     pub fn deinit(self: *Self) void {
         for (self.events.items) |*e| e.deinit(self.allocator);
-        self.events.deinit();
+        self.events.deinit(self.allocator);
 
         for (self.root_spans.items) |span| {
             span.deinit(self.allocator);
             self.allocator.destroy(span);
         }
-        self.root_spans.deinit();
+        self.root_spans.deinit(self.allocator);
     }
 
     /// Enable/disable tracing
@@ -52,23 +52,23 @@ pub const PluginTracer = struct {
         span.* = TraceSpan{
             .name = try self.allocator.dupe(u8, name),
             .span_type = span_type,
-            .start_time = std.time.nanoTimestamp(),
+            .start_time = @intCast(std.time.nanoTimestamp()),
             .end_time = null,
             .parent = self.current_span,
-            .children = std.ArrayList(*TraceSpan).init(self.allocator),
+            .children = std.ArrayListUnmanaged(*TraceSpan){},
             .metadata = std.StringHashMap([]const u8).init(self.allocator),
-            .llm_calls = std.ArrayList(LLMCallInfo).init(self.allocator),
+            .llm_calls = std.ArrayListUnmanaged(LLMCallInfo){},
         };
 
         if (self.current_span) |parent| {
-            try parent.children.append(span);
+            try parent.children.append(self.allocator, span);
         } else {
-            try self.root_spans.append(span);
+            try self.root_spans.append(self.allocator, span);
         }
 
         self.current_span = span;
 
-        try self.events.append(.{
+        try self.events.append(self.allocator, .{
             .timestamp = span.start_time,
             .event_type = .span_start,
             .span_name = try self.allocator.dupe(u8, name),
@@ -81,10 +81,10 @@ pub const PluginTracer = struct {
     pub fn endSpan(self: *Self, span: *TraceSpan) !void {
         if (!self.enabled or span == &globalDummySpan) return;
 
-        span.end_time = std.time.nanoTimestamp();
+        span.end_time = @intCast(std.time.nanoTimestamp());
 
-        try self.events.append(.{
-            .timestamp = span.end_time.?,
+        try self.events.append(self.allocator, .{
+            .timestamp = @intCast(span.end_time.?),
             .event_type = .span_end,
             .span_name = try self.allocator.dupe(u8, span.name),
         });
@@ -105,15 +105,15 @@ pub const PluginTracer = struct {
     ) !void {
         if (!self.enabled or span == &globalDummySpan) return;
 
-        try span.llm_calls.append(.{
+        try span.llm_calls.append(self.allocator, .{
             .function_name = try self.allocator.dupe(u8, function_name),
             .tokens_used = tokens_used,
             .duration_ms = duration_ms,
             .success = success,
         });
 
-        try self.events.append(.{
-            .timestamp = std.time.nanoTimestamp(),
+        try self.events.append(self.allocator, .{
+            .timestamp = @intCast(std.time.nanoTimestamp()),
             .event_type = if (success) .llm_call_success else .llm_call_error,
             .span_name = try self.allocator.dupe(u8, span.name),
             .llm_function = try self.allocator.dupe(u8, function_name),
@@ -252,10 +252,14 @@ var globalDummySpan = TraceSpan{
     .start_time = 0,
     .end_time = null,
     .parent = null,
-    .children = undefined,
-    .metadata = undefined,
-    .llm_calls = undefined,
+    .children = std.ArrayListUnmanaged(*TraceSpan){},
+    .metadata = std.StringHashMap([]const u8).init(globalDummyMetadataAllocator.allocator()),
+    .llm_calls = std.ArrayListUnmanaged(LLMCallInfo){},
 };
+
+var globalDummyMetadataAllocator = std.heap.FixedBufferAllocator.init(&globalDummyMetadataBuffer);
+
+var globalDummyMetadataBuffer: [256]u8 = undefined;
 
 /// Trace span representing a plugin execution
 pub const TraceSpan = struct {
@@ -264,9 +268,9 @@ pub const TraceSpan = struct {
     start_time: i64,
     end_time: ?i64,
     parent: ?*TraceSpan,
-    children: std.ArrayList(*TraceSpan),
+    children: std.ArrayListUnmanaged(*TraceSpan),
     metadata: std.StringHashMap([]const u8),
-    llm_calls: std.ArrayList(LLMCallInfo),
+    llm_calls: std.ArrayListUnmanaged(LLMCallInfo),
 
     pub fn deinit(self: *TraceSpan, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
@@ -275,7 +279,7 @@ pub const TraceSpan = struct {
             child.deinit(allocator);
             allocator.destroy(child);
         }
-        self.children.deinit();
+        self.children.deinit(allocator);
 
         var it = self.metadata.iterator();
         while (it.next()) |entry| {
@@ -287,7 +291,7 @@ pub const TraceSpan = struct {
         for (self.llm_calls.items) |*call| {
             allocator.free(call.function_name);
         }
-        self.llm_calls.deinit();
+        self.llm_calls.deinit(allocator);
     }
 
     pub fn getDuration(self: *const TraceSpan) u64 {
@@ -343,35 +347,39 @@ pub const ExecutionStatistics = struct {
 /// Plugin validator for schema compliance
 pub const PluginValidator = struct {
     allocator: std.mem.Allocator,
-    errors: std.ArrayList(ValidationError),
-    warnings: std.ArrayList(ValidationWarning),
+    errors: std.ArrayListUnmanaged(ValidationError),
+    warnings: std.ArrayListUnmanaged(ValidationWarning),
 
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator) Self {
         return Self{
             .allocator = allocator,
-            .errors = std.ArrayList(ValidationError).init(allocator),
-            .warnings = std.ArrayList(ValidationWarning).init(allocator),
+            .errors = std.ArrayListUnmanaged(ValidationError){},
+            .warnings = std.ArrayListUnmanaged(ValidationWarning){},
         };
     }
 
     pub fn deinit(self: *Self) void {
         for (self.errors.items) |*err| err.deinit(self.allocator);
-        self.errors.deinit();
+        self.errors.deinit(self.allocator);
 
         for (self.warnings.items) |*warn| warn.deinit(self.allocator);
-        self.warnings.deinit();
+        self.warnings.deinit(self.allocator);
     }
 
     /// Validate a plugin against schema requirements
     pub fn validatePlugin(self: *Self, plugin: *const manager.Plugin) !ValidationResult {
-        self.errors.clearRetainingCapacity();
-        self.warnings.clearRetainingCapacity();
+        // Clear previous results
+        for (self.errors.items) |*err| err.deinit(self.allocator);
+        self.errors.items.len = 0;
+
+        for (self.warnings.items) |*warn| warn.deinit(self.allocator);
+        self.warnings.items.len = 0;
 
         // Validate plugin name
         if (plugin.name.len == 0) {
-            try self.errors.append(.{
+            try self.errors.append(self.allocator, .{
                 .field = "name",
                 .message = try self.allocator.dupe(u8, "Plugin name cannot be empty"),
             });
@@ -379,7 +387,7 @@ pub const PluginValidator = struct {
 
         // Validate version format (basic semver check)
         if (!self.isValidSemVer(plugin.version)) {
-            try self.warnings.append(.{
+            try self.warnings.append(self.allocator, .{
                 .field = "version",
                 .message = try self.allocator.dupe(u8, "Version does not follow semantic versioning"),
             });
@@ -387,7 +395,7 @@ pub const PluginValidator = struct {
 
         // Ensure at least one hook is defined
         if (plugin.on_commit == null and plugin.on_query == null and plugin.on_schedule == null and plugin.get_functions == null) {
-            try self.warnings.append(.{
+            try self.warnings.append(self.allocator, .{
                 .field = "hooks",
                 .message = try self.allocator.dupe(u8, "Plugin defines no hooks or functions"),
             });
@@ -402,18 +410,22 @@ pub const PluginValidator = struct {
 
     /// Validate function schema
     pub fn validateFunctionSchema(self: *Self, schema: *const manager.FunctionSchema) !ValidationResult {
-        self.errors.clearRetainingCapacity();
-        self.warnings.clearRetainingCapacity();
+        // Clear previous results
+        for (self.errors.items) |*err| err.deinit(self.allocator);
+        self.errors.items.len = 0;
+
+        for (self.warnings.items) |*warn| warn.deinit(self.allocator);
+        self.warnings.items.len = 0;
 
         if (schema.name.len == 0) {
-            try self.errors.append(.{
+            try self.errors.append(self.allocator, .{
                 .field = "name",
                 .message = try self.allocator.dupe(u8, "Function name cannot be empty"),
             });
         }
 
         if (schema.description.len == 0) {
-            try self.warnings.append(.{
+            try self.warnings.append(self.allocator, .{
                 .field = "description",
                 .message = try self.allocator.dupe(u8, "Function has no description"),
             });
@@ -421,7 +433,7 @@ pub const PluginValidator = struct {
 
         // Check parameter schema validity
         if (schema.parameters.type != .object) {
-            try self.errors.append(.{
+            try self.errors.append(self.allocator, .{
                 .field = "parameters",
                 .message = try self.allocator.dupe(u8, "Parameters must be of type 'object'"),
             });
@@ -456,10 +468,16 @@ pub const ValidationResult = struct {
     warnings: []const ValidationWarning,
 
     pub fn deinit(self: *ValidationResult, allocator: std.mem.Allocator) void {
-        for (self.errors) |*err| err.deinit(allocator);
+        for (self.errors) |err| {
+            var mut_err = err;
+            mut_err.deinit(allocator);
+        }
         allocator.free(self.errors);
 
-        for (self.warnings) |*warn| warn.deinit(allocator);
+        for (self.warnings) |warn| {
+            var mut_warn = warn;
+            mut_warn.deinit(allocator);
+        }
         allocator.free(self.warnings);
     }
 };

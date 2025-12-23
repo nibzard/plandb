@@ -149,7 +149,10 @@ pub const PluginCli = struct {
         // Validate test plugin
         const plugin = testing.PluginFixtures.createEntityExtractionPlugin(self.allocator);
         const result = try validator.validatePlugin(&plugin);
-        defer result.deinit(self.allocator);
+        defer {
+            var mut_result = result;
+            mut_result.deinit(self.allocator);
+        }
 
         if (result.is_valid) {
             std.debug.print("OK Plugin validation PASSED\n", .{});
@@ -243,10 +246,15 @@ pub const PluginCli = struct {
 
         try tracer.endSpan(span1);
 
-        // Generate report to stdout
-        const stdout_file = std.io.generic_stdout();
-        const stdout = stdout_file.writer();
-        try tracer.generateReport(stdout);
+        // Generate report to stdout via debug print
+        std.debug.print("\n=== Execution Trace Report ===\n", .{});
+        const stats = tracer.getStatistics();
+        std.debug.print("Summary:\n", .{});
+        std.debug.print("  Total Duration: {d:.2}ms\n", .{@as(f64, @floatFromInt(stats.total_duration_ns)) / 1_000_000.0});
+        std.debug.print("  LLM Calls: {d}\n", .{stats.total_llm_calls});
+        std.debug.print("  Tokens Used: {d}\n", .{stats.total_tokens_used});
+        std.debug.print("  Failed Calls: {d}\n", .{stats.failed_llm_calls});
+        std.debug.print("  Spans: {d}\n\n", .{stats.span_count});
     }
 };
 

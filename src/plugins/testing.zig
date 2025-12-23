@@ -227,24 +227,23 @@ pub const TestHarness = struct {
 
     /// Print results to stdout
     pub fn printResults(self: *const Self) void {
-        const stdout = std.io.generic_stdout().writer();
         const summary = self.getSummary();
 
-        stdout.print("\n=== Plugin Test Results ===\n", .{}) catch {};
-        stdout.print("Total: {d}, Passed: {d}, Failed: {d}\n", .{
+        std.debug.print("\n=== Plugin Test Results ===\n", .{});
+        std.debug.print("Total: {d}, Passed: {d}, Failed: {d}\n", .{
             summary.total, summary.passed, summary.failed
-        }) catch {};
-        stdout.print("Duration: {d}ms, LLM Calls: {d}\n\n", .{
+        });
+        std.debug.print("Duration: {d}ms, LLM Calls: {d}\n\n", .{
             summary.total_duration_ns / 1_000_000, summary.total_llm_calls
-        }) catch {};
+        });
 
         for (self.results.items) |r| {
             const status = if (r.passed) "PASS" else "FAIL";
-            stdout.print("  [{s}] {s} ({d}ms, {d} calls)\n", .{
+            std.debug.print("  [{s}] {s} ({d}ms, {d} calls)\n", .{
                 status, r.test_name, r.duration_ns / 1_000_000, r.llm_calls
-            }) catch {};
+            });
             if (r.error_message) |msg| {
-                stdout.print("    Error: {s}\n", .{msg}) catch {};
+                std.debug.print("    Error: {s}\n", .{msg});
             }
         }
     }
