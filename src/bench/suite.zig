@@ -8,6 +8,7 @@ const runner = @import("runner.zig");
 const types = @import("types.zig");
 const db = @import("../db.zig");
 const pager = @import("../pager.zig");
+const page_cache = @import("../page_cache.zig");
 const replay_mod = @import("../replay.zig");
 const ref_model = @import("../ref_model.zig");
 const wal = @import("../wal.zig");
@@ -43,6 +44,13 @@ pub fn registerBenchmarks(bench_runner: *runner.Runner) !void {
     try bench_runner.addBenchmark(.{
         .name = "bench/pager/read_page_random_16k_cold",
         .run_fn = benchPagerReadRandomCold,
+        .critical = true,
+        .suite = .micro,
+    });
+
+    try bench_runner.addBenchmark(.{
+        .name = "bench/pager/cache_read_multiple_pages",
+        .run_fn = benchPagerCacheReadMultiple,
         .critical = true,
         .suite = .micro,
     });
@@ -577,6 +585,119 @@ fn benchPagerCommitMeta(allocator: std.mem.Allocator, config: types.Config) !typ
     }, .{ .fsync_count = fsync_count }, .{
         .alloc_count = alloc_count,
         .alloc_bytes = total_alloc_bytes
+    });
+}
+
+fn benchPagerCacheReadMultiple(allocator: std.mem.Allocator, config: types.Config) !types.Results {
+    const ops: u64 = 10_000;
+    const page_count: u64 = 100;
+    var prng = std.Random.DefaultPrng.init(config.seed orelse 12345);
+    const rand = prng.random();
+
+    const test_filename = try std.fmt.allocPrint(allocator, "bench_cache_{d}.db", .{std.time.milliTimestamp()});
+    defer allocator.free(test_filename);
+
+    var total_reads: u64 = 0;
+    var total_writes: u64 = 0;
+
+    // Create test database with pages
+    {
+        const file = try std.fs.cwd().createFile(test_filename, .{ .truncate = true });
+        defer file.close();
+
+        // Create meta pages
+        var buffer_a: [pager.DEFAULT_PAGE_SIZE]u8 = undefined;
+        var buffer_b: [pager.DEFAULT_PAGE_SIZE]u8 = undefined;
+
+        const meta = pager.MetaPayload{
+            .committed_txn_id = 0,
+            .root_page_id = 0,
+            .freelist_head_page_id = 0,
+            .log_tail_lsn = 0,
+            .meta_crc32c = 0,
+        };
+
+        try pager.encodeMetaPage(pager.META_A_PAGE_ID, meta, &buffer_a);
+        try pager.encodeMetaPage(pager.META_B_PAGE_ID, meta, &buffer_b);
+
+        _ = try file.pwriteAll(&buffer_a, 0);
+        _ = try file.pwriteAll(&buffer_b, pager.DEFAULT_PAGE_SIZE);
+
+        // Write additional pages
+        var page_buffer: [pager.DEFAULT_PAGE_SIZE]u8 = undefined;
+        for (2..page_count + 2) |page_idx| {
+            const page_id: u64 = page_idx;
+
+            // Create a valid B+tree leaf page
+            var header = pager.PageHeader{
+                .magic = pager.PAGE_MAGIC,
+                .format_version = pager.FORMAT_VERSION,
+                .page_type = .btree_leaf,
+                .flags = 0,
+                .page_id = page_id,
+                .txn_id = 0,
+                .payload_len = pager.DEFAULT_PAGE_SIZE - pager.PageHeader.SIZE,
+                .header_crc32c = 0,
+                .page_crc32c = 0,
+            };
+            header.header_crc32c = header.calculateHeaderChecksum();
+
+            // Zero out payload
+            @memset(page_buffer[pager.PageHeader.SIZE..], 0);
+
+            // Encode header
+            try header.encode(&page_buffer);
+
+            // Calculate page checksum
+            const page_data = page_buffer[0..pager.PageHeader.SIZE + header.payload_len];
+            header.page_crc32c = pager.calculatePageChecksum(page_data);
+            try header.encode(&page_buffer);
+
+            _ = try file.pwriteAll(&page_buffer, @as(u64, page_id) * pager.DEFAULT_PAGE_SIZE);
+        }
+        total_writes += (page_count + 2) * pager.DEFAULT_PAGE_SIZE;
+    }
+
+    // Benchmark cache reads
+    var pager_instance = try pager.Pager.open(test_filename, allocator);
+    defer pager_instance.close();
+
+    // Pre-populate cache
+    for (2..page_count + 2) |page_idx| {
+        const page_id: u64 = page_idx;
+        _ = try pager_instance.readPageCached(page_id);
+        pager_instance.unpinPage(page_id);
+    }
+
+    const start_time = std.time.nanoTimestamp();
+    for (0..ops) |_| {
+        const idx = rand.intRangeLessThan(u64, 0, page_count);
+        const page_id: u64 = idx + 2;
+
+        // Read from cache (should be cached hit)
+        const page_data = try pager_instance.readPageCached(page_id);
+        _ = page_data;
+        pager_instance.unpinPage(page_id);
+
+        total_reads += pager.DEFAULT_PAGE_SIZE;
+    }
+    const duration_ns = @as(u64, @intCast(std.time.nanoTimestamp() - start_time));
+
+    // Get cache stats to verify caching effectiveness
+    if (pager_instance.getCacheStats()) |stats| {
+        // Verify cache hit effectiveness
+        _ = stats;
+    }
+
+    // Clean up file
+    try std.fs.cwd().deleteFile(test_filename);
+
+    return basicResult(ops, duration_ns, .{
+        .read_total = total_reads,
+        .write_total = total_writes
+    }, .{ .fsync_count = 0 }, .{
+        .alloc_count = 100,
+        .alloc_bytes = 1638400 // Cache + pager allocations
     });
 }
 

@@ -1429,6 +1429,8 @@ pub const PageAllocator = struct {
     }
 };
 
+const page_cache = @import("page_cache.zig");
+
 // Pager represents the storage layer with file handles and state
 pub const Pager = struct {
     file: std.fs.File,
@@ -1436,6 +1438,7 @@ pub const Pager = struct {
     current_meta: MetaState,
     allocator: std.mem.Allocator,
     page_allocator: ?PageAllocator,
+    cache: ?*page_cache.PageCache,
 
     const Self = @This();
 
@@ -1472,10 +1475,16 @@ pub const Pager = struct {
             .current_meta = meta_state,
             .allocator = allocator,
             .page_allocator = null,
+            .cache = null,
         };
 
         // Initialize page allocator
         pager.page_allocator = try PageAllocator.init(&pager, allocator);
+
+        // Initialize page cache
+        const cache_instance = try allocator.create(page_cache.PageCache);
+        cache_instance.* = try page_cache.PageCache.init(allocator, 1024, 16 * 1024 * 1024);
+        pager.cache = cache_instance;
 
         return pager;
     }
@@ -1530,10 +1539,16 @@ pub const Pager = struct {
             .current_meta = best_meta,
             .allocator = allocator,
             .page_allocator = null,
+            .cache = null,
         };
 
         // Initialize page allocator with rebuild-on-open policy
         pager.page_allocator = try PageAllocator.init(&pager, allocator);
+
+        // Initialize page cache
+        const cache_instance = try allocator.create(page_cache.PageCache);
+        cache_instance.* = try page_cache.PageCache.init(allocator, 1024, 16 * 1024 * 1024);
+        pager.cache = cache_instance;
 
         return pager;
     }
@@ -1542,6 +1557,10 @@ pub const Pager = struct {
     pub fn close(self: *Self) void {
         if (self.page_allocator) |*alloc| {
             alloc.deinit();
+        }
+        if (self.cache) |cache| {
+            cache.deinit();
+            self.allocator.destroy(cache);
         }
         self.file.close();
     }
@@ -1636,6 +1655,59 @@ pub const Pager = struct {
 
         // Write page to file
         try self.file.pwriteAll(buffer, offset);
+
+        // Invalidate cached copy if exists (data has changed)
+        if (self.cache) |cache| {
+            _ = cache.remove(page_id);
+        }
+    }
+
+    // Read a page from cache or file (returns borrowed data pinned in cache)
+    // Caller must call unpinPage when done with the data
+    pub fn readPageCached(self: *Self, page_id: u64) ![]const u8 {
+        if (self.cache) |cache| {
+            // Check cache first
+            if (cache.get(page_id)) |data| {
+                return data;
+            }
+
+            // Cache miss - read from file
+            var buffer = try self.allocator.alloc(u8, self.page_size);
+            errdefer self.allocator.free(buffer);
+
+            try self.readPage(page_id, buffer);
+
+            // Store in cache (cache will take ownership of the buffer's copy)
+            const cache_buffer = try self.allocator.alloc(u8, self.page_size);
+            @memcpy(cache_buffer, buffer[0..self.page_size]);
+            try cache.put(page_id, cache_buffer);
+            self.allocator.free(buffer);
+
+            // Get from cache (this will pin it)
+            if (cache.get(page_id)) |data| {
+                return data;
+            }
+        }
+
+        // Fallback: read without cache
+        const buffer = try self.allocator.alloc(u8, self.page_size);
+        try self.readPage(page_id, buffer);
+        return buffer;
+    }
+
+    // Unpin a page that was previously read via readPageCached
+    pub fn unpinPage(self: *Self, page_id: u64) void {
+        if (self.cache) |cache| {
+            cache.unpin(page_id);
+        }
+    }
+
+    // Get cache statistics
+    pub fn getCacheStats(self: *const Self) ?page_cache.PageCache.Stats {
+        if (self.cache) |cache| {
+            return cache.getStats();
+        }
+        return null;
     }
 
     // Sync file to ensure durability
