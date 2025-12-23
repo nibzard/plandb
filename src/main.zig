@@ -10,6 +10,7 @@ const compare = @import("bench/compare.zig");
 const _ref_model_tests = @import("ref_model.zig");
 const _db_tests = @import("db.zig");
 const _property_based_tests = @import("property_based.zig");
+const _validator = @import("validator.zig");
 
 pub fn main() !void {
     const gpa = std.heap.page_allocator;
@@ -35,6 +36,10 @@ pub fn main() !void {
         try runPropertyTests(allocator, args[2..]);
     } else if (std.mem.eql(u8, command, "--list") or std.mem.eql(u8, command, "list")) {
         try listBenchmarks(allocator);
+    } else if (std.mem.eql(u8, command, "validate")) {
+        try validateTree(allocator, args[2..]);
+    } else if (std.mem.eql(u8, command, "dump")) {
+        try dumpTree(allocator, args[2..]);
     } else {
         try printUsage();
     }
@@ -50,6 +55,8 @@ fn printUsage() !void {
         \\  bench gate <baseline> [options]        Gate suite - fail on critical regressions
         \\  bench property-test [options]          Run property-based correctness tests
         \\  bench --list                   List all available benchmarks and suites
+        \\  bench validate <db.db>         Validate B+tree invariants
+        \\  bench dump <db.db> [options]   Dump B+tree structure
         \\
         \\Run options:
         \\  --repeats <n>         Number of repeats (default: 5)
@@ -81,6 +88,11 @@ fn printUsage() !void {
         \\  --max-keys <n>         Maximum keys per transaction (default: 50)
         \\  --crash-simulation     Enable crash equivalence testing (default: true)
         \\  --quick                Run with reduced iterations for quick validation
+        \\
+        \\Dump options:
+        \\  --show-values          Show values in addition to keys
+        \\  --max-key-len <n>      Truncate keys at this length (default: 50)
+        \\  --max-val-len <n>      Truncate values at this length (default: 50)
         \\
     , .{});
 }
@@ -365,4 +377,42 @@ fn runPropertyTests(allocator: std.mem.Allocator, args: []const []const u8) !voi
         std.debug.print("\n❌ Some property-based tests FAILED\n", .{});
         std.process.exit(1);
     }
+}
+
+fn validateTree(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    if (args.len < 1) {
+        std.debug.print("Error: validate requires database path\n", .{});
+        return;
+    }
+
+    const db_path = args[0];
+    try _validator.runValidate(allocator, db_path);
+}
+
+fn dumpTree(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    if (args.len < 1) {
+        std.debug.print("Error: dump requires database path\n", .{});
+        return;
+    }
+
+    const db_path = args[0];
+    var config = _validator.DumpConfig{};
+
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        if (std.mem.eql(u8, args[i], "--show-values")) {
+            config.show_values = true;
+        } else if (std.mem.eql(u8, args[i], "--max-key-len") and i + 1 < args.len) {
+            config.max_key_length = try std.fmt.parseInt(usize, args[i + 1], 10);
+            i += 1;
+        } else if (std.mem.eql(u8, args[i], "--max-val-len") and i + 1 < args.len) {
+            config.max_value_length = try std.fmt.parseInt(usize, args[i + 1], 10);
+            i += 1;
+        } else {
+            std.debug.print("Unknown option: {s}\n", .{args[i]});
+            return;
+        }
+    }
+
+    try _validator.dumpTree(allocator, db_path, config);
 }
