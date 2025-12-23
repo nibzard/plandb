@@ -2313,7 +2313,7 @@ pub const Pager = struct {
         var right_buffer: [DEFAULT_PAGE_SIZE]u8 = undefined;
 
         // Copy left page structure (will be the "left" after split)
-        @memcpy(&left_buffer, leaf_buffer);
+        @memcpy(left_buffer[0..], leaf_buffer);
 
         // Create empty right leaf with same transaction ID
         const left_header = try PageHeader.decode(left_buffer[0..PageHeader.SIZE]);
