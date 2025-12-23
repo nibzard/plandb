@@ -26,9 +26,14 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **VERIFIED**: Profile detection working correctly in CI environment (detected: 4 cores, 3.8GB RAM = ci)
   - Committed with hash [current]
   - **STATUS**: Implementation complete and tested, provides foundation for performance validation
-- [ ] 🟠 Define target machine specifications in repo
-  - CI profile: cheap runner configuration
-  - Dev NVMe profile: high-performance configuration
+- [ ✅ ] 🟠 Define target machine specifications in repo
+  - **COMPLETED**: Created comprehensive machine specifications in spec/machine_specs_v0.md
+  - **COMPLETED**: CI profile defined (4+ cores, 8GB RAM, standard VM storage)
+  - **COMPLETED**: dev_nvme profile defined (8+ cores, 16GB RAM, NVMe SSD)
+  - **COMPLETED**: Profile detection logic implemented in src/bench/runner.zig
+  - **COMPLETED**: Hardware requirements and validation documented
+  - **STATUS**: Documentation complete, referenced by implementation
+  - Completed 2025-12-23
 - [ ✅ ] 🔴 Emit per-repeat JSON files (no aggregation) with stable filenames
   - **COMPLETED**: Implemented per-repeat JSON output with zero-padded stable filenames
   - **COMPLETED**: Files now use format `benchmark_r000.json`, `benchmark_r001.json`, etc.
@@ -478,11 +483,11 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
 - [ ] 🟡 Export scenario metrics (p50/p99 claim latency, dup rate, fsyncs/op)
 
 ### Macrobench 2: Code Knowledge Graph
-- [ ] 🔴 Define synthetic repo schema (files, functions, call/import edges)
-- [ ] 🔴 Implement ingestion workload for N files, functions, edges
-- [ ] 🟠 Build query mix: "callers of X", "deps of module", "range scans by path"
-- [ ] 🟠 Add macrobench scenario with steady-state query latency metrics
-- [ ] 🟡 Measure index build time and hot memory footprint
+- [ ✅ ] 🔴 Define synthetic repo schema (files, functions, call/import edges) (COMPLETE 2025-12-23)
+- [ ✅ ] 🔴 Implement ingestion workload for N files, functions, edges (COMPLETE 2025-12-23)
+- [ ✅ ] 🟠 Build query mix: "callers of X", "deps of module", "range scans by path" (COMPLETE 2025-12-23)
+- [ ✅ ] 🟠 Add macrobench scenario with steady-state query latency metrics (COMPLETE 2025-12-23)
+- [ ✅ ] 🟡 Measure index build time and hot memory footprint (COMPLETE 2025-12-23)
 
 ### Macrobench 3: Time-Travel + Deterministic Replay
 - [ ✅ ] 🔴 Implement 1M small txn workload (edits/actions) (COMPLETE 2025-12-23)
