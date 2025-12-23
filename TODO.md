@@ -120,10 +120,13 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **TECHNICAL NOTE**: Zig compiler version compatibility issues with memory management need resolution for full functionality
   - Committed with hash [current]
   - **STATUS**: Implementation complete and working, provides comprehensive correctness validation
-- [ ] 🟠 Concurrency schedule torture testing
-  - Many readers + one writer validation
-  - Snapshot isolation invariants
-  - Forced yields at lock/page cache boundaries
+- [ ✅ ] 🟠 Concurrency schedule torture testing
+  - **COMPLETED**: Implemented comprehensive concurrency stress testing with forced yields
+  - **COMPLETED**: Many readers + single writer validation with atomic snapshots
+  - **COMPLETED**: Snapshot isolation invariants tested with concurrent modifications
+  - **COMPLETED**: Forced yield points at lock boundaries and page cache access
+  - **COMPLETED**: Tests verify serializable isolation and detect race conditions
+  - Completed 2025-12-23
 - [ ] 🟡 Add metamorphic test generators for all API operations
 
 ## Phase 1 — Pager (V0)
@@ -618,7 +621,14 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED**: Fixed Zig 0.15 compatibility issues across all providers
   - **STATUS**: Provider-agnostic LLM module complete with OpenAI, Anthropic, and local support
   - Committed 2025-12-23
-- [ ] 🟠 Implement asynchronous plugin execution with error isolation
+- [ ✅ ] 🟠 Implement asynchronous plugin execution with error isolation
+  - **COMPLETED**: Added AsyncHookResult union enum for parallel execution tracking
+  - **COMPLETED**: Added async_hook_wrapper function for thread-based hook execution
+  - **COMPLETED**: Modified execute_on_commit_hooks to spawn parallel tasks when performance_isolation is enabled
+  - **COMPLETED**: Added execute_hooks_sync fallback for when performance isolation is disabled
+  - **COMPLETED**: Added tests for async behavior
+  - **STATUS**: Async plugin execution with error isolation fully implemented
+  - Committed 2025-12-23
 - [ ] 🟡 Add plugin development framework and debugging tools
 
 ### Structured Memory Cartridges
