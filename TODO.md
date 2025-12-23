@@ -1077,15 +1077,20 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
 
 ## Known Bugs (blockers discovered 2025-12-23)
 
-- [ 🔴 ] CRITICAL: B+tree leaf entry persistence bug - PARTIALLY FIXED
-  - **DESCRIPTION**: bench/pager/commit_meta_fsync benchmark shows "key not found after commit, persistence issue" for all commits
-  - **ORIGINAL ROOT CAUSE**: B+tree entries being placed at wrong location, overwriting previous entries
-  - **ORIGINAL CODE**: src/pager.zig:BtreeLeafPayload.addEntry() placed all entries at payload.len - entry_size
-  - **FIX COMMITTED**: Modified addEntry() to find min_slot_offset and place new entry before it
-  - **REMAINING ISSUE**: Commits succeed but values can't be read back - root_page_id or B+tree read issue
-  - **INVESTIGATION NEEDED**: Check if pager.current_meta.meta.root_page_id is correct after commit
-  - **BLOCKS**: All benchmarks that write multiple keys to B+tree
-  - **COMMIT**: d11330a (partial fix)
+- [ 🔴 ] CRITICAL: B+tree persistence bugs - PARTIALLY FIXED (commit d206826)
+  - **FIXED 2025-12-23**: ReadTxn.get() returning null when values actually present in B+tree
+    - **ROOT CAUSE**: Incorrect traversal logic in B+tree search
+    - **COMMIT**: d206826
+
+  - **FIXED 2025-12-23**: PageAllocator "NotOpenForWriting" self-referential pointer bug
+    - **ROOT CAUSE**: PageAllocator had pointer to itself instead of Pager, causing state corruption
+    - **COMMIT**: d206826
+
+  - **NEW BUG DISCOVERED**: B+tree splitLeafNode has "@memcpy arguments alias" error
+    - **LOCATION**: src/pager.zig:splitLeafNode function
+    - **DESCRIPTION**: Memory aliasing violation during node split, causes illegal memcpy operation
+    - **BLOCKS**: B+tree insert operations that trigger node splits
+    - **INVESTIGATION NEEDED**: Review buffer management in splitLeafNode to ensure source/dest don't overlap
 
 - [ ✅ ] FIXED: Pager copy-by-value causes file handle issues
   - **DESCRIPTION**: executeTwoPhaseCommit() copied Pager by value, causing file handle confusion
