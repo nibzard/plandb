@@ -733,11 +733,14 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - Completed 2025-12-23
 
 ## Phase 6 — Cartridge 2: Semantic Embeddings (Vector Similarity)
-- [ ] 🔴 Define semantic embeddings cartridge format and vector storage layout
-  - Design vector storage with HNSW (Hierarchical Navigable Small World) index
-  - Support variable-dimensional embeddings (384d for small models, 1536d for OpenAI)
-  - Define quantization options (FP32, FP16, INT8) for storage efficiency
-  - Include metadata back-pointers to source entities/commits
+- [ ✅ ] 🔴 Define semantic embeddings cartridge format and vector storage layout
+  - **COMPLETED**: Created src/cartridges/embeddings.zig with HNSW index for vector similarity search
+  - **COMPLETED**: Added semantic_embeddings cartridge type to src/cartridges/format.zig
+  - **COMPLETED**: Implemented vector storage with FP32/FP16/INT8 quantization options
+  - **COMPLETED**: Supports variable-dimensional embeddings (384d for small models, 1536d for OpenAI)
+  - **COMPLETED**: Includes metadata back-pointers to source entities/commits
+  - **COMPLETED**: All tests pass with no memory leaks
+  - Completed 2025-12-24
 - [ ] 🔴 Implement vector insertion and indexing with HNSW graph
   - Build HNSW index incrementally from commit stream
   - Support batch insertion for efficient embedding generation

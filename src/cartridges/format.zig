@@ -82,6 +82,8 @@ pub const CartridgeType = enum(u32) {
     topic_index = 0x544F5049, // "TOPI"
     /// Entity relationship graph
     relationship_graph = 0x52454C47, // "RELG"
+    /// Semantic vector embeddings with HNSW index
+    semantic_embeddings = 0x56454D42, // "VEMB"
     /// Custom user-defined cartridge type
     custom = 0x43555354, // "CUST"
 
@@ -95,6 +97,7 @@ pub const CartridgeType = enum(u32) {
             .entity_index => "entity_index",
             .topic_index => "topic_index",
             .relationship_graph => "relationship_graph",
+            .semantic_embeddings => "semantic_embeddings",
             .custom => "custom",
         };
     }
@@ -104,6 +107,7 @@ pub const CartridgeType = enum(u32) {
         if (std.mem.eql(u8, s, "entity_index")) return .entity_index;
         if (std.mem.eql(u8, s, "topic_index")) return .topic_index;
         if (std.mem.eql(u8, s, "relationship_index")) return .relationship_graph;
+        if (std.mem.eql(u8, s, "semantic_embeddings")) return .semantic_embeddings;
         if (std.mem.eql(u8, s, "custom")) return .custom;
         return error.UnknownCartridgeType;
     }
