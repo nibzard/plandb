@@ -601,11 +601,18 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - CI baselines captured: agent_orchestration_r[000-002].json
   - dev_nvme baselines: PENDING (requires NVMe hardware)
   - Note: Full-scale workload (50 agents, 1000 tasks) blocked until real pager implementation
-- [ ] 🟡 Crash harness: validate consistency after agent failures
-  - Test database recovery after mid-task crashes
-  - Verify no orphaned tasks or corrupted barriers
-  - Validate result aggregation correctness after restart
-  - Measure recovery time and data loss scenarios
+- [x] 🟢 Crash harness: validate consistency after agent failures
+  - **COMMITTED**: Commit 729a755
+  - Tests implemented: crashHarnessAgentOrchestration
+    - Random crash injection during multi-phase workflow
+    - Targeted crash at specific transaction boundaries
+  - Validation coverage:
+    - Task creation phase crash (txn 5 test)
+    - Agent registration crash (txn 15 test)
+    - Task claiming, completion, barrier sync crashes
+    - WAL replay verification against reference model
+    - Orphaned task detection (locks without results)
+  - Crash points tested: txn 5 (early phase 1), txn 15 (phase 2), random
 
 ### Macrobench 6: Document/Code Knowledge Base
 - [ ] 🔴 Define document repository schema with versioning
