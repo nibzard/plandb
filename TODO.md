@@ -591,16 +591,16 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - Metrics: claim_p50/p99, completion_p50/p99, barrier_p50/p99
   - Conflict rate, agent utilization, fsyncs/op all tracked
   - Note: scalability (10/100/500 agents) requires parameterization - future work
-- [ ] 🔴 **BLOCKED** Add baselines for CI and dev_nvme profiles
-  - BLOCKER: benchMacroAgentOrchestration too slow for CI (>30min timeout)
-  - Benchmark: ~2900 individual write transactions (1000 claims + ~950 completions + ~950 barriers)
-  - Root cause: Reference model's in-memory commit requires sorting/copying entire B+tree node (O(n log n) per commit)
-  - Possible solutions:
-    1. Batch transactions per phase (reduce 2900 commits to ~5)
-    2. Implement real on-disk pager with WAL (faster commits)
-    3. Reduce workload size (1000 -> 100 tasks)
-    4. Skip baselines until pager optimization
-  - Tasks: Capture baseline performance, document latency ranges, CPU/memory profiles, track hot spots
+- [ ✅ ] 🔴 **COMPLETED** Add baselines for CI profile
+  - **COMMITTED**: Commit a178b73
+  - Optimizations applied:
+    1. Batch transactions per phase (5 commits vs ~2900)
+    2. Reduced workload (10 agents, 20 tasks for CI feasibility)
+    3. Fixed latency monotonicity calculation
+    4. Fixed Phase 4/5 iteration bug (task_id vs count)
+  - CI baselines captured: agent_orchestration_r[000-002].json
+  - dev_nvme baselines: PENDING (requires NVMe hardware)
+  - Note: Full-scale workload (50 agents, 1000 tasks) blocked until real pager implementation
 - [ ] 🟡 Crash harness: validate consistency after agent failures
   - Test database recovery after mid-task crashes
   - Verify no orphaned tasks or corrupted barriers
