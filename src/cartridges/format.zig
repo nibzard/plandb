@@ -86,6 +86,8 @@ pub const CartridgeType = enum(u32) {
     semantic_embeddings = 0x56454D42, // "VEMB"
     /// Time-series entity state history with temporal indexing
     temporal_history = 0x54484953, // "THIS"
+    /// Document version history with diff storage
+    document_history = 0x44464849, // "DFHI"
     /// Custom user-defined cartridge type
     custom = 0x43555354, // "CUST"
 
@@ -101,6 +103,7 @@ pub const CartridgeType = enum(u32) {
             .relationship_graph => "relationship_graph",
             .semantic_embeddings => "semantic_embeddings",
             .temporal_history => "temporal_history",
+            .document_history => "document_history",
             .custom => "custom",
         };
     }
@@ -112,6 +115,7 @@ pub const CartridgeType = enum(u32) {
         if (std.mem.eql(u8, s, "relationship_index")) return .relationship_graph;
         if (std.mem.eql(u8, s, "semantic_embeddings")) return .semantic_embeddings;
         if (std.mem.eql(u8, s, "temporal_history")) return .temporal_history;
+        if (std.mem.eql(u8, s, "document_history")) return .document_history;
         if (std.mem.eql(u8, s, "custom")) return .custom;
         return error.UnknownCartridgeType;
     }

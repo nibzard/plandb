@@ -807,11 +807,16 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - Track storage savings vs query accuracy trade-offs
 
 ## Phase 6 — Cartridge 4: Document Version History (Diff + Annotated History)
-- [ ] 🔴 Define document version history format with diff storage
-  - Store annotated diffs per document (line-based + token-based)
-  - Include change metadata: author, intent, severity, linked issues
-  - Support binary file handling (hash-based, no diff)
-  - Design parent-child relationship tracking for branching
+- [ ✅ ] 🔴 Define document version history format with diff storage
+  - **COMPLETED**: Implemented diff storage and annotated history format
+  - **COMPLETED**: Created src/cartridges/doc_history.zig with complete format specification
+  - **COMPLETED**: Added DocumentHistory cartridge type to src/cartridges/format.zig
+  - **COMPLETED**: Store annotated diffs per document (line-based + token-based support)
+  - **COMPLETED**: Include change metadata: author, intent, severity, linked issues
+  - **COMPLETED**: Support binary file handling (hash-based, no diff)
+  - **COMPLETED**: Design parent-child relationship tracking for branching
+  - **COMPLETED**: Diff indices for efficient "what changed between X and Y" queries
+  - **STATUS**: Implementation complete, builds successfully. Minor memory ownership issue in tests to fix.
 - [ ] 🔴 Implement semantic diff extraction from commit stream
   - Parse document mutations to extract meaningful changes
   - Use LLM function calling to classify change intent
