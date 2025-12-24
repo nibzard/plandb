@@ -13,6 +13,30 @@ const std = @import("std");
 const format = @import("format.zig");
 const ArrayListManaged = std.ArrayListUnmanaged;
 
+// ==================== Distance Metrics ====================
+
+/// Distance metric for vector similarity search
+pub const DistanceMetric = enum(u8) {
+    /// Euclidean distance (L2 norm)
+    euclidean = 1,
+    /// Cosine similarity (1 - cosine)
+    cosine = 2,
+    /// Dot product (negated for ranking)
+    dot = 3,
+};
+
+/// Search options for ANN queries
+pub const SearchOptions = struct {
+    /// Number of results to return
+    k: usize = 10,
+    /// Search width parameter (larger = better recall, slower)
+    ef_search: ?usize = null,
+    /// Distance metric to use
+    metric: DistanceMetric = .euclidean,
+    /// Optional distance threshold (exclude results beyond this)
+    max_distance: ?f32 = null,
+};
+
 // ==================== Quantization Types ====================
 
 /// Vector storage quantization format
@@ -449,13 +473,19 @@ pub const HNSWIndex = struct {
 
     /// Search for k nearest neighbors
     pub fn search(self: *const HNSWIndex, query: []const f32, k: usize) !ArrayListManaged(SearchResult) {
+        return self.searchWithOptions(query, .{ .k = k });
+    }
+
+    /// Search for nearest neighbors with options
+    pub fn searchWithOptions(self: *const HNSWIndex, query: []const f32, opts: SearchOptions) !ArrayListManaged(SearchResult) {
         var results = ArrayListManaged(SearchResult){};
 
         if (self.nodes.items.len == 0) return results;
-        if (k == 0) return results;
+        if (opts.k == 0) return results;
 
         const entry = self.entry_point orelse return results;
         const max_level = self.getCurrentMaxLevel();
+        const ef = opts.ef_search orelse self.ef_search;
 
         // Search from top down
         var current = entry;
@@ -465,7 +495,7 @@ pub const HNSWIndex = struct {
         while (level > 0) {
             level -= 1;
             {
-                var layer_results = try self.searchLayer(query, current, @intCast(level), 1);
+                var layer_results = try self.searchLayerWithMetric(query, current, @intCast(level), 1, opts.metric);
                 defer layer_results.deinit(self.allocator);
                 if (layer_results.items.len > 0) {
                     current = layer_results.items[0].id;
@@ -474,13 +504,26 @@ pub const HNSWIndex = struct {
         }
 
         // Search at bottom level for k nearest
-        var candidates = try self.searchLayer(query, current, 0, @min(self.ef_search, self.nodes.items.len));
+        var candidates = try self.searchLayerWithMetric(query, current, 0, @min(ef, self.nodes.items.len), opts.metric);
         defer candidates.deinit(self.allocator);
 
         // Convert to results (already sorted by distance in searchLayer)
-        const result_count = @min(k, candidates.items.len);
+        var result_count = @min(opts.k, candidates.items.len);
+
+        // Apply distance threshold if specified
+        if (opts.max_distance) |threshold| {
+            var count: usize = 0;
+            for (candidates.items[0..result_count]) |c| {
+                if (c.distance <= threshold) count += 1;
+            }
+            result_count = count;
+        }
+
         for (candidates.items[0..result_count]) |candidate| {
             const embedding = &self.embeddings.items[candidate.vector_index];
+
+            // Skip deleted nodes
+            if (self.nodes.items[candidate.id].id == std.math.maxInt(u32)) continue;
 
             // Copy entity info
             const entity_ns = try self.allocator.dupe(u8, embedding.entity_namespace);
@@ -561,6 +604,11 @@ pub const HNSWIndex = struct {
 
     /// Search at a specific level
     fn searchLayer(self: *const HNSWIndex, query: []const f32, entry_point: u32, level: usize, ef: usize) !ArrayListManaged(Candidate) {
+        return self.searchLayerWithMetric(query, entry_point, level, ef, .euclidean);
+    }
+
+    /// Search at a specific level with custom distance metric
+    fn searchLayerWithMetric(self: *const HNSWIndex, query: []const f32, entry_point: u32, level: usize, ef: usize, metric: DistanceMetric) !ArrayListManaged(Candidate) {
         var visited = std.AutoHashMap(u32, void).init(self.allocator);
         defer visited.deinit();
 
@@ -568,7 +616,7 @@ pub const HNSWIndex = struct {
         var w = try ArrayListManaged(Candidate).initCapacity(self.allocator, ef); // working set
         defer w.deinit(self.allocator);
 
-        const entry_dist = self.distance(query, self.nodes.items[entry_point].vector_index);
+        const entry_dist = self.distanceWithMetric(query, self.nodes.items[entry_point].vector_index, metric);
         try candidates.append(self.allocator, .{ .id = entry_point, .vector_index = @intCast(self.nodes.items[entry_point].vector_index), .distance = entry_dist });
         try w.append(self.allocator, .{ .id = entry_point, .vector_index = @intCast(self.nodes.items[entry_point].vector_index), .distance = entry_dist });
         try visited.put(entry_point, {});
@@ -595,7 +643,7 @@ pub const HNSWIndex = struct {
                     if (visited.get(neighbor_id) != null) continue;
                     try visited.put(neighbor_id, {});
 
-                    const neighbor_dist = self.distance(query, self.nodes.items[neighbor_id].vector_index);
+                    const neighbor_dist = self.distanceWithMetric(query, self.nodes.items[neighbor_id].vector_index, metric);
 
                     if (candidates.items.len < ef or neighbor_dist < candidates.items[candidates.items.len - 1].distance) {
                         try candidates.append(self.allocator, .{
@@ -649,8 +697,17 @@ pub const HNSWIndex = struct {
         return .{ .id = current, .vector_index = @intCast(self.nodes.items[current].vector_index), .distance = current_dist };
     }
 
+    /// Calculate distance between two vectors using specified metric
+    fn distanceWithMetric(self: *const HNSWIndex, query: []const f32, vector_index: usize, metric: DistanceMetric) f32 {
+        return switch (metric) {
+            .euclidean => self.distanceEuclidean(query, vector_index),
+            .cosine => self.distanceCosine(query, vector_index),
+            .dot => self.distanceDot(query, vector_index),
+        };
+    }
+
     /// Calculate Euclidean distance between two vectors
-    fn distance(self: *const HNSWIndex, query: []const f32, vector_index: usize) f32 {
+    fn distanceEuclidean(self: *const HNSWIndex, query: []const f32, vector_index: usize) f32 {
         const target = self.vectors.items[vector_index].items;
         const dims = @min(query.len, target.len);
 
@@ -661,6 +718,54 @@ pub const HNSWIndex = struct {
         }
 
         return @sqrt(sum);
+    }
+
+    /// Calculate cosine distance (1 - cosine similarity) between two vectors
+    fn distanceCosine(self: *const HNSWIndex, query: []const f32, vector_index: usize) f32 {
+        const target = self.vectors.items[vector_index].items;
+        const dims = @min(query.len, target.len);
+
+        var dot_product: f32 = 0;
+        var query_norm: f32 = 0;
+        var target_norm: f32 = 0;
+
+        for (0..dims) |i| {
+            dot_product += query[i] * target[i];
+            query_norm += query[i] * query[i];
+            target_norm += target[i] * target[i];
+        }
+
+        const query_mag = @sqrt(query_norm);
+        const target_mag = @sqrt(target_norm);
+
+        if (query_mag < 1e-6 or target_mag < 1e-6) {
+            // Zero vector - return max distance
+            return 1.0;
+        }
+
+        const cosine_sim = dot_product / (query_mag * target_mag);
+        // Clamp to [-1, 1] to handle floating point errors
+        const clamped = @max(-1.0, @min(1.0, cosine_sim));
+        return 1.0 - clamped; // Distance = 1 - similarity
+    }
+
+    /// Calculate dot product distance (negated for min-heap ranking)
+    fn distanceDot(self: *const HNSWIndex, query: []const f32, vector_index: usize) f32 {
+        const target = self.vectors.items[vector_index].items;
+        const dims = @min(query.len, target.len);
+
+        var dot_product: f32 = 0;
+        for (0..dims) |i| {
+            dot_product += query[i] * target[i];
+        }
+
+        // Negate so smaller = better (for min-heap)
+        return -dot_product;
+    }
+
+    /// Calculate Euclidean distance between two vectors (legacy, for backward compatibility)
+    fn distance(self: *const HNSWIndex, query: []const f32, vector_index: usize) f32 {
+        return self.distanceEuclidean(query, vector_index);
     }
 };
 
@@ -726,6 +831,13 @@ pub const EmbeddingsCartridge = struct {
         if (query.len != self.dimensions) return error.DimensionMismatch;
 
         return self.index.search(query, k);
+    }
+
+    /// Search for similar embeddings with options
+    pub fn searchWithOptions(self: *const EmbeddingsCartridge, query: []const f32, opts: SearchOptions) !ArrayListManaged(SearchResult) {
+        if (query.len != self.dimensions) return error.DimensionMismatch;
+
+        return self.index.searchWithOptions(query, opts);
     }
 
     /// Write cartridge to file
@@ -1083,5 +1195,210 @@ test "HNSWIndex.delete and search skips deleted" {
     }
 
     // Results should still be valid
+    try std.testing.expect(results.items.len >= 1);
+}
+
+test "HNSWIndex.searchWithOptions with cosine metric" {
+    var index = try HNSWIndex.init(std.testing.allocator, .{});
+    defer index.deinit();
+
+    // Insert some test vectors
+    const vectors = [3][3]f32{
+        [_]f32{ 1.0, 0.0, 0.0 }, // unit vector on x-axis
+        [_]f32{ 0.9, 0.1, 0.0 }, // similar to first
+        [_]f32{ 0.0, 1.0, 0.0 }, // orthogonal
+    };
+
+    for (vectors, 0..) |v, i| {
+        const id = try std.fmt.allocPrint(std.testing.allocator, "cos_emb{d}", .{i});
+        defer std.testing.allocator.free(id);
+
+        const embedding = Embedding{
+            .id = id,
+            .data = &([_]u8{0} ** 12),
+            .dimensions = 3,
+            .quantization = .fp32,
+            .entity_namespace = "test",
+            .entity_local_id = id,
+            .model_name = "test",
+            .created_at = @intCast(100 + i),
+        };
+        try index.insert(embedding, &v);
+    }
+
+    // Search with cosine similarity
+    const query = [_]f32{ 1.0, 0.0, 0.0 };
+    var results = try index.searchWithOptions(&query, .{ .k = 2, .metric = .cosine });
+    defer {
+        for (results.items) |*r| r.deinit(std.testing.allocator);
+        results.deinit(std.testing.allocator);
+    }
+
+    try std.testing.expect(results.items.len >= 1);
+    // First result should be closest (distance ~0 for identical vector)
+    try std.testing.expect(results.items[0].score < 0.1);
+}
+
+test "HNSWIndex.searchWithOptions with dot product metric" {
+    var index = try HNSWIndex.init(std.testing.allocator, .{});
+    defer index.deinit();
+
+    const vectors = [2][3]f32{
+        [_]f32{ 1.0, 0.0, 0.0 },
+        [_]f32{ 0.5, 0.5, 0.0 },
+    };
+
+    for (vectors, 0..) |v, i| {
+        const id = try std.fmt.allocPrint(std.testing.allocator, "dot_emb{d}", .{i});
+        defer std.testing.allocator.free(id);
+
+        const embedding = Embedding{
+            .id = id,
+            .data = &([_]u8{0} ** 12),
+            .dimensions = 3,
+            .quantization = .fp32,
+            .entity_namespace = "test",
+            .entity_local_id = id,
+            .model_name = "test",
+            .created_at = @intCast(100 + i),
+        };
+        try index.insert(embedding, &v);
+    }
+
+    const query = [_]f32{ 1.0, 0.0, 0.0 };
+    var results = try index.searchWithOptions(&query, .{ .k = 2, .metric = .dot });
+    defer {
+        for (results.items) |*r| r.deinit(std.testing.allocator);
+        results.deinit(std.testing.allocator);
+    }
+
+    try std.testing.expect(results.items.len >= 1);
+    // Dot product with [1,0,0] should be highest for first vector
+    // (negated for ranking, so score should be around -1.0)
+    try std.testing.expect(results.items[0].score <= -0.9);
+}
+
+test "HNSWIndex.searchWithOptions with ef_search parameter" {
+    var index = try HNSWIndex.init(std.testing.allocator, .{});
+    defer index.deinit();
+
+    // Insert enough vectors to test different ef values
+    for (0..20) |i| {
+        const id = try std.fmt.allocPrint(std.testing.allocator, "ef_emb{d}", .{i});
+        defer std.testing.allocator.free(id);
+
+        const vector = [_]f32{ @as(f32, @floatFromInt(i)) / 20.0, 0.0, 0.0 };
+        const embedding = Embedding{
+            .id = id,
+            .data = &([_]u8{0} ** 12),
+            .dimensions = 3,
+            .quantization = .fp32,
+            .entity_namespace = "test",
+            .entity_local_id = id,
+            .model_name = "test",
+            .created_at = @intCast(100 + i),
+        };
+        try index.insert(embedding, &vector);
+    }
+
+    const query = [_]f32{ 0.5, 0.0, 0.0 };
+
+    // Search with different ef values
+    var results_low = try index.searchWithOptions(&query, .{ .k = 5, .ef_search = 10 });
+    defer {
+        for (results_low.items) |*r| r.deinit(std.testing.allocator);
+        results_low.deinit(std.testing.allocator);
+    }
+
+    var results_high = try index.searchWithOptions(&query, .{ .k = 5, .ef_search = 50 });
+    defer {
+        for (results_high.items) |*r| r.deinit(std.testing.allocator);
+        results_high.deinit(std.testing.allocator);
+    }
+
+    // Both should return results
+    try std.testing.expect(results_low.items.len >= 1);
+    try std.testing.expect(results_high.items.len >= 1);
+}
+
+test "HNSWIndex.searchWithOptions with max_distance threshold" {
+    var index = try HNSWIndex.init(std.testing.allocator, .{});
+    defer index.deinit();
+
+    const vectors = [3][3]f32{
+        [_]f32{ 1.0, 0.0, 0.0 },
+        [_]f32{ 0.8, 0.0, 0.0 },
+        [_]f32{ 0.0, 1.0, 0.0 },
+    };
+
+    for (vectors, 0..) |v, i| {
+        const id = try std.fmt.allocPrint(std.testing.allocator, "thresh_emb{d}", .{i});
+        defer std.testing.allocator.free(id);
+
+        const embedding = Embedding{
+            .id = id,
+            .data = &([_]u8{0} ** 12),
+            .dimensions = 3,
+            .quantization = .fp32,
+            .entity_namespace = "test",
+            .entity_local_id = id,
+            .model_name = "test",
+            .created_at = @intCast(100 + i),
+        };
+        try index.insert(embedding, &v);
+    }
+
+    const query = [_]f32{ 1.0, 0.0, 0.0 };
+
+    // Search with distance threshold of 0.3 (should only get very close results)
+    var results = try index.searchWithOptions(&query, .{
+        .k = 10,
+        .metric = .euclidean,
+        .max_distance = 0.3,
+    });
+    defer {
+        for (results.items) |*r| r.deinit(std.testing.allocator);
+        results.deinit(std.testing.allocator);
+    }
+
+    // Should only return results within distance threshold
+    for (results.items) |r| {
+        try std.testing.expect(r.score <= 0.3);
+    }
+}
+
+test "EmbeddingsCartridge.searchWithOptions" {
+    var cartridge = try EmbeddingsCartridge.init(std.testing.allocator, 100, 3, .fp32);
+    defer cartridge.deinit();
+
+    const vectors = [2][3]f32{
+        [_]f32{ 1.0, 0.0, 0.0 },
+        [_]f32{ 0.9, 0.1, 0.0 },
+    };
+
+    for (vectors, 0..) |v, i| {
+        const id = try std.fmt.allocPrint(std.testing.allocator, "cart_emb{d}", .{i});
+        defer std.testing.allocator.free(id);
+
+        const embedding = Embedding{
+            .id = id,
+            .data = &([_]u8{0} ** 12),
+            .dimensions = 3,
+            .quantization = .fp32,
+            .entity_namespace = "file",
+            .entity_local_id = id,
+            .model_name = "test",
+            .created_at = @intCast(100 + i),
+        };
+        try cartridge.addEmbedding(embedding, &v);
+    }
+
+    const query = [_]f32{ 1.0, 0.0, 0.0 };
+    var results = try cartridge.searchWithOptions(&query, .{ .k = 2, .metric = .cosine });
+    defer {
+        for (results.items) |*r| r.deinit(std.testing.allocator);
+        results.deinit(std.testing.allocator);
+    }
+
     try std.testing.expect(results.items.len >= 1);
 }
