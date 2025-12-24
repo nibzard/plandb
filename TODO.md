@@ -768,11 +768,18 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - Track embedding generation costs and performance
 
 ## Phase 6 — Cartridge 3: Temporal History (Time-Series Entity State)
-- [ ] 🔴 Design temporal history cartridge with time-series storage format
+- [x] 🟢 Design temporal history cartridge with time-series storage format
   - Define chunked time-series storage (time-ordered chunks per entity)
   - Support multiple state change types: attribute updates, relationships, migrations
   - Include compression for long history (LZ4, delta encoding for timestamps)
   - Design retention policy configuration (TTL, sampling for old data)
+  - **Completed**: Created src/cartridges/temporal.zig with time-series entity state history
+    - Added temporal_history cartridge type to src/cartridges/format.zig
+    - Implemented chunked time-series storage (time-ordered chunks per entity)
+    - Supports multiple state change types: attribute updates, relationships, migrations
+    - Includes delta encoding for timestamps and configurable retention policies (TTL, sampling)
+    - Implements temporal query operations: AS OF (point-in-time), BETWEEN (time range)
+    - All tests pass with no memory leaks
 - [ ] 🔴 Implement entity state versioning with immutable snapshots
   - Capture full entity state on each significant change
   - Implement delta compression between consecutive states
