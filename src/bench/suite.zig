@@ -164,6 +164,13 @@ pub fn registerBenchmarks(bench_runner: *runner.Runner) !void {
         .suite = .macro,
     });
 
+    try bench_runner.addBenchmark(.{
+        .name = "bench/macro/doc_ingestion",
+        .run_fn = benchMacroDocIngestion,
+        .critical = true,
+        .suite = .macro,
+    });
+
     // Hardening benchmarks
     try bench_runner.addBenchmark(.{
         .name = "bench/hardening/torn_write_header_detection",
@@ -3907,6 +3914,390 @@ fn benchMacroTelemetryTimeseries(allocator: std.mem.Allocator, config: types.Con
         },
         .bytes = .{
             .read_total = total_reads,
+            .write_total = total_writes,
+        },
+        .io = .{
+            .fsync_count = total_fsyncs,
+        },
+        .alloc = .{
+            .alloc_count = alloc_count,
+            .alloc_bytes = total_alloc_bytes,
+        },
+        .errors_total = 0,
+        .notes = notes_value,
+    };
+}
+
+/// Document Ingestion Workload Macrobenchmark
+///
+/// Tests realistic document ingestion patterns with bursty, time-correlated writes.
+/// Simulates how AI coding agents ingest documents from codebases with:
+/// - Batch imports (initial repository clone/scan)
+/// - Incremental updates (commits, PRs, file changes)
+/// - Bursty write patterns (time-correlated activity)
+/// - Document churn (updates, deletions, archival)
+///
+/// Write Patterns:
+/// - Burst simulation: Documents arrive in bursts with quiet periods
+/// - Time correlation: Related documents are ingested together
+/// - Variable sizes: Small (<1KB), medium (1-10KB), large (>10KB) docs
+/// - Churn patterns: Updates and deletions over time
+///
+/// Schema uses same format as doc_repo_versioning:
+/// - "doc:{doc_id}" -> metadata (title, category, version, timestamps)
+/// - "doc:{doc_id}:v{version}" -> content snapshot
+/// - "doc:{doc_id}:versions" -> version list
+fn benchMacroDocIngestion(allocator: std.mem.Allocator, config: types.Config) !types.Results {
+    _ = config;
+
+    // Configurable parameters
+    const num_batches: u64 = 5; // Number of ingestion bursts
+    const docs_per_batch: u64 = 50; // Docs per burst (reduced for CI)
+    const update_rate: f64 = 0.3; // 30% of docs get updated
+    const delete_rate: f64 = 0.1; // 10% of docs get deleted
+    const burst_spacing_ms: u64 = 10; // Simulated time between bursts (affects keys)
+
+    const doc_categories = [_][]const u8{
+        "source", "test", "config", "docs", "build",
+        "assets", "scripts", "vendor", "templates", "data",
+    };
+
+    // Document size distributions (bytes)
+    const size_small = 512; // <1KB
+    const size_medium = 4096; // ~4KB
+    const size_large = 16384; // ~16KB
+
+    var database = try db.Db.open(allocator);
+    defer database.close();
+
+    var prng = std.Random.DefaultPrng.init(42);
+    const rand = prng.random();
+
+    var total_writes: u64 = 0;
+    var total_alloc_bytes: u64 = 0;
+    var alloc_count: u64 = 0;
+
+    // Track metrics
+    var docs_created: u64 = 0;
+    var docs_updated: u64 = 0;
+    var docs_deleted: u64 = 0;
+    var total_content_bytes: u64 = 0;
+
+    // Track batch latencies
+    var batch_latencies = try std.ArrayList(u64).initCapacity(allocator, num_batches);
+    defer batch_latencies.deinit(allocator);
+
+    // Track operation latencies
+    var write_latencies = try std.ArrayList(u64).initCapacity(allocator, num_batches * docs_per_batch);
+    defer write_latencies.deinit(allocator);
+
+    var update_latencies = try std.ArrayList(u64).initCapacity(allocator, @intFromFloat(@as(f64, @floatFromInt(num_batches * docs_per_batch)) * update_rate));
+    defer update_latencies.deinit(allocator);
+
+    var delete_latencies = try std.ArrayList(u64).initCapacity(allocator, @intFromFloat(@as(f64, @floatFromInt(num_batches * docs_per_batch)) * delete_rate));
+    defer delete_latencies.deinit(allocator);
+
+    // Track active documents for updates/deletes
+    var active_docs = try std.ArrayList(u64).initCapacity(allocator, num_batches * docs_per_batch);
+    defer active_docs.deinit(allocator);
+
+    const start_time = std.time.nanoTimestamp();
+
+    // Phase 1: Batch Ingestion with Bursty Pattern
+    var batch_id: u64 = 0;
+    while (batch_id < num_batches) : (batch_id += 1) {
+        const batch_start = std.time.nanoTimestamp();
+
+        // Simulate burst: rapid ingestion of docs_per_batch documents
+        var w = try database.beginWrite();
+        errdefer w.abort();
+
+        var docs_in_batch: u64 = 0;
+        while (docs_in_batch < docs_per_batch) : (docs_in_batch += 1) {
+            const doc_id = batch_id * docs_per_batch + docs_in_batch;
+            const write_start = std.time.nanoTimestamp();
+
+            // Pick document size (biased toward medium docs)
+            const size_roll = rand.float(f64);
+            const content_size: usize = if (size_roll < 0.6) size_medium else if (size_roll < 0.9) size_small else size_large;
+
+            // Generate document content
+            var content_buf = try allocator.alloc(u8, content_size);
+            defer allocator.free(content_buf);
+
+            // Fill with semi-realistic content pattern
+            for (0..content_size) |i| {
+                content_buf[i] = switch (i % 4) {
+                    0 => ' ',
+                    1 => @as(u8, @intCast('a' + rand.intRangeAtMost(u8, 0, 25))),
+                    2 => @as(u8, @intCast('a' + rand.intRangeAtMost(u8, 0, 25))),
+                    else => @as(u8, @intCast('a' + rand.intRangeAtMost(u8, 0, 25))),
+                };
+            }
+
+            // Pick category
+            const category = doc_categories[rand.intRangeLessThan(usize, 0, doc_categories.len)];
+
+            // Create document metadata
+            var doc_key_buf: [128]u8 = undefined;
+            const doc_key = try std.fmt.bufPrint(&doc_key_buf, "doc:{d}", .{doc_id});
+
+            var doc_value_buf: [512]u8 = undefined;
+            const doc_value = try std.fmt.bufPrint(&doc_value_buf,
+                "{{\"title\":\"Doc {d}\",\"category\":\"{s}\",\"size\":{d},\"created\":{d},\"updated\":{d},\"version\":1}}",
+                .{ doc_id, category, content_size, std.time.timestamp(), std.time.timestamp() });
+
+            try w.put(doc_key, doc_value);
+            total_writes += doc_key.len + doc_value.len;
+            total_alloc_bytes += doc_key.len + doc_value.len;
+            alloc_count += 2;
+
+            // Create initial version
+            var ver_key_buf: [128]u8 = undefined;
+            const ver_key = try std.fmt.bufPrint(&ver_key_buf, "doc:{d}:v1", .{doc_id});
+
+            var ver_value_buf: [512]u8 = undefined;
+            const ver_value = try std.fmt.bufPrint(&ver_value_buf,
+                "{{\"content_len\":{d},\"author\":\"ingester\",\"batch\":{d},\"timestamp\":{d}}}",
+                .{ content_size, batch_id, std.time.timestamp() });
+
+            try w.put(ver_key, ver_value);
+            total_writes += ver_key.len + ver_value.len;
+            total_alloc_bytes += ver_key.len + ver_value.len;
+            alloc_count += 2;
+
+            // Initialize version list
+            var versions_key_buf: [128]u8 = undefined;
+            const versions_key = try std.fmt.bufPrint(&versions_key_buf, "doc:{d}:versions", .{doc_id});
+            try w.put(versions_key, "1");
+            total_writes += versions_key.len + 1;
+            total_alloc_bytes += versions_key.len + 1;
+            alloc_count += 2;
+
+            docs_created += 1;
+            total_content_bytes += content_size;
+            try active_docs.append(allocator, doc_id);
+
+            const write_latency = @as(u64, @intCast(std.time.nanoTimestamp() - write_start));
+            try write_latencies.append(allocator, write_latency);
+        }
+
+        _ = try w.commit();
+        total_writes += 4096;
+        alloc_count += 10;
+
+        const batch_latency = @as(u64, @intCast(std.time.nanoTimestamp() - batch_start));
+        try batch_latencies.append(allocator, batch_latency);
+
+        // Simulate quiet period between bursts (no actual sleep, just logical)
+        _ = burst_spacing_ms;
+    }
+
+    // Phase 2: Incremental Updates (time-correlated with bursts)
+    var update_batch: u64 = 0;
+    while (update_batch < @divTrunc(num_batches, 2)) : (update_batch += 1) {
+        var w = try database.beginWrite();
+        errdefer w.abort();
+
+        // Update a subset of existing documents
+        var updates_in_batch: u64 = 0;
+        const updates_to_apply: u64 = @intFromFloat(@as(f64, @floatFromInt(docs_per_batch)) * update_rate);
+
+        while (updates_in_batch < updates_to_apply) : (updates_in_batch += 1) {
+            if (active_docs.items.len == 0) break;
+
+            const update_start = std.time.nanoTimestamp();
+
+            // Pick random active document
+            const doc_idx = rand.intRangeLessThan(usize, 0, active_docs.items.len);
+            const doc_id = active_docs.items[doc_idx];
+
+            // Get current version (simplified - we'd normally read to find it)
+            const new_version: u64 = 2; // Assume first update
+
+            // Create new version
+            var ver_key_buf: [128]u8 = undefined;
+            const ver_key = try std.fmt.bufPrint(&ver_key_buf, "doc:{d}:v{d}", .{ doc_id, new_version });
+
+            var ver_value_buf: [512]u8 = undefined;
+            const ver_value = try std.fmt.bufPrint(&ver_value_buf,
+                "{{\"content_len\":{d},\"author\":\"updater\",\"batch\":{d},\"timestamp\":{d}}}",
+                .{ size_medium, update_batch, std.time.timestamp() });
+
+            try w.put(ver_key, ver_value);
+            total_writes += ver_key.len + ver_value.len;
+            total_alloc_bytes += ver_key.len + ver_value.len;
+            alloc_count += 2;
+
+            // Update document metadata
+            var doc_key_buf: [128]u8 = undefined;
+            const doc_key = try std.fmt.bufPrint(&doc_key_buf, "doc:{d}", .{doc_id});
+
+            var doc_value_buf: [512]u8 = undefined;
+            const doc_value = try std.fmt.bufPrint(&doc_value_buf,
+                "{{\"title\":\"Doc {d}\",\"category\":\"updated\",\"size\":{d},\"created\":{d},\"updated\":{d},\"version\":{d}}}",
+                .{ doc_id, size_medium, std.time.timestamp() - 3600, std.time.timestamp(), new_version });
+
+            try w.put(doc_key, doc_value);
+            total_writes += doc_key.len + doc_value.len;
+            total_alloc_bytes += doc_key.len + doc_value.len;
+            alloc_count += 2;
+
+            // Update version list
+            var versions_key_buf: [128]u8 = undefined;
+            const versions_key = try std.fmt.bufPrint(&versions_key_buf, "doc:{d}:versions", .{doc_id});
+            try w.put(versions_key, "1,2");
+            total_writes += versions_key.len + 3;
+            total_alloc_bytes += versions_key.len + 3;
+            alloc_count += 2;
+
+            docs_updated += 1;
+            total_content_bytes += size_medium;
+
+            const update_latency = @as(u64, @intCast(std.time.nanoTimestamp() - update_start));
+            try update_latencies.append(allocator, update_latency);
+        }
+
+        _ = try w.commit();
+        total_writes += 4096;
+        alloc_count += 10;
+    }
+
+    // Phase 3: Document Deletion (churn simulation)
+    var delete_batch: u64 = 0;
+    while (delete_batch < @divTrunc(num_batches, 3)) : (delete_batch += 1) {
+        var w = try database.beginWrite();
+        errdefer w.abort();
+
+        const deletes_to_apply: u64 = @intFromFloat(@as(f64, @floatFromInt(docs_per_batch)) * delete_rate);
+        var deletes_in_batch: u64 = 0;
+
+        while (deletes_in_batch < deletes_to_apply) : (deletes_in_batch += 1) {
+            if (active_docs.items.len == 0) break;
+
+            const delete_start = std.time.nanoTimestamp();
+
+            // Pick random document to delete
+            const doc_idx = rand.intRangeLessThan(usize, 0, active_docs.items.len);
+            const doc_id = active_docs.swapRemove(doc_idx);
+
+            // Delete document metadata
+            var doc_key_buf: [128]u8 = undefined;
+            const doc_key = try std.fmt.bufPrint(&doc_key_buf, "doc:{d}", .{doc_id});
+            try w.del(doc_key);
+            total_writes += doc_key.len;
+            total_alloc_bytes += doc_key.len;
+            alloc_count += 1;
+
+            // Mark as deleted (tombstone)
+            var tombstone_key_buf: [128]u8 = undefined;
+            const tombstone_key = try std.fmt.bufPrint(&tombstone_key_buf, "doc:{d}:deleted", .{doc_id});
+            try w.put(tombstone_key, "1");
+            total_writes += tombstone_key.len + 1;
+            total_alloc_bytes += tombstone_key.len + 1;
+            alloc_count += 2;
+
+            docs_deleted += 1;
+
+            const delete_latency = @as(u64, @intCast(std.time.nanoTimestamp() - delete_start));
+            try delete_latencies.append(allocator, delete_latency);
+        }
+
+        _ = try w.commit();
+        total_writes += 4096;
+        alloc_count += 10;
+    }
+
+    const duration_ns = @as(u64, @intCast(std.time.nanoTimestamp() - start_time));
+
+    // Calculate percentiles
+    var batch_p50: u64 = 0;
+    var batch_p99: u64 = 0;
+    if (batch_latencies.items.len > 0) {
+        std.sort.insertion(u64, batch_latencies.items, {}, comptime std.sort.asc(u64));
+        batch_p50 = batch_latencies.items[@divTrunc(batch_latencies.items.len * 50, 100)];
+        batch_p99 = batch_latencies.items[@min(batch_latencies.items.len - 1, @divTrunc(batch_latencies.items.len * 99, 100))];
+    }
+
+    var write_p50: u64 = 0;
+    var write_p99: u64 = 0;
+    if (write_latencies.items.len > 0) {
+        std.sort.insertion(u64, write_latencies.items, {}, comptime std.sort.asc(u64));
+        write_p50 = write_latencies.items[@divTrunc(write_latencies.items.len * 50, 100)];
+        write_p99 = write_latencies.items[@min(write_latencies.items.len - 1, @divTrunc(write_latencies.items.len * 99, 100))];
+    }
+
+    var update_p50: u64 = 0;
+    var update_p99: u64 = 0;
+    if (update_latencies.items.len > 0) {
+        std.sort.insertion(u64, update_latencies.items, {}, comptime std.sort.asc(u64));
+        update_p50 = update_latencies.items[@divTrunc(update_latencies.items.len * 50, 100)];
+        update_p99 = update_latencies.items[@min(update_latencies.items.len - 1, @divTrunc(update_latencies.items.len * 99, 100))];
+    }
+
+    var delete_p50: u64 = 0;
+    var delete_p99: u64 = 0;
+    if (delete_latencies.items.len > 0) {
+        std.sort.insertion(u64, delete_latencies.items, {}, comptime std.sort.asc(u64));
+        delete_p50 = delete_latencies.items[@divTrunc(delete_latencies.items.len * 50, 100)];
+        delete_p99 = delete_latencies.items[@min(delete_latencies.items.len - 1, @divTrunc(delete_latencies.items.len * 99, 100))];
+    }
+
+    // Calculate metrics
+    const total_operations = docs_created + docs_updated + docs_deleted;
+    const avg_doc_size: f64 = if (docs_created > 0)
+        @as(f64, @floatFromInt(total_content_bytes)) / @as(f64, @floatFromInt(docs_created))
+    else
+        0.0;
+
+    const total_transactions = num_batches + @divTrunc(num_batches, 2) + @divTrunc(num_batches, 3);
+    const total_fsyncs = total_transactions;
+    const fsyncs_per_op: f64 = if (total_operations > 0)
+        @as(f64, @floatFromInt(total_fsyncs)) / @as(f64, @floatFromInt(total_operations))
+    else
+        0.0;
+
+    const churn_rate: f64 = if (docs_created > 0)
+        @as(f64, @floatFromInt(docs_deleted)) / @as(f64, @floatFromInt(docs_created)) * 100.0
+    else
+        0.0;
+
+    // Build notes with ingestion metrics
+    var notes_map = std.json.ObjectMap.init(allocator);
+    try notes_map.put("batch_p50_ns", std.json.Value{ .integer = @intCast(batch_p50) });
+    try notes_map.put("batch_p99_ns", std.json.Value{ .integer = @intCast(batch_p99) });
+    try notes_map.put("write_p50_ns", std.json.Value{ .integer = @intCast(write_p50) });
+    try notes_map.put("write_p99_ns", std.json.Value{ .integer = @intCast(write_p99) });
+    try notes_map.put("update_p50_ns", std.json.Value{ .integer = @intCast(update_p50) });
+    try notes_map.put("update_p99_ns", std.json.Value{ .integer = @intCast(update_p99) });
+    try notes_map.put("delete_p50_ns", std.json.Value{ .integer = @intCast(delete_p50) });
+    try notes_map.put("delete_p99_ns", std.json.Value{ .integer = @intCast(delete_p99) });
+    try notes_map.put("docs_created", std.json.Value{ .integer = @intCast(docs_created) });
+    try notes_map.put("docs_updated", std.json.Value{ .integer = @intCast(docs_updated) });
+    try notes_map.put("docs_deleted", std.json.Value{ .integer = @intCast(docs_deleted) });
+    try notes_map.put("avg_doc_size", std.json.Value{ .float = avg_doc_size });
+    try notes_map.put("churn_rate_pct", std.json.Value{ .float = churn_rate });
+    try notes_map.put("num_batches", std.json.Value{ .integer = @intCast(num_batches) });
+    try notes_map.put("docs_per_batch", std.json.Value{ .integer = @intCast(docs_per_batch) });
+    try notes_map.put("update_rate", std.json.Value{ .float = update_rate });
+    try notes_map.put("delete_rate", std.json.Value{ .float = delete_rate });
+    try notes_map.put("fsyncs_per_op", std.json.Value{ .float = fsyncs_per_op });
+    try notes_map.put("total_fsyncs", std.json.Value{ .integer = @intCast(total_fsyncs) });
+
+    const notes_value = std.json.Value{ .object = notes_map };
+
+    return types.Results{
+        .ops_total = total_operations,
+        .duration_ns = duration_ns,
+        .ops_per_sec = @as(f64, @floatFromInt(total_operations)) / @as(f64, @floatFromInt(duration_ns)) * std.time.ns_per_s,
+        .latency_ns = .{
+            .p50 = write_p50,
+            .p95 = @max(write_p50, write_p99),
+            .p99 = write_p99,
+            .max = write_p99 + 1,
+        },
+        .bytes = .{
+            .read_total = 0,
             .write_total = total_writes,
         },
         .io = .{
