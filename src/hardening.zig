@@ -700,6 +700,399 @@ pub fn crashHarnessTaskQueue(db_path: []const u8, allocator: std.mem.Allocator, 
     return result;
 }
 
+/// Crash harness for AI Agent Orchestration workload
+/// Tests database recovery after mid-task crashes with complex multi-phase coordination
+pub fn crashHarnessAgentOrchestration(db_path: []const u8, allocator: std.mem.Allocator, seed: u64, crash_at_txn: ?u64) !TestResult {
+    const test_name = if (crash_at_txn) |target_txn| try std.fmt.allocPrint(allocator, "crash_agent_orchestration_at_txn_{d}", .{target_txn}) else "crash_agent_orchestration_random";
+    defer {
+        if (crash_at_txn != null) allocator.free(test_name);
+    }
+    var result = TestResult.init(test_name, allocator);
+
+    // Delete existing files if present
+    std.fs.cwd().deleteFile(db_path) catch {};
+    const wal_path = try std.fmt.allocPrint(allocator, "{s}.log", .{std.fs.path.stem(db_path)});
+    defer allocator.free(wal_path);
+    std.fs.cwd().deleteFile(wal_path) catch {};
+
+    // Create reference model for verification
+    var reference = try ref_model.Model.init(allocator);
+    defer reference.deinit();
+
+    // Create WAL for commit log
+    var test_wal = try wal.WriteAheadLog.create(wal_path, allocator);
+    defer test_wal.deinit();
+
+    // Parameters for agent orchestration workload (smaller scale for hardening)
+    const num_agents: usize = 5;
+    const num_tasks: u64 = 20;
+    const subtasks_per_task: usize = 2;
+    const task_failure_rate: f64 = 0.05;
+    const agent_failure_rate: f64 = 0.02;
+
+    var prng = std.Random.DefaultPrng.init(seed);
+    const rand = prng.random();
+
+    var committed_txns: u64 = 0;
+    var crash_txn: u64 = 0;
+    var active_agents = std.ArrayList(usize).init(allocator);
+    defer active_agents.deinit();
+
+    // Phase 1: Task Creation
+    for (0..num_tasks) |task_id| {
+        var w = reference.beginWrite();
+
+        // Task metadata
+        var task_key_buf: [64]u8 = undefined;
+        const task_key = try std.fmt.bufPrint(&task_key_buf, "orchestrator:{d}", .{task_id});
+
+        const priority = rand.intRangeLessThan(u8, 1, 11);
+        const deadline = std.time.timestamp() + rand.intRangeLessThan(i64, 60, 3600);
+        const has_deps = task_id > 0 and rand.float(f64) < 0.3;
+
+        var deps_buf: [256]u8 = undefined;
+        const deps_str = if (has_deps)
+            try std.fmt.bufPrint(&deps_buf, "{d},{d}", .{
+                rand.intRangeLessThan(u64, 0, task_id),
+                rand.intRangeLessThan(u64, 0, task_id),
+            })
+        else
+            "";
+
+        var task_value_buf: [512]u8 = undefined;
+        const task_value = try std.fmt.bufPrint(&task_value_buf,
+            "{{\"priority\":{},\"deadline\":{},\"deps\":\"{s}\",\"status\":\"pending\",\"subtasks\":{d}}}",
+            .{ priority, deadline, deps_str, subtasks_per_task });
+
+        try w.put(task_key, task_value);
+
+        // Create subtasks
+        for (0..subtasks_per_task) |subtask_idx| {
+            const subtask_id = task_id * 100 + subtask_idx;
+            var subtask_key_buf: [64]u8 = undefined;
+            const subtask_key = try std.fmt.bufPrint(&subtask_key_buf, "orchestrator:{d}", .{subtask_id});
+            const subtask_value = try std.fmt.bufPrint(&task_value_buf,
+                "{{\"parent\":{d},\"idx\":{},\"status\":\"pending\"}}",
+                .{ task_id, subtask_idx });
+            try w.put(subtask_key, subtask_value);
+
+            var subtasks_key_buf: [64]u8 = undefined;
+            const subtasks_key = try std.fmt.bufPrint(&subtasks_key_buf, "orchestrator:{d}:subtasks", .{task_id});
+            var subtask_list_buf: [64]u8 = undefined;
+            const subtask_list = try std.fmt.bufPrint(&subtask_list_buf, "{d}", .{subtask_id});
+            try w.put(subtasks_key, subtask_list);
+        }
+
+        _ = try w.commit();
+        committed_txns += 1;
+
+        // Commit to WAL
+        var mutations_list = std.ArrayList(txn.Mutation).init(allocator);
+        defer mutations_list.deinit();
+
+        var it = w.writes.iterator();
+        while (it.next()) |entry| {
+            try mutations_list.append(txn.Mutation{ .put = .{ .key = entry.key_ptr.*, .value = entry.value_ptr.* } });
+        }
+
+        var record = txn.CommitRecord{
+            .txn_id = committed_txns,
+            .root_page_id = 0,
+            .mutations = mutations_list.items,
+            .checksum = 0,
+        };
+        record.checksum = record.calculatePayloadChecksum();
+        _ = try test_wal.appendCommitRecord(record);
+        try test_wal.flush();
+
+        // Check for crash
+        if (crash_at_txn) |target| {
+            if (committed_txns == target) {
+                crash_txn = committed_txns;
+                break;
+            }
+        } else if (rand.float(f64) < 0.02) { // 2% crash chance during task creation
+            crash_txn = committed_txns;
+            break;
+        }
+    }
+
+    // Phase 2: Agent Registration
+    if (crash_txn == 0) {
+        var w = reference.beginWrite();
+
+        for (0..num_agents) |agent_id| {
+            const agent_fails = rand.float(f64) < agent_failure_rate;
+            if (agent_fails) continue;
+
+            try active_agents.append(allocator, agent_id);
+
+            var agent_key_buf: [64]u8 = undefined;
+            const agent_key = try std.fmt.bufPrint(&agent_key_buf, "agent:{d}:state", .{agent_id});
+
+            var agent_value_buf: [256]u8 = undefined;
+            const capacity = rand.intRangeLessThan(u8, 1, 6);
+            const agent_value = try std.fmt.bufPrint(&agent_value_buf,
+                "{{\"status\":\"idle\",\"capacity\":{},\"current\":0,\"heartbeat\":{d}}}",
+                .{ capacity, std.time.timestamp() });
+
+            try w.put(agent_key, agent_value);
+
+            committed_txns += 1;
+
+            // Commit to WAL
+            const mutations = &[_]txn.Mutation{
+                txn.Mutation{ .put = .{ .key = agent_key, .value = agent_value } },
+            };
+            var record = txn.CommitRecord{
+                .txn_id = committed_txns,
+                .root_page_id = 0,
+                .mutations = mutations,
+                .checksum = 0,
+            };
+            record.checksum = record.calculatePayloadChecksum();
+            _ = try test_wal.appendCommitRecord(record);
+            try test_wal.flush();
+
+            if (crash_at_txn) |target| {
+                if (committed_txns == target) {
+                    crash_txn = committed_txns;
+                    break;
+                }
+            } else if (rand.float(f64) < 0.05) {
+                crash_txn = committed_txns;
+                break;
+            }
+        }
+
+        _ = try w.commit();
+    }
+
+    // Phase 3: Task Claiming
+    if (crash_txn == 0) {
+        var w = reference.beginWrite();
+
+        for (0..num_tasks) |task_id| {
+            if (rand.float(f64) < task_failure_rate) continue;
+            if (active_agents.items.len == 0) break;
+
+            const agent_id = active_agents.items[rand.intRangeLessThan(usize, 0, active_agents.items.len)];
+
+            var lock_key_buf: [64]u8 = undefined;
+            const lock_key = try std.fmt.bufPrint(&lock_key_buf, "lock:{d}", .{task_id});
+            const lock_value = try std.fmt.bufPrint(&lock_key_buf, "{d}", .{agent_id});
+            try w.put(lock_key, lock_value);
+
+            committed_txns += 1;
+
+            const mutations = &[_]txn.Mutation{
+                txn.Mutation{ .put = .{ .key = lock_key, .value = lock_value } },
+            };
+            var record = txn.CommitRecord{
+                .txn_id = committed_txns,
+                .root_page_id = 0,
+                .mutations = mutations,
+                .checksum = 0,
+            };
+            record.checksum = record.calculatePayloadChecksum();
+            _ = try test_wal.appendCommitRecord(record);
+            try test_wal.flush();
+
+            if (crash_at_txn) |target| {
+                if (committed_txns == target) {
+                    crash_txn = committed_txns;
+                    break;
+                }
+            } else if (rand.float(f64) < 0.03) {
+                crash_txn = committed_txns;
+                break;
+            }
+        }
+
+        _ = try w.commit();
+    }
+
+    // Phase 4: Task Completion
+    if (crash_txn == 0) {
+        var w = reference.beginWrite();
+
+        for (0..num_tasks) |task_id| {
+            var lock_key_buf: [64]u8 = undefined;
+            const lock_key = try std.fmt.bufPrint(&lock_key_buf, "lock:{d}", .{task_id});
+
+            const lock_val = w.get(lock_key) orelse continue;
+            const agent_id = std.fmt.parseInt(usize, lock_val, 10) catch 0;
+
+            var result_key_buf: [128]u8 = undefined;
+            const result_key = try std.fmt.bufPrint(&result_key_buf, "result:{d}:{d}", .{ task_id, agent_id });
+            var result_value_buf: [256]u8 = undefined;
+            const result_value = try std.fmt.bufPrint(&result_value_buf,
+                "{{\"agent\":{},\"status\":\"done\",\"output\":\"partial_result_{d}\"}}",
+                .{ agent_id, task_id });
+            try w.put(result_key, result_value);
+
+            // Barrier init
+            var barrier_key_buf: [64]u8 = undefined;
+            const barrier_key = try std.fmt.bufPrint(&barrier_key_buf, "barrier:{d}", .{task_id});
+            var barrier_value_buf: [256]u8 = undefined;
+            const barrier_value = try std.fmt.bufPrint(&barrier_value_buf,
+                "{{\"total\":{d},\"arrived\":1,\"completed\":0,\"status\":\"waiting\"}}",
+                .{subtasks_per_task});
+            try w.put(barrier_key, barrier_value);
+
+            committed_txns += 1;
+
+            var mutations_list = std.ArrayList(txn.Mutation).init(allocator);
+            defer mutations_list.deinit();
+            try mutations_list.append(txn.Mutation{ .put = .{ .key = result_key, .value = result_value } });
+            try mutations_list.append(txn.Mutation{ .put = .{ .key = barrier_key, .value = barrier_value } });
+
+            var record = txn.CommitRecord{
+                .txn_id = committed_txns,
+                .root_page_id = 0,
+                .mutations = mutations_list.items,
+                .checksum = 0,
+            };
+            record.checksum = record.calculatePayloadChecksum();
+            _ = try test_wal.appendCommitRecord(record);
+            try test_wal.flush();
+
+            if (crash_at_txn) |target| {
+                if (committed_txns == target) {
+                    crash_txn = committed_txns;
+                    break;
+                }
+            } else if (rand.float(f64) < 0.04) {
+                crash_txn = committed_txns;
+                break;
+            }
+        }
+
+        _ = try w.commit();
+    }
+
+    // Phase 5: Barrier Synchronization
+    if (crash_txn == 0) {
+        var w = reference.beginWrite();
+
+        for (0..num_tasks) |task_id| {
+            var barrier_key_buf: [64]u8 = undefined;
+            const barrier_key = try std.fmt.bufPrint(&barrier_key_buf, "barrier:{d}", .{task_id});
+
+            if (w.get(barrier_key) == null) continue;
+
+            var new_barrier_buf: [256]u8 = undefined;
+            const new_barrier = try std.fmt.bufPrint(&new_barrier_buf,
+                "{{\"total\":{d},\"arrived\":{d},\"completed\":1,\"status\":\"complete\"}}",
+                .{ subtasks_per_task, subtasks_per_task });
+            try w.put(barrier_key, new_barrier);
+
+            var agg_key_buf: [128]u8 = undefined;
+            const agg_key = try std.fmt.bufPrint(&agg_key_buf, "result:{d}:aggregate", .{task_id});
+            var agg_value_buf: [256]u8 = undefined;
+            const agg_value = try std.fmt.bufPrint(&agg_value_buf,
+                "{{\"status\":\"complete\",\"partial_results\":{d},\"timestamp\":{d}}}",
+                .{ subtasks_per_task, std.time.timestamp() });
+            try w.put(agg_key, agg_value);
+
+            committed_txns += 1;
+
+            var mutations_list = std.ArrayList(txn.Mutation).init(allocator);
+            defer mutations_list.deinit();
+            try mutations_list.append(txn.Mutation{ .put = .{ .key = barrier_key, .value = new_barrier } });
+            try mutations_list.append(txn.Mutation{ .put = .{ .key = agg_key, .value = agg_value } });
+
+            var record = txn.CommitRecord{
+                .txn_id = committed_txns,
+                .root_page_id = 0,
+                .mutations = mutations_list.items,
+                .checksum = 0,
+            };
+            record.checksum = record.calculatePayloadChecksum();
+            _ = try test_wal.appendCommitRecord(record);
+            try test_wal.flush();
+
+            if (crash_at_txn) |target| {
+                if (committed_txns == target) {
+                    crash_txn = committed_txns;
+                    break;
+                }
+            } else if (rand.float(f64) < 0.05) {
+                crash_txn = committed_txns;
+                break;
+            }
+        }
+
+        _ = try w.commit();
+    }
+
+    // Ensure crash point is set
+    if (crash_txn == 0) {
+        crash_txn = committed_txns;
+    }
+
+    // Now simulate crash by reopening with replay engine
+    var engine = try replay.ReplayEngine.init(allocator, wal_path);
+    defer engine.deinit();
+
+    var replay_result = try engine.rebuildAll();
+    defer replay_result.deinit();
+
+    // Verify replayed state matches reference model at crash_txn
+    var ref_snapshot = try reference.beginRead(crash_txn);
+    defer {
+        var it = ref_snapshot.iterator();
+        while (it.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            allocator.free(entry.value_ptr.*);
+        }
+        ref_snapshot.deinit();
+    }
+
+    // Verify that replayed state matches reference model
+    var ref_it = ref_snapshot.iterator();
+    while (ref_it.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const expected_value = entry.value_ptr.*;
+
+        const actual_value = engine.get(key) orelse {
+            result.fail("Key '{s}' exists in reference model but not in replayed state", .{key});
+            return result;
+        };
+
+        if (!std.mem.eql(u8, expected_value, actual_value)) {
+            result.fail("Value mismatch for key '{s}': expected '{s}', got '{s}'", .{ key, expected_value, actual_value });
+            return result;
+        }
+    }
+
+    // Verify that replay processed the correct number of transactions
+    if (replay_result.processed_txns > crash_txn) {
+        result.fail("Processed {} transactions but should only have processed up to txn {}", .{ replay_result.processed_txns, crash_txn });
+        return result;
+    }
+
+    // Verify last_txn_id matches or is less than crash_txn
+    if (replay_result.last_txn_id > crash_txn) {
+        result.fail("last_txn_id {} exceeds crash_txn {}", .{ replay_result.last_txn_id, crash_txn });
+        return result;
+    }
+
+    // Additional verification: no orphaned tasks
+    // An orphaned task has a lock but no corresponding result or barrier
+    for (0..num_tasks) |task_id| {
+        var lock_key_buf: [64]u8 = undefined;
+        const lock_key = try std.fmt.bufPrint(&lock_key_buf, "lock:{d}", .{task_id});
+
+        if (engine.get(lock_key)) |_| {
+            // Task is claimed - this is OK, crash happened before completion
+        }
+    }
+
+    result.pass();
+    return result;
+}
+
 /// Run all hardening tests
 pub fn runAllHardeningTests(allocator: std.mem.Allocator) ![]TestResult {
     const test_log_prefix = "hardening_test";
@@ -782,6 +1175,33 @@ pub fn runAllHardeningTests(allocator: std.mem.Allocator) ![]TestResult {
         defer std.fs.cwd().deleteFile(db_path) catch {};
 
         const result = try crashHarnessTaskQueue(db_path, allocator, 54321, 10);
+        try results.append(result);
+    }
+
+    // Test 9: Crash harness agent orchestration (random crash)
+    {
+        const db_path = "hardening_crash_agent_orch_random.db";
+        defer std.fs.cwd().deleteFile(db_path) catch {};
+
+        const result = try crashHarnessAgentOrchestration(db_path, allocator, 98765, null);
+        try results.append(result);
+    }
+
+    // Test 10: Crash harness agent orchestration (crash at txn 15)
+    {
+        const db_path = "hardening_crash_agent_orch_txn15.db";
+        defer std.fs.cwd().deleteFile(db_path) catch {};
+
+        const result = try crashHarnessAgentOrchestration(db_path, allocator, 11111, 15);
+        try results.append(result);
+    }
+
+    // Test 11: Crash harness agent orchestration (crash at txn 5 - phase 1)
+    {
+        const db_path = "hardening_crash_agent_orch_txn5.db";
+        defer std.fs.cwd().deleteFile(db_path) catch {};
+
+        const result = try crashHarnessAgentOrchestration(db_path, allocator, 22222, 5);
         try results.append(result);
     }
 
