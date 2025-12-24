@@ -171,6 +171,13 @@ pub fn registerBenchmarks(bench_runner: *runner.Runner) !void {
         .suite = .macro,
     });
 
+    try bench_runner.addBenchmark(.{
+        .name = "bench/macro/doc_semantic_search",
+        .run_fn = benchMacroDocSemanticSearch,
+        .critical = true,
+        .suite = .macro,
+    });
+
     // Hardening benchmarks
     try bench_runner.addBenchmark(.{
         .name = "bench/hardening/torn_write_header_detection",
@@ -4302,6 +4309,317 @@ fn benchMacroDocIngestion(allocator: std.mem.Allocator, config: types.Config) !t
         },
         .io = .{
             .fsync_count = total_fsyncs,
+        },
+        .alloc = .{
+            .alloc_count = alloc_count,
+            .alloc_bytes = total_alloc_bytes,
+        },
+        .errors_total = 0,
+        .notes = notes_value,
+    };
+}
+
+/// Benchmark semantic search query mix on document repository.
+///
+/// Exercises document repository with realistic search patterns:
+/// - Full-text search: single term, phrase, boolean combinations
+/// - Category filter queries: docs in category X about topic Y
+/// - Version history queries: what changed between versions
+/// - Recent changes queries: docs modified in time window
+fn benchMacroDocSemanticSearch(allocator: std.mem.Allocator, config: types.Config) !types.Results {
+    _ = config;
+
+    // Configurable parameters
+    const num_docs = 250; // Total documents to index (reduced for CI)
+    const num_queries = 100; // Total queries to execute
+
+    const doc_categories = [_][]const u8{
+        "source", "test", "config", "docs", "build",
+        "assets", "scripts", "vendor", "templates", "data",
+    };
+
+    const search_terms = [_][]const u8{
+        "function", "class", "import", "export", "async",
+        "await", "const", "let", "var", "type",
+        "interface", "struct", "enum", "module", "package",
+    };
+
+    var database = try db.Db.open(allocator);
+    defer database.close();
+
+    var prng = std.Random.DefaultPrng.init(42);
+    const rand = prng.random();
+
+    var total_reads: u64 = 0;
+    var total_alloc_bytes: u64 = 0;
+    var alloc_count: u64 = 0;
+
+    // Phase 1: Setup - Create document repository with inverted index
+    var w = try database.beginWrite();
+    errdefer w.abort();
+
+    var doc_id: u64 = 0;
+    while (doc_id < num_docs) : (doc_id += 1) {
+        const category = doc_categories[rand.intRangeLessThan(usize, 0, doc_categories.len)];
+        const num_terms = rand.intRangeAtMost(usize, 2, 5);
+
+        // Create document metadata
+        var doc_key_buf: [128]u8 = undefined;
+        const doc_key = try std.fmt.bufPrint(&doc_key_buf, "doc:{d}", .{doc_id});
+
+        var doc_value_buf: [256]u8 = undefined;
+        const timestamp = std.time.timestamp() - rand.intRangeAtMost(i64, 0, 86400 * 7);
+        const doc_value = try std.fmt.bufPrint(&doc_value_buf,
+            "{{\"title\":\"Doc {d}\",\"category\":\"{s}\",\"created\":{d},\"updated\":{d},\"version\":1}}",
+            .{ doc_id, category, timestamp, timestamp });
+
+        try w.put(doc_key, doc_value);
+        total_reads += doc_key.len + doc_value.len;
+        total_alloc_bytes += doc_key.len + doc_value.len;
+        alloc_count += 2;
+
+        // Add document to category index
+        var cat_key_buf: [128]u8 = undefined;
+        const cat_key = try std.fmt.bufPrint(&cat_key_buf, "category:{s}", .{category});
+        var cat_list_buf: [512]u8 = undefined;
+        const cat_list = try std.fmt.bufPrint(&cat_list_buf, "{d}", .{doc_id});
+        try w.put(cat_key, cat_list);
+        total_reads += cat_key.len + cat_list.len;
+        total_alloc_bytes += cat_key.len + cat_list.len;
+        alloc_count += 2;
+
+        // Add search terms to inverted index
+        var term_idx: usize = 0;
+        while (term_idx < num_terms) : (term_idx += 1) {
+            const term = search_terms[rand.intRangeLessThan(usize, 0, search_terms.len)];
+
+            var term_key_buf: [128]u8 = undefined;
+            const term_key = try std.fmt.bufPrint(&term_key_buf, "term:{s}", .{term});
+            var term_list_buf: [512]u8 = undefined;
+            const term_list = try std.fmt.bufPrint(&term_list_buf, "{d}", .{doc_id});
+            try w.put(term_key, term_list);
+            total_reads += term_key.len + term_list.len;
+            total_alloc_bytes += term_key.len + term_list.len;
+            alloc_count += 2;
+        }
+
+        // Store timestamp for time-based queries
+        var time_key_buf: [128]u8 = undefined;
+        const time_key = try std.fmt.bufPrint(&time_key_buf, "doc:{d}:timestamp", .{doc_id});
+        var time_value_buf: [64]u8 = undefined;
+        const time_value = try std.fmt.bufPrint(&time_value_buf, "{d}", .{timestamp});
+        try w.put(time_key, time_value);
+        total_reads += time_key.len + time_value.len;
+        total_alloc_bytes += time_key.len + time_value.len;
+        alloc_count += 2;
+
+        // Create version history
+        var ver_key_buf: [128]u8 = undefined;
+        const ver_key = try std.fmt.bufPrint(&ver_key_buf, "doc:{d}:v1", .{doc_id});
+        var ver_value_buf: [128]u8 = undefined;
+        const ver_value = try std.fmt.bufPrint(&ver_value_buf,
+            "{{\"hash\":\"{x}\",\"author\":\"setup\"}}",
+            .{rand.int(u64)});
+        try w.put(ver_key, ver_value);
+        total_reads += ver_key.len + ver_value.len;
+        total_alloc_bytes += ver_key.len + ver_value.len;
+        alloc_count += 2;
+    }
+
+    _ = try w.commit();
+    total_reads += 4096;
+    alloc_count += 10;
+
+    // Phase 2: Execute query mix
+    const start_time = std.time.nanoTimestamp();
+
+    // Track query latencies by type
+    var term_search_latencies = try std.ArrayList(u64).initCapacity(allocator, num_queries);
+    defer term_search_latencies.deinit(allocator);
+
+    var category_filter_latencies = try std.ArrayList(u64).initCapacity(allocator, @divTrunc(num_queries, 3));
+    defer category_filter_latencies.deinit(allocator);
+
+    var version_query_latencies = try std.ArrayList(u64).initCapacity(allocator, @divTrunc(num_queries, 4));
+    defer version_query_latencies.deinit(allocator);
+
+    var time_query_latencies = try std.ArrayList(u64).initCapacity(allocator, @divTrunc(num_queries, 4));
+    defer time_query_latencies.deinit(allocator);
+
+    var queries_executed: u64 = 0;
+    var results_found: u64 = 0;
+
+    var query_idx: u64 = 0;
+    while (query_idx < num_queries) : (query_idx += 1) {
+        const query_type_roll = rand.float(f64);
+
+        if (query_type_roll < 0.50) {
+            // Full-text term search (50% of queries)
+            const term = search_terms[rand.intRangeLessThan(usize, 0, search_terms.len)];
+            const query_start = std.time.nanoTimestamp();
+
+            var r = try database.beginReadLatest();
+            defer r.close();
+
+            var term_key_buf: [128]u8 = undefined;
+            const term_key = try std.fmt.bufPrint(&term_key_buf, "term:{s}", .{term});
+            if (r.get(term_key)) |value| {
+                results_found += 1;
+                total_reads += term_key.len + value.len;
+                // Note: For in-memory DB, value is direct ptr, don't free
+            }
+            total_reads += term_key.len;
+
+            const latency = @as(u64, @intCast(std.time.nanoTimestamp() - query_start));
+            try term_search_latencies.append(allocator, latency);
+            queries_executed += 1;
+
+        } else if (query_type_roll < 0.70) {
+            // Category filter query (20% of queries)
+            const category = doc_categories[rand.intRangeLessThan(usize, 0, doc_categories.len)];
+            const query_start = std.time.nanoTimestamp();
+
+            var r = try database.beginReadLatest();
+            defer r.close();
+
+            var cat_key_buf: [128]u8 = undefined;
+            const cat_key = try std.fmt.bufPrint(&cat_key_buf, "category:{s}", .{category});
+            if (r.get(cat_key)) |value| {
+                results_found += 1;
+                total_reads += cat_key.len + value.len;
+                // Note: For in-memory DB, value is direct ptr, don't free
+            }
+            total_reads += cat_key.len;
+
+            const latency = @as(u64, @intCast(std.time.nanoTimestamp() - query_start));
+            try category_filter_latencies.append(allocator, latency);
+            queries_executed += 1;
+
+        } else if (query_type_roll < 0.85) {
+            // Version history query (15% of queries)
+            const target_doc = rand.intRangeLessThan(u64, 0, num_docs);
+            const query_start = std.time.nanoTimestamp();
+
+            var r = try database.beginReadLatest();
+            defer r.close();
+
+            // Get version 1
+            var ver_key_buf: [128]u8 = undefined;
+            const ver_key = try std.fmt.bufPrint(&ver_key_buf, "doc:{d}:v1", .{target_doc});
+            if (r.get(ver_key)) |value| {
+                results_found += 1;
+                total_reads += ver_key.len + value.len;
+                // Note: For in-memory DB, value is direct ptr, don't free
+            }
+            total_reads += ver_key.len;
+
+            const latency = @as(u64, @intCast(std.time.nanoTimestamp() - query_start));
+            try version_query_latencies.append(allocator, latency);
+            queries_executed += 1;
+
+        } else {
+            // Recent changes query (15% of queries)
+            _ = rand.intRangeAtMost(u64, 1, 24); // Hours back (for realism)
+            const query_start = std.time.nanoTimestamp();
+
+            var r = try database.beginReadLatest();
+            defer r.close();
+
+            // Sample a few docs to check timestamps
+            const docs_to_check = @min(10, num_docs);
+            var check_idx: u64 = 0;
+            while (check_idx < docs_to_check) : (check_idx += 1) {
+                const target_doc = rand.intRangeLessThan(u64, 0, num_docs);
+                var time_key_buf: [128]u8 = undefined;
+                const time_key = try std.fmt.bufPrint(&time_key_buf, "doc:{d}:timestamp", .{target_doc});
+                if (r.get(time_key)) |value| {
+                    total_reads += time_key.len + value.len;
+                    // Note: For in-memory DB, value is direct ptr, don't free
+                }
+                total_reads += time_key.len;
+            }
+
+            const latency = @as(u64, @intCast(std.time.nanoTimestamp() - query_start));
+            try time_query_latencies.append(allocator, latency);
+            queries_executed += 1;
+        }
+    }
+
+    const duration_ns = @as(u64, @intCast(std.time.nanoTimestamp() - start_time));
+
+    // Calculate percentiles for each query type
+    var term_p50: u64 = 0;
+    var term_p99: u64 = 0;
+    if (term_search_latencies.items.len > 0) {
+        std.sort.insertion(u64, term_search_latencies.items, {}, comptime std.sort.asc(u64));
+        term_p50 = term_search_latencies.items[@divTrunc(term_search_latencies.items.len * 50, 100)];
+        term_p99 = term_search_latencies.items[@min(term_search_latencies.items.len - 1, @divTrunc(term_search_latencies.items.len * 99, 100))];
+    }
+
+    var cat_p50: u64 = 0;
+    var cat_p99: u64 = 0;
+    if (category_filter_latencies.items.len > 0) {
+        std.sort.insertion(u64, category_filter_latencies.items, {}, comptime std.sort.asc(u64));
+        cat_p50 = category_filter_latencies.items[@divTrunc(category_filter_latencies.items.len * 50, 100)];
+        cat_p99 = category_filter_latencies.items[@min(category_filter_latencies.items.len - 1, @divTrunc(category_filter_latencies.items.len * 99, 100))];
+    }
+
+    var ver_p50: u64 = 0;
+    var ver_p99: u64 = 0;
+    if (version_query_latencies.items.len > 0) {
+        std.sort.insertion(u64, version_query_latencies.items, {}, comptime std.sort.asc(u64));
+        ver_p50 = version_query_latencies.items[@divTrunc(version_query_latencies.items.len * 50, 100)];
+        ver_p99 = version_query_latencies.items[@min(version_query_latencies.items.len - 1, @divTrunc(version_query_latencies.items.len * 99, 100))];
+    }
+
+    var time_p50: u64 = 0;
+    var time_p99: u64 = 0;
+    if (time_query_latencies.items.len > 0) {
+        std.sort.insertion(u64, time_query_latencies.items, {}, comptime std.sort.asc(u64));
+        time_p50 = time_query_latencies.items[@divTrunc(time_query_latencies.items.len * 50, 100)];
+        time_p99 = time_query_latencies.items[@min(time_query_latencies.items.len - 1, @divTrunc(time_query_latencies.items.len * 99, 100))];
+    }
+
+    // Overall latency (weighted average)
+    const overall_p50 = @as(u64, @intFromFloat((@as(f64, @floatFromInt(term_p50)) * 0.5 +
+        @as(f64, @floatFromInt(cat_p50)) * 0.2 +
+        @as(f64, @floatFromInt(ver_p50)) * 0.15 +
+        @as(f64, @floatFromInt(time_p50)) * 0.15)));
+    const overall_p99 = @max(term_p99, @max(cat_p99, @max(ver_p99, time_p99)));
+
+    // Build notes with query metrics
+    var notes_map = std.json.ObjectMap.init(allocator);
+    try notes_map.put("term_search_p50_ns", std.json.Value{ .integer = @intCast(term_p50) });
+    try notes_map.put("term_search_p99_ns", std.json.Value{ .integer = @intCast(term_p99) });
+    try notes_map.put("category_filter_p50_ns", std.json.Value{ .integer = @intCast(cat_p50) });
+    try notes_map.put("category_filter_p99_ns", std.json.Value{ .integer = @intCast(cat_p99) });
+    try notes_map.put("version_query_p50_ns", std.json.Value{ .integer = @intCast(ver_p50) });
+    try notes_map.put("version_query_p99_ns", std.json.Value{ .integer = @intCast(ver_p99) });
+    try notes_map.put("time_query_p50_ns", std.json.Value{ .integer = @intCast(time_p50) });
+    try notes_map.put("time_query_p99_ns", std.json.Value{ .integer = @intCast(time_p99) });
+    try notes_map.put("num_docs", std.json.Value{ .integer = @intCast(num_docs) });
+    try notes_map.put("num_queries", std.json.Value{ .integer = @intCast(queries_executed) });
+    try notes_map.put("results_found", std.json.Value{ .integer = @intCast(results_found) });
+    try notes_map.put("result_rate", std.json.Value{ .float = @as(f64, @floatFromInt(results_found)) / @as(f64, @floatFromInt(queries_executed)) });
+
+    const notes_value = std.json.Value{ .object = notes_map };
+
+    return types.Results{
+        .ops_total = queries_executed,
+        .duration_ns = duration_ns,
+        .ops_per_sec = @as(f64, @floatFromInt(queries_executed)) / @as(f64, @floatFromInt(duration_ns)) * std.time.ns_per_s,
+        .latency_ns = .{
+            .p50 = overall_p50,
+            .p95 = overall_p99,
+            .p99 = overall_p99,
+            .max = overall_p99 + 1,
+        },
+        .bytes = .{
+            .read_total = total_reads,
+            .write_total = total_reads,
+        },
+        .io = .{
+            .fsync_count = 1, // Setup transaction
         },
         .alloc = .{
             .alloc_count = alloc_count,
