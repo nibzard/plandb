@@ -2,6 +2,16 @@
 
 Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · 🟢 P3 (low)
 
+**Completed 2025-12-24:**
+- [ ✅ ] Added CI baselines for pager benchmarks
+  - cache_read_multiple_pages (3 repeats)
+  - commit_meta_fsync (3 repeats)
+  - open_close_empty (3 repeats)
+  - read_page_random_16k_cold (3 repeats)
+  - read_page_random_16k_hot (3 repeats)
+  - **STATUS**: All baselines committed, ready for CI regression detection
+  - **PROJECT STATE**: Stable state with all baselines committed and CI gates active
+
 ## Phase 0 — North Star Scaffolding
 
 ### Correctness & Performance Contracts
