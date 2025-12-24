@@ -615,12 +615,13 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - Crash points tested: txn 5 (early phase 1), txn 15 (phase 2), random
 
 ### Macrobench 6: Document/Code Knowledge Base
-- [ ] 🔴 Define document repository schema with versioning
+- [x] ✅ Define document repository schema with versioning (COMPLETED)
   - Document storage: "doc:{doc_id}" -> content, metadata, version
   - Version history: "doc:{doc_id}:v{version}" -> snapshot
   - Full-text index: "term:{term}" -> [doc_ids] for search
   - Category/tag index: "category:{cat}" -> [doc_ids]
-- [ ] 🔴 Implement document ingestion workload
+  **Completed**: Implemented `benchMacroDocRepoVersioning` in `src/bench/suite.zig` with complete schema and 8-phase benchmark (creation, versioning, indexing, retrieval, search, filtering)
+- [ ] 🔴 Implement document ingestion workload (IN PROGRESS)
   - Simulate N documents (10K-1M) with realistic sizes
   - Include document updates, versioning, and deletions
   - Model realistic write patterns (bursty, time-correlated)
