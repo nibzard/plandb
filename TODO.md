@@ -562,6 +562,112 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
 - [ ✅ ] 🟡 Quantify rebuild cost vs query savings
   - **COMPLETED**: See Phase 6 Cartridge 1 task (line 586) - rebuild triggers and admin API implemented
 
+### Macrobench 5: AI Agent Orchestration
+- [ ] 🔴 Define multi-agent coordination schema and key layout
+  - Design task distribution: "orchestrator:{task_id}" -> task spec
+  - Design agent state: "agent:{agent_id}:state" -> status, capacity, current_task
+  - Design result aggregation: "result:{task_id}:{agent_id}" -> partial results
+  - Design barrier synchronization: "barrier:{task_id}" -> completion tracking
+- [ ] 🔴 Implement realistic agent task distribution workload
+  - Simulate M agents (10-100) claiming tasks from shared queue
+  - Include task priorities, dependencies, and deadlines
+  - Model task failures and retry logic with exponential backoff
+  - Support task splitting and parallel sub-task execution
+- [ ] 🔴 Build result aggregation and barrier synchronization
+  - Implement collector pattern for gathering partial results
+  - Add barrier/primitive for "wait all agents complete"
+  - Support quorum queries (wait for N of M results)
+  - Handle straggler detection and timeout
+- [ ] 🔴 Add contention scenarios and conflict resolution
+  - Test multiple agents competing for same task
+  - Simulate deadlocks and timeout scenarios
+  - Measure commit conflict rate under high concurrency
+  - Test graceful degradation when agents fail
+- [ ] 🟠 Macrobench scenario with M=50 agents, 1000 tasks
+  - Measure end-to-end task completion latency
+  - Track ops/sec, conflict rate, agent utilization
+  - Test scalability: 10, 50, 100, 500 agents
+  - Metrics: p50/p95 task latency, throughput, fsyncs/op
+- [ ] 🟠 Add baselines for CI and dev_nvme profiles
+  - Capture baseline performance for regression detection
+  - Document expected latency ranges per agent count
+  - Include CPU/memory usage profiles
+  - Track hot spots: task contention, barrier waits
+- [ ] 🟡 Crash harness: validate consistency after agent failures
+  - Test database recovery after mid-task crashes
+  - Verify no orphaned tasks or corrupted barriers
+  - Validate result aggregation correctness after restart
+  - Measure recovery time and data loss scenarios
+
+### Macrobench 6: Document/Code Knowledge Base
+- [ ] 🔴 Define document repository schema with versioning
+  - Document storage: "doc:{doc_id}" -> content, metadata, version
+  - Version history: "doc:{doc_id}:v{version}" -> snapshot
+  - Full-text index: "term:{term}" -> [doc_ids] for search
+  - Category/tag index: "category:{cat}" -> [doc_ids]
+- [ ] 🔴 Implement document ingestion workload
+  - Simulate N documents (10K-1M) with realistic sizes
+  - Include document updates, versioning, and deletions
+  - Model realistic write patterns (bursty, time-correlated)
+  - Support batch imports and incremental updates
+- [ ] 🔴 Build semantic search query mix
+  - Full-text search: query by term, phrase, boolean combinations
+  - Category filter queries: "docs in category X about topic Y"
+  - Version history queries: "what changed between v1 and v5"
+  - Recent changes queries: "docs modified in last 24 hours"
+- [ ] 🟠 Macrobench scenario: 100K documents, mixed read/write workload
+  - 80% read (search queries, version lookups)
+  - 15% write (new documents, updates)
+  - 5% delete (document archival)
+  - Measure: search latency p50/p95, write throughput, storage growth
+- [ ] 🟠 Add baselines with varying document sizes
+  - Small docs (<1KB): measure overhead per document
+  - Medium docs (1-10KB): realistic text files
+  - Large docs (>10KB): test scan and search performance
+  - Track I/O patterns: sequential vs random access
+- [ ] 🟡 Measure storage efficiency and compression impact
+  - Compare raw vs compressed storage (LZ4, zstd)
+  - Measure index overhead (full-text, category, version)
+  - Test query performance with cold vs warm cache
+  - Analyze fragmentation after churn (update/delete patterns)
+
+### Macrobench 7: Time-Series/Telemetry
+- [ ] 🔴 Define time-series metric storage schema
+  - Metric data: "metric:{name}:ts{timestamp}" -> value, labels
+  - Metric metadata: "metric:{name}:meta" -> description, unit, labels
+  - Time-series index: "metric:{name}:idx" -> [timestamps] for range scans
+  - Aggregated rollups: "metric:{name}:agg:{window}" -> min/max/avg/count
+- [ ] 🔴 Implement telemetry ingestion workload
+  - Simulate M metrics (100-10K) with periodic writes
+  - Include varying write frequencies (1s, 10s, 60s intervals)
+  - Model metric lifecycle (creation, active, archived)
+  - Support batch ingestion for efficiency
+- [ ] 🟠 Build time-window query operations
+  - Raw metric retrieval: time range with label filters
+  - Downsampling: auto-aggregate for large time ranges
+  - Rate calculation: compute per-second/minute derivatives
+  - Alert queries: threshold violations, anomaly detection
+- [ ] 🟠 Implement aggregation and downsampling
+  - Create rollups for multiple time windows (1m, 5m, 1h, 1d)
+  - Compute aggregated statistics: min, max, avg, p95, count
+  - Support percentile calculations (TDigest algorithm)
+  - Handle rollup invalidation on late-arriving data
+- [ ] 🟠 Macrobench scenario: 1000 metrics, 7 days retention
+  - Ingestion: 1000 metrics * 86400 points/day = 86M writes
+  - Query mix: 60% raw range queries, 30% aggregated, 10% rollups
+  - Measure: write throughput, query latency p50/p95, storage size
+  - Target: >10K writes/sec, <100ms for 24-hour range query
+- [ ] 🟠 Add baselines for varying metric counts and retention
+  - Small: 100 metrics, 1 day (scale down test)
+  - Medium: 1000 metrics, 7 days (baseline)
+  - Large: 10K metrics, 30 days (stress test)
+  - Track storage growth rate, I/O patterns, cache hit rates
+- [ ] 🟡 Test downsampling strategies and retention policies
+  - Compare raw-only vs multi-resolution rollups
+  - Measure query latency improvement from pre-aggregation
+  - Test retention policy enforcement (automatic deletion)
+  - Analyze cost/benefit of different rollup windows
+
 ## Phase 6 — Cartridge 1: `pending_tasks_by_type`
 - [ ✅ ] 🔴 Define cartridge format/versioning and invalidation policy
   - **COMPLETED**: Added spec/cartridge_format_v1.md with complete cartridge artifact format specification
@@ -609,6 +715,97 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED**: Files created: src/cartridges/rebuild.zig (694 lines), src/cartridges/admin.zig (725 lines)
   - Committed with hash a7e202d
   - Completed 2025-12-23
+
+## Phase 6 — Cartridge 2: Semantic Embeddings (Vector Similarity)
+- [ ] 🔴 Define semantic embeddings cartridge format and vector storage layout
+  - Design vector storage with HNSW (Hierarchical Navigable Small World) index
+  - Support variable-dimensional embeddings (384d for small models, 1536d for OpenAI)
+  - Define quantization options (FP32, FP16, INT8) for storage efficiency
+  - Include metadata back-pointers to source entities/commits
+- [ ] 🔴 Implement vector insertion and indexing with HNSW graph
+  - Build HNSW index incrementally from commit stream
+  - Support batch insertion for efficient embedding generation
+  - Implement graph layers with configurable connectivity (M=16, ef_construction=200)
+  - Include node deletion and graph maintenance
+- [ ] 🔴 Add approximate nearest neighbor (ANN) search operations
+  - Implement beam search for top-K similar vectors
+  - Support distance metrics (cosine, Euclidean, dot product)
+  - Add filtering by entity type, time range, or metadata constraints
+  - Include result scoring with confidence thresholds
+- [ ] 🔴 Build embedding generation plugin with LLM integration
+  - Integrate with embedding providers (OpenAI text-embedding-3, SentenceTransformers)
+  - Add batching and caching for cost optimization
+  - Support local model fallback for privacy-sensitive workloads
+  - Implement incremental updates when entities are modified
+- [ ] 🟠 Macrobench: 100K vector similarity search with latency targets
+  - Measure p50/p95/p99 latency for ANN search across varying K values
+  - Compare HNSW vs brute-force accuracy vs performance trade-off
+  - Test scalability: 10K, 100K, 1M, 10M vectors
+  - Target: <10ms for top-10 search in 1M vectors
+- [ ] 🟠 Add cartridge rebuild triggers for embedding model updates
+  - Detect when embedding model version changes
+  - Support incremental rebuilds for new entities only
+  - Implement A/B testing for embedding model effectiveness
+  - Track embedding generation costs and performance
+
+## Phase 6 — Cartridge 3: Temporal History (Time-Series Entity State)
+- [ ] 🔴 Design temporal history cartridge with time-series storage format
+  - Define chunked time-series storage (time-ordered chunks per entity)
+  - Support multiple state change types: attribute updates, relationships, migrations
+  - Include compression for long history (LZ4, delta encoding for timestamps)
+  - Design retention policy configuration (TTL, sampling for old data)
+- [ ] 🔴 Implement entity state versioning with immutable snapshots
+  - Capture full entity state on each significant change
+  - Implement delta compression between consecutive states
+  - Add snapshot indexing by txn_id and timestamp
+  - Support branching history for merge scenarios
+- [ ] 🔴 Add temporal range query operations
+  - Query entity state at specific point in time (AS OF)
+  - Retrieve state changes within time window (BETWEEN)
+  - Compute temporal aggregations (count, distinct, first/last)
+  - Support time travel joins across multiple entities
+- [ ] 🔴 Build time-series aggregation and analysis functions
+  - Compute change frequency per entity (hot/cold detection)
+  - Detect state anomalies (significant deviations from baseline)
+  - Generate temporal histograms and activity heatmaps
+  - Support downsampling for long-term trend analysis
+- [ ] 🟠 Macrobench: temporal history queries across 1M state changes
+  - Measure AS OF query latency for point-in-time lookups
+  - Test range query performance for various time windows
+  - Benchmark storage efficiency with and without compression
+  - Target: <5ms for AS OF query, <100ms for 24-hour range
+- [ ] 🟠 Add automated retention and archival policies
+  - Implement age-based downsampling (raw -> hourly -> daily)
+  - Archive old state snapshots to cold storage
+  - Add configurable TTL per entity type
+  - Track storage savings vs query accuracy trade-offs
+
+## Phase 6 — Cartridge 4: Document Version History (Diff + Annotated History)
+- [ ] 🔴 Define document version history format with diff storage
+  - Store annotated diffs per document (line-based + token-based)
+  - Include change metadata: author, intent, severity, linked issues
+  - Support binary file handling (hash-based, no diff)
+  - Design parent-child relationship tracking for branching
+- [ ] 🔴 Implement semantic diff extraction from commit stream
+  - Parse document mutations to extract meaningful changes
+  - Use LLM function calling to classify change intent
+  - Build diff indices for efficient blame queries
+  - Support merge conflict resolution tracking
+- [ ] 🟠 Add annotated history query operations
+  - Query changelog by entity, author, intent, time range
+  - Retrieve full version history with annotations
+  - Compute change statistics (lines changed, frequency, impact)
+  - Support "what changed between version X and Y" queries
+- [ ] 🟠 Macrobench: document history queries on 100K version repository
+  - Measure changelog query latency across different filters
+  - Test storage efficiency with various diff algorithms
+  - Benchmark blame query performance (who last touched line N?)
+  - Target: <50ms for full history query, <10ms for filtered
+- [ ] 🟡 Add change impact analysis and regression detection
+  - Identify high-risk changes based on history patterns
+  - Correlate changes with subsequent bug reports
+  - Generate "hot file" and "change churn" metrics
+  - Support impact prediction for proposed changes
 
 ## Phase 7 — Living Database: AI Intelligence Layer
 
@@ -1196,3 +1393,259 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMMIT**: 339c7a7
   - **STATUS**: Compilation successful, build succeeds
   - **IMPACT**: Resolves Zig 0.15.2 compatibility issues - no blockers noted
+
+## Phase 8 — Documentation Platform
+
+*See [PLAN-LIVING-DB.md](./PLAN-LIVING-DB.md) for detailed AI intelligence roadmap*
+
+Transform NorthstarDB's scattered markdown files into a modern, developer-friendly documentation platform following 2025 best practices for documentation-as-code.
+
+### Phase 1: Foundation
+- [ ] 🔴 Set up Astro with Starlight theme and navigation
+  - Install and configure Astro project
+  - Set up Starlight theme with NorthstarDB branding
+  - Configure navigation structure in astro.config.mjs
+  - Enable search functionality
+  - Add syntax highlighting for Zig (Shiki)
+  - Configure dark/light mode support
+- [ ] 🔴 Create documentation landing page with quick links
+  - Write docs/index.md with project introduction
+  - Add quick links to key sections
+  - Include feature highlights
+  - Add getting started call-to-action
+- [ ] 🔴 Reorganize existing content into new structure
+  - Move and restructure existing docs/ files
+  - Update all internal links
+  - Create proper navigation hierarchy
+  - Add missing index pages
+
+### Phase 2: Getting Started
+- [ ] 🔴 Write 5-minute quick start guide
+  - Prerequisites checklist
+  - One-command installation
+  - "Hello World" database example
+  - Verify installation steps
+- [ ] 🔴 Create installation guide for all platforms
+  - Platform-specific instructions (Linux, macOS, Windows)
+  - From source vs binary installation
+  - Dependency requirements
+  - Troubleshooting installation issues
+- [ ] 🟠 Write first project tutorial with examples
+  - Create a new database
+  - Basic CRUD operations
+  - Query patterns
+  - Best practices intro
+- [ ] 🟠 Document core concepts (MVCC, B+tree, cartridges)
+  - MVCC snapshots explained
+  - B+tree storage
+  - Commit stream
+  - Cartridges
+  - AI plugin system
+
+### Phase 3: API Reference
+- [ ] 🔴 Document Db API (open, close, config)
+  - open() and close() methods
+  - Configuration options
+  - Error handling
+  - Code examples for each method
+- [ ] 🔴 Document Transaction APIs (ReadTxn, WriteTxn)
+  - ReadTxn operations (get, scan)
+  - WriteTxn operations (put, del, commit, abort)
+  - Snapshot isolation semantics
+  - Transaction lifecycle
+- [ ] 🔴 Document Cartridge API (all cartridge types)
+  - PendingTasksCartridge
+  - EntityIndexCartridge
+  - TopicCartridge
+  - RelationshipCartridge
+  - Cartridge lifecycle (build, query, rebuild)
+- [ ] 🟠 Document Plugin API and hook system
+  - Plugin registration
+  - Hook system (on_commit, on_query)
+  - LLM integration
+  - Plugin development guide
+- [ ] 🟠 Document LLM integration API
+  - Provider configuration (OpenAI, Anthropic, local)
+  - Function calling
+  - Query planning
+  - Natural language processing
+
+### Phase 4: Guides
+- [ ] 🟠 Write CRUD operations guide
+  - Put, get, delete patterns
+  - Batch operations
+  - Error handling
+  - Performance considerations
+- [ ] 🟠 Write snapshots and time travel guide
+  - Creating snapshots
+  - Time-travel queries
+  - Snapshot isolation guarantees
+  - Use cases and patterns
+- [ ] 🟠 Write cartridges usage guide
+  - When to use cartridges
+  - Built-in cartridges reference
+  - Building custom cartridges
+  - Cartridge invalidation and rebuilds
+- [ ] 🟡 Write AI queries guide
+  - Natural language query setup
+  - Query planning and optimization
+  - Topic-based searches
+  - Hybrid queries (structured + NL)
+- [ ] 🟡 Write performance tuning guide
+  - Benchmarking methodology
+  - Performance bottlenecks
+  - Optimization strategies
+  - Production deployment tips
+
+### Phase 5: Architecture
+- [ ] 🔴 Create architecture overview with diagrams
+  - System architecture diagram
+  - Component interactions
+  - Data flow
+  - Technology choices
+- [ ] 🔴 Establish ADR system and document 6 key decisions
+  - Create ADR template
+  - ADR-001: MVCC snapshot isolation design
+  - ADR-002: Copy-on-write B+tree strategy
+  - ADR-003: Commit stream format
+  - ADR-004: Cartridge artifact format
+  - ADR-005: AI plugin architecture
+  - ADR-006: Single-writer concurrency model
+  - Establish ADR process for future decisions
+- [ ] 🟠 Document file format internals
+  - Page structure
+  - Meta pages
+  - B+tree node format
+  - Checksums and corruption handling
+- [ ] 🟠 Document B+tree implementation
+  - Node structure
+  - Split/merge algorithms
+  - Cursor and scanning
+  - Performance characteristics
+- [ ] 🟠 Document commit stream and recovery
+  - WAL format
+  - Recovery process
+  - Replay semantics
+  - Time-travel implementation
+
+### Phase 6: Developer Experience
+- [ ] 🔴 Enhance contributing guide
+  - Expand existing contributing.md
+  - Add development workflow diagrams
+  - Code style guide
+  - Pull request checklist
+  - Review process
+- [ ] 🟠 Create development setup guide
+  - Environment requirements
+  - Building from source
+  - Running tests
+  - Debugging setup
+  - IDE recommendations
+- [ ] 🟠 Write testing guide
+  - Test organization
+  - Writing unit tests
+  - Property-based tests
+  - Hardening tests
+  - Coverage expectations
+- [ ] 🟠 Enhance benchmarking guide
+  - Running benchmarks
+  - Interpreting results
+  - Adding new benchmarks
+  - CI baseline management
+- [ ] 🟡 Create release process documentation
+  - Versioning strategy
+  - Release checklist
+  - Changelog generation
+  - Deployment process
+
+### Phase 7: Examples and Interactive Content
+- [ ] 🟠 Complete 5 example projects with full docs
+  - Basic KV store (expand existing)
+  - Task queue system (expand existing)
+  - Document repository
+  - Time-series telemetry
+  - AI-powered knowledge base
+- [ ] 🔴 Build Zig WebAssembly code runner component (CRITICAL)
+  - Evaluate Zig WebAssembly runtimes (e.g., zig-wasm, wasmtime-zig)
+  - Implement live code editor component for Astro/Starlight
+  - Create Zig-to-WASM build pipeline for examples
+  - Integrate in-browser code execution with output display
+  - Add error handling and visualization for code results
+  - Implement "Run Example" button on all code blocks
+- [ ] 🔴 Implement interactive code examples (CRITICAL)
+  - In-browser code execution and testing
+  - Copy-paste ready examples with one-click copy
+  - Step-by-step interactive tutorials
+  - Real-time output visualization
+- [ ] 🟡 Write 4 step-by-step interactive tutorials
+  - "Build a task queue in 15 minutes" (interactive)
+  - "Add semantic search to your app" (interactive)
+  - "Implement time-travel queries" (interactive)
+  - "Create an AI plugin" (interactive)
+
+### Phase 8: Troubleshooting
+- [ ] 🟠 Create common errors guide
+  - Error message catalog
+  - Root cause analysis
+  - Solutions and workarounds
+  - Prevention tips
+- [ ] 🟠 Write performance troubleshooting guide
+  - Slow query diagnosis
+  - Memory issues
+  - I/O bottlenecks
+  - Profiling tools
+- [ ] 🟡 Document corruption recovery procedures
+  - Detecting corruption
+  - Recovery procedures
+  - Data salvage
+  - Prevention strategies
+- [ ] 🟡 Compile FAQ from community questions
+  - Compilation of common questions
+  - Quick answers with links to detailed docs
+  - Community-contributed Q&A
+
+### Phase 9: CI/CD
+- [ ] 🔴 Set up documentation build pipeline
+  - GitHub Actions workflow
+  - Build Astro site on push
+  - Deploy to GitHub Pages
+  - Preview deployments for PRs
+- [ ] 🔴 Add automated link checking
+  - Markdown link validator
+  - Detect broken links
+  - Block merge on broken docs links
+- [ ] 🟠 Add documentation linting
+  - Markdown linting rules
+  - Consistency checks
+  - Style enforcement
+- [ ] 🟡 Integrate auto-generated API docs
+  - Evaluate Zig doc generation tools
+  - Integrate auto-generated API docs
+  - Keep docs in sync with code
+
+### Phase 10: Community
+- [ ] 🟡 Create project governance documentation
+  - Governance model
+  - Decision-making process
+  - Role definitions
+  - Contribution recognition
+- [ ] 🟡 Document community resources and support
+  - Discord/Slack link
+  - GitHub discussions guide
+  - Code of conduct
+  - Support channels
+- [ ] 🟢 Establish branding and design guidelines
+  - Logo and color scheme
+  - Documentation theming
+  - Consistent terminology
+
+## Documentation Success Criteria
+
+1. **Developer Experience**: Developers can find answers in <30 seconds
+2. **Coverage**: All public APIs documented with examples
+3. **Navigation**: Clear hierarchy with working search
+4. **Quality**: No broken links, consistent formatting
+5. **Onboarding**: New contributor can set up in <15 minutes
+6. **Automation**: Docs build and deploy on every commit
+7. **Maintainability**: Easy to keep docs in sync with code
+8. **Interactive**: Live code execution in browser for all examples
