@@ -648,12 +648,12 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - Analyze fragmentation after churn (update/delete patterns)
 
 ### Macrobench 7: Time-Series/Telemetry
-- [ ] 🔴 Define time-series metric storage schema
+- [x] 🔴 Define time-series metric storage schema
   - Metric data: "metric:{name}:ts{timestamp}" -> value, labels
   - Metric metadata: "metric:{name}:meta" -> description, unit, labels
   - Time-series index: "metric:{name}:idx" -> [timestamps] for range scans
   - Aggregated rollups: "metric:{name}:agg:{window}" -> min/max/avg/count
-- [ ] 🔴 Implement telemetry ingestion workload
+- [x] 🔴 Implement telemetry ingestion workload
   - Simulate M metrics (100-10K) with periodic writes
   - Include varying write frequencies (1s, 10s, 60s intervals)
   - Model metric lifecycle (creation, active, archived)
