@@ -621,11 +621,12 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - Full-text index: "term:{term}" -> [doc_ids] for search
   - Category/tag index: "category:{cat}" -> [doc_ids]
   **Completed**: Implemented `benchMacroDocRepoVersioning` in `src/bench/suite.zig` with complete schema and 8-phase benchmark (creation, versioning, indexing, retrieval, search, filtering)
-- [ ] 🔴 Implement document ingestion workload (IN PROGRESS)
+- [x] 🔴 Implement document ingestion workload (COMPLETED)
   - Simulate N documents (10K-1M) with realistic sizes
   - Include document updates, versioning, and deletions
   - Model realistic write patterns (bursty, time-correlated)
   - Support batch imports and incremental updates
+  **Completed**: Implemented `benchMacroDocIngestion` in commit `f361578` with 3-phase workload (batch ingestion, incremental updates, document churn). Variable document sizes (512B-16KB), burst simulation, comprehensive metrics (latency p50/p99, churn rate, avg doc size)
 - [ ] 🔴 Build semantic search query mix
   - Full-text search: query by term, phrase, boolean combinations
   - Category filter queries: "docs in category X about topic Y"
