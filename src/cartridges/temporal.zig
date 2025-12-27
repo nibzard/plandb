@@ -1126,6 +1126,86 @@ pub const TemporalIndex = struct {
         }
     };
 
+    /// Rate calculation data point
+    pub const RatePoint = struct {
+        /// Timestamp for this rate calculation
+        timestamp: i64,
+        /// Rate value (change per unit time)
+        rate: f64,
+        /// Time delta used for calculation (seconds)
+        time_delta_seconds: f64,
+    };
+
+    /// Rate calculation result for time-series data
+    pub const RateSeries = struct {
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+        /// Attribute key that was analyzed
+        attribute_key: []const u8,
+        /// Time granularity for rate calculation (seconds)
+        granularity_seconds: u64,
+        /// Rate data points
+        points: ArrayListManaged(RatePoint),
+        /// Average rate across all points
+        average_rate: f64,
+        /// Maximum rate observed
+        max_rate: f64,
+        /// Minimum rate observed
+        min_rate: f64,
+
+        pub fn deinit(self: *RateSeries, allocator: std.mem.Allocator) void {
+            allocator.free(self.entity_namespace);
+            allocator.free(self.entity_local_id);
+            allocator.free(self.attribute_key);
+            self.points.deinit(allocator);
+        }
+    };
+
+    /// Threshold violation alert
+    pub const ThresholdViolation = struct {
+        /// Timestamp when violation occurred
+        timestamp: i64,
+        /// Value that violated threshold
+        value: f64,
+        /// Threshold that was crossed
+        threshold: f64,
+        /// Type of violation (above/below)
+        violation_type: ViolationType,
+        /// Severity based on how much threshold was exceeded
+        severity: f64,
+
+        pub const ViolationType = enum(u8) {
+            above = 0,
+            below = 1,
+        };
+    };
+
+    /// Alert query result
+    pub const AlertResult = struct {
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+        /// Attribute key monitored
+        attribute_key: []const u8,
+        /// Upper threshold (null if not set)
+        upper_threshold: ?f64,
+        /// Lower threshold (null if not set)
+        lower_threshold: ?f64,
+        /// Number of violations detected
+        violation_count: u64,
+        /// List of threshold violations
+        violations: ArrayListManaged(ThresholdViolation),
+        /// Time range analyzed
+        start_time: i64,
+        end_time: i64,
+
+        pub fn deinit(self: *AlertResult, allocator: std.mem.Allocator) void {
+            allocator.free(self.entity_namespace);
+            allocator.free(self.entity_local_id);
+            allocator.free(self.attribute_key);
+            self.violations.deinit(allocator);
+        }
+    };
+
     /// Detect anomalies using Z-score method
     pub fn detectAnomaliesZScore(
         self: *const TemporalIndex,
@@ -1664,6 +1744,187 @@ pub const TemporalIndex = struct {
         };
     }
 
+    /// Calculate rate of change (derivative) for time-series data
+    /// Computes per-second or per-minute rate based on granularity_seconds
+    pub fn calculateRate(
+        self: *const TemporalIndex,
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+        attribute_key: []const u8,
+        start_time: i64,
+        end_time: i64,
+        granularity_seconds: u64,
+    ) !?RateSeries {
+        const entity_key = try std.fmt.allocPrint(self.allocator, "{s}:{s}", .{ entity_namespace, entity_local_id });
+        defer self.allocator.free(entity_key);
+
+        const chunks = self.entity_chunks.get(entity_key) orelse return null;
+
+        // Collect all numeric time-series data for this attribute
+        var time_values = ArrayListManaged(struct { i64, f64 }){};
+        defer time_values.deinit(self.allocator);
+
+        for (chunks.items) |chunk| {
+            for (chunk.changes.items) |change| {
+                const change_time = change.timestamp.value();
+                if (change_time >= start_time and change_time <= end_time) {
+                    if (std.mem.eql(u8, change.key, attribute_key)) {
+                        if (change.new_value) |v| {
+                            const parsed = std.fmt.parseFloat(f64, v) catch continue;
+                            try time_values.append(self.allocator, .{ change_time, parsed });
+                        }
+                    }
+                }
+            }
+        }
+
+        if (time_values.items.len < 2) return null;
+
+        // Sort by timestamp
+        std.mem.sort(struct { i64, f64 }, time_values.items, {}, struct {
+            fn lessThan(_: void, a: struct { i64, f64 }, b: struct { i64, f64 }) bool {
+                return a[0] < b[0];
+            }
+        }.lessThan);
+
+        // Calculate rates (derivatives)
+        var points = ArrayListManaged(RatePoint){};
+        errdefer points.deinit(self.allocator);
+
+        var sum_rate: f64 = 0;
+        var max_rate: f64 = std.math.floatMin(f64);
+        var min_rate: f64 = std.math.floatMax(f64);
+
+        for (time_values.items[0.. time_values.items.len - 1], 0..) |tv, i| {
+            const next_tv = time_values.items[i + 1];
+            const time_delta = @as(f64, @floatFromInt(next_tv[0] - tv[0]));
+
+            // Only calculate rate if we have meaningful time difference
+            if (time_delta > 0) {
+                const value_delta = next_tv[1] - tv[1];
+                const rate = value_delta / time_delta;
+
+                // Scale to requested granularity (per-second, per-minute, etc.)
+                const scaled_rate = rate * @as(f64, @floatFromInt(granularity_seconds));
+
+                try points.append(self.allocator, .{
+                    .timestamp = next_tv[0],
+                    .rate = scaled_rate,
+                    .time_delta_seconds = time_delta,
+                });
+
+                sum_rate += scaled_rate;
+                if (scaled_rate > max_rate) max_rate = scaled_rate;
+                if (scaled_rate < min_rate) min_rate = scaled_rate;
+            }
+        }
+
+        if (points.items.len == 0) return null;
+
+        const avg_rate = sum_rate / @as(f64, @floatFromInt(points.items.len));
+
+        return RateSeries{
+            .entity_namespace = try self.allocator.dupe(u8, entity_namespace),
+            .entity_local_id = try self.allocator.dupe(u8, entity_local_id),
+            .attribute_key = try self.allocator.dupe(u8, attribute_key),
+            .granularity_seconds = granularity_seconds,
+            .points = points,
+            .average_rate = avg_rate,
+            .max_rate = max_rate,
+            .min_rate = min_rate,
+        };
+    }
+
+    /// Query threshold violations for time-series data
+    /// Detects when values cross upper or lower thresholds
+    pub fn queryThresholdViolations(
+        self: *const TemporalIndex,
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+        attribute_key: []const u8,
+        start_time: i64,
+        end_time: i64,
+        upper_threshold: ?f64,
+        lower_threshold: ?f64,
+    ) !?AlertResult {
+        // Must have at least one threshold
+        if (upper_threshold == null and lower_threshold == null) return null;
+
+        const entity_key = try std.fmt.allocPrint(self.allocator, "{s}:{s}", .{ entity_namespace, entity_local_id });
+        defer self.allocator.free(entity_key);
+
+        const chunks = self.entity_chunks.get(entity_key) orelse return null;
+
+        // Collect all numeric time-series data for this attribute
+        var time_values = ArrayListManaged(struct { i64, f64 }){};
+        defer time_values.deinit(self.allocator);
+
+        for (chunks.items) |chunk| {
+            for (chunk.changes.items) |change| {
+                const change_time = change.timestamp.value();
+                if (change_time >= start_time and change_time <= end_time) {
+                    if (std.mem.eql(u8, change.key, attribute_key)) {
+                        if (change.new_value) |v| {
+                            const parsed = std.fmt.parseFloat(f64, v) catch continue;
+                            try time_values.append(self.allocator, .{ change_time, parsed });
+                        }
+                    }
+                }
+            }
+        }
+
+        if (time_values.items.len == 0) return null;
+
+        // Detect violations
+        var violations = ArrayListManaged(ThresholdViolation){};
+        errdefer violations.deinit(self.allocator);
+
+        for (time_values.items) |tv| {
+            const timestamp = tv[0];
+            const value = tv[1];
+
+            // Check upper threshold
+            if (upper_threshold) |ut| {
+                if (value > ut) {
+                    const severity = if (ut != 0) (value - ut) / @abs(ut) else value;
+                    try violations.append(self.allocator, .{
+                        .timestamp = timestamp,
+                        .value = value,
+                        .threshold = ut,
+                        .violation_type = .above,
+                        .severity = severity,
+                    });
+                }
+            }
+
+            // Check lower threshold
+            if (lower_threshold) |lt| {
+                if (value < lt) {
+                    const severity = if (lt != 0) (lt - value) / @abs(lt) else -value;
+                    try violations.append(self.allocator, .{
+                        .timestamp = timestamp,
+                        .value = value,
+                        .threshold = lt,
+                        .violation_type = .below,
+                        .severity = severity,
+                    });
+                }
+            }
+        }
+
+        return AlertResult{
+            .entity_namespace = try self.allocator.dupe(u8, entity_namespace),
+            .entity_local_id = try self.allocator.dupe(u8, entity_local_id),
+            .attribute_key = try self.allocator.dupe(u8, attribute_key),
+            .upper_threshold = upper_threshold,
+            .lower_threshold = lower_threshold,
+            .violation_count = @intCast(violations.items.len),
+            .violations = violations,
+            .start_time = start_time,
+            .end_time = end_time,
+        };
+    }
+
     /// Compute change frequency for entity (hot/cold detection)
     pub fn computeChangeFrequency(
         self: *const TemporalIndex,
@@ -2093,6 +2354,33 @@ pub const TemporalHistoryCartridge = struct {
         aggregation_method: TemporalIndex.DownsampledSeries.AggregationMethod,
     ) !?TemporalIndex.DownsampledSeries {
         return self.index.downsampleSeries(entity_namespace, entity_local_id, attribute_key, start_time, end_time, target_granularity_seconds, aggregation_method);
+    }
+
+    /// Calculate rate of change for time-series data
+    pub fn calculateRate(
+        self: *const TemporalHistoryCartridge,
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+        attribute_key: []const u8,
+        start_time: i64,
+        end_time: i64,
+        granularity_seconds: u64,
+    ) !?TemporalIndex.RateSeries {
+        return self.index.calculateRate(entity_namespace, entity_local_id, attribute_key, start_time, end_time, granularity_seconds);
+    }
+
+    /// Query threshold violations for alerting
+    pub fn queryThresholdViolations(
+        self: *const TemporalHistoryCartridge,
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+        attribute_key: []const u8,
+        start_time: i64,
+        end_time: i64,
+        upper_threshold: ?f64,
+        lower_threshold: ?f64,
+    ) !?TemporalIndex.AlertResult {
+        return self.index.queryThresholdViolations(entity_namespace, entity_local_id, attribute_key, start_time, end_time, upper_threshold, lower_threshold);
     }
 };
 

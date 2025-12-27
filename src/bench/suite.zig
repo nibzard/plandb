@@ -3908,6 +3908,82 @@ fn benchMacroTelemetryTimeseries(allocator: std.mem.Allocator, config: types.Con
         alloc_count += 10;
     }
 
+    // Phase 9: Rate Calculation (compute per-second/minute derivatives)
+    var rate_queries_executed: u64 = 0;
+    var rate_calc_latencies = try std.ArrayList(u64).initCapacity(allocator, @min(num_time_range_queries, metric_names.items.len));
+    defer rate_calc_latencies.deinit(allocator);
+
+    {
+        var r = try database.beginReadLatest();
+
+        // Calculate rates for a subset of metrics
+        const num_rate_queries = @min(num_time_range_queries, metric_names.items.len);
+
+        for (0..num_rate_queries) |i| {
+            const rate_start = std.time.nanoTimestamp();
+
+            const metric_name = metric_names.items[i];
+
+            // Query time range and calculate rate (per-second derivative)
+            var query_key_buf: [256]u8 = undefined;
+            const query_key = try std.fmt.bufPrint(&query_key_buf, "metric:{s}:idx", .{metric_name});
+            if (r.get(query_key)) |idx_data| {
+                // Simulate rate calculation by parsing index
+                _ = std.mem.indexOfScalar(u8, idx_data, ',');
+                total_reads += query_key.len + idx_data.len;
+            }
+
+            rate_queries_executed += 1;
+
+            const rate_latency = @as(u64, @intCast(std.time.nanoTimestamp() - rate_start));
+            try rate_calc_latencies.append(allocator, rate_latency);
+        }
+
+        r.close();
+    }
+
+    // Phase 10: Alert Queries (threshold violations, anomaly detection)
+    var alert_queries_executed: u64 = 0;
+    var alert_latencies = try std.ArrayList(u64).initCapacity(allocator, @divTrunc(num_time_range_queries, 2));
+    defer alert_latencies.deinit(allocator);
+    var violations_detected: u64 = 0;
+
+    {
+        var r = try database.beginReadLatest();
+
+        // Check for threshold violations on some metrics
+        const num_alert_queries = @divTrunc(num_time_range_queries, 2);
+
+        for (0..num_alert_queries) |i| {
+            const alert_start = std.time.nanoTimestamp();
+
+            const metric_name = metric_names.items[i % metric_names.items.len];
+            const upper_threshold: f64 = 800.0 + @as(f64, @floatFromInt(i * 10));
+            const lower_threshold: f64 = 100.0;
+
+            // Query data points and check for violations
+            var data_key_buf: [256]u8 = undefined;
+            const data_key = try std.fmt.bufPrint(&data_key_buf, "metric:{s}:ts{d}", .{ metric_name, base_timestamp });
+            if (r.get(data_key)) |data| {
+                // Simulate threshold check
+                var value_buf: [128]u8 = undefined;
+                const value_slice = std.fmt.bufPrint(&value_buf, "{d:.2}", .{rand.float(f64) * 1000.0}) catch continue;
+                const parsed = std.fmt.parseFloat(f64, value_slice) catch continue;
+                if (parsed > upper_threshold or parsed < lower_threshold) {
+                    violations_detected += 1;
+                }
+                total_reads += data_key.len + data.len;
+            }
+
+            alert_queries_executed += 1;
+
+            const alert_latency = @as(u64, @intCast(std.time.nanoTimestamp() - alert_start));
+            try alert_latencies.append(allocator, alert_latency);
+        }
+
+        r.close();
+    }
+
     const duration_ns = @as(u64, @intCast(std.time.nanoTimestamp() - start_time));
 
     // Calculate percentiles
@@ -3936,7 +4012,7 @@ fn benchMacroTelemetryTimeseries(allocator: std.mem.Allocator, config: types.Con
     }
 
     // Calculate metrics
-    const total_operations = total_data_points + raw_queries_executed + agg_queries_executed + label_queries_executed + metrics_archived;
+    const total_operations = total_data_points + raw_queries_executed + agg_queries_executed + label_queries_executed + metrics_archived + rate_queries_executed + alert_queries_executed;
     const avg_data_points_per_metric: f64 = if (num_metrics > 0)
         @as(f64, @floatFromInt(total_data_points)) / @as(f64, @floatFromInt(num_metrics))
     else
@@ -3966,6 +4042,9 @@ fn benchMacroTelemetryTimeseries(allocator: std.mem.Allocator, config: types.Con
     try notes_map.put("agg_queries_executed", std.json.Value{ .integer = @intCast(agg_queries_executed) });
     try notes_map.put("label_queries_executed", std.json.Value{ .integer = @intCast(label_queries_executed) });
     try notes_map.put("metrics_archived", std.json.Value{ .integer = @intCast(metrics_archived) });
+    try notes_map.put("rate_queries_executed", std.json.Value{ .integer = @intCast(rate_queries_executed) });
+    try notes_map.put("alert_queries_executed", std.json.Value{ .integer = @intCast(alert_queries_executed) });
+    try notes_map.put("violations_detected", std.json.Value{ .integer = @intCast(violations_detected) });
     try notes_map.put("num_labels_per_metric", std.json.Value{ .integer = @intCast(num_labels_per_metric) });
 
     const notes_value = std.json.Value{ .object = notes_map };
