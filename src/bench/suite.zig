@@ -19,6 +19,7 @@ const embeddings = @import("../cartridges/embeddings.zig");
 const temporal = @import("../cartridges/temporal.zig");
 const temporal_history_bench = @import("temporal_history_bench.zig");
 const document_history_bench = @import("document_history_bench.zig");
+const storage_efficiency_bench = @import("storage_efficiency_bench.zig");
 
 // Stub benchmark functions for testing the harness
 
@@ -227,6 +228,13 @@ pub fn registerBenchmarks(bench_runner: *runner.Runner) !void {
     try bench_runner.addBenchmark(.{
         .name = "bench/macro/document_history_queries",
         .run_fn = document_history_bench.benchMacroDocumentHistoryQueries,
+        .critical = true,
+        .suite = .macro,
+    });
+
+    try bench_runner.addBenchmark(.{
+        .name = "bench/macro/storage_efficiency",
+        .run_fn = storage_efficiency_bench.benchMacroStorageEfficiency,
         .critical = true,
         .suite = .macro,
     });
