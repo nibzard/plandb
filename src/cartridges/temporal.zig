@@ -677,9 +677,16 @@ pub const TimeChunk = struct {
         try self.changes.append(allocator, owned_change);
         self.change_count += 1;
 
-        // Update end timestamp if this change is newer
+        // Update timestamp range
         const change_time = change.timestamp.value();
+        const current_start = self.start_timestamp.value();
         const current_end = self.end_timestamp.value();
+
+        // Update start if this change is older
+        if (change_time < current_start) {
+            self.start_timestamp = change.timestamp;
+        }
+        // Update end if this change is newer
         if (change_time > current_end) {
             self.end_timestamp = change.timestamp;
         }
@@ -849,8 +856,9 @@ pub const TemporalIndex = struct {
 
         const chunks = self.entity_chunks.get(entity_key) orelse return null;
 
-        // Find relevant chunk and changes
-        var result: ?StateChange = null;
+        // Find relevant chunk and changes using two-pass approach
+        var latest_change: ?*const StateChange = null;
+        var latest_ts: i64 = std.math.minInt(i64);
 
         for (chunks.items) |chunk| {
             const chunk_start = chunk.start_timestamp.value();
@@ -860,17 +868,32 @@ pub const TemporalIndex = struct {
             if (timestamp < chunk_start or timestamp > chunk_end) continue;
 
             // Find last change before or at timestamp
-            for (chunk.changes.items) |change| {
+            for (chunk.changes.items) |*change| {
                 const change_time = change.timestamp.value();
-                if (change_time <= timestamp) {
-                    // Create a copy of this change as the result
-                    // (In a real implementation, we'd track the latest applicable state)
-                    result = change;
+                if (change_time <= timestamp and change_time > latest_ts) {
+                    latest_ts = change_time;
+                    latest_change = change;
                 }
             }
         }
 
-        return result;
+        // Create copy if found
+        if (latest_change) |ch| {
+            return StateChange{
+                .id = try self.allocator.dupe(u8, ch.id),
+                .txn_id = ch.txn_id,
+                .timestamp = ch.timestamp,
+                .entity_namespace = try self.allocator.dupe(u8, ch.entity_namespace),
+                .entity_local_id = try self.allocator.dupe(u8, ch.entity_local_id),
+                .change_type = ch.change_type,
+                .key = try self.allocator.dupe(u8, ch.key),
+                .old_value = if (ch.old_value) |v| try self.allocator.dupe(u8, v) else null,
+                .new_value = if (ch.new_value) |v| try self.allocator.dupe(u8, v) else null,
+                .metadata = try self.allocator.dupe(u8, ch.metadata),
+            };
+        }
+
+        return null;
     }
 
     /// Query state changes within time window (BETWEEN query)
@@ -946,6 +969,213 @@ pub const TemporalIndex = struct {
                         try results.append(self.allocator, copy);
                     }
                 }
+            }
+        }
+
+        return results;
+    }
+
+    /// Result type for change frequency analysis
+    pub const ChangeFrequency = struct {
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+        change_count: u64,
+        first_change_ts: i64,
+        last_change_ts: i64,
+    };
+
+    /// Compute change frequency for entity (hot/cold detection)
+    pub fn computeChangeFrequency(
+        self: *const TemporalIndex,
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+        start_time: i64,
+        end_time: i64,
+    ) !?ChangeFrequency {
+        const entity_key = try std.fmt.allocPrint(self.allocator, "{s}:{s}", .{ entity_namespace, entity_local_id });
+        defer self.allocator.free(entity_key);
+
+        const chunks = self.entity_chunks.get(entity_key) orelse return null;
+
+        var change_count: u64 = 0;
+        var first_ts: i64 = std.math.maxInt(i64);
+        var last_ts: i64 = std.math.minInt(i64);
+
+        for (chunks.items) |chunk| {
+            for (chunk.changes.items) |change| {
+                const change_time = change.timestamp.value();
+                if (change_time >= start_time and change_time <= end_time) {
+                    change_count += 1;
+                    if (change_time < first_ts) first_ts = change_time;
+                    if (change_time > last_ts) last_ts = change_time;
+                }
+            }
+        }
+
+        if (change_count == 0) return null;
+
+        return ChangeFrequency{
+            .entity_namespace = try self.allocator.dupe(u8, entity_namespace),
+            .entity_local_id = try self.allocator.dupe(u8, entity_local_id),
+            .change_count = change_count,
+            .first_change_ts = first_ts,
+            .last_change_ts = last_ts,
+        };
+    }
+
+    /// Count distinct values for an attribute over time
+    pub fn countDistinct(
+        self: *const TemporalIndex,
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+        attribute_key: []const u8,
+        start_time: i64,
+        end_time: i64,
+    ) !u64 {
+        const entity_key = try std.fmt.allocPrint(self.allocator, "{s}:{s}", .{ entity_namespace, entity_local_id });
+        defer self.allocator.free(entity_key);
+
+        const chunks = self.entity_chunks.get(entity_key) orelse return 0;
+
+        var distinct_set = std.StringHashMap(void).init(self.allocator);
+        defer {
+            var it = distinct_set.iterator();
+            while (it.next()) |e| self.allocator.free(e.key_ptr.*);
+            distinct_set.deinit();
+        }
+
+        for (chunks.items) |chunk| {
+            for (chunk.changes.items) |change| {
+                const change_time = change.timestamp.value();
+                if (change_time >= start_time and change_time <= end_time) {
+                    if (std.mem.eql(u8, change.key, attribute_key)) {
+                        if (change.new_value) |v| {
+                            const owned = try self.allocator.dupe(u8, v);
+                            try distinct_set.put(owned, {});
+                        }
+                    }
+                }
+            }
+        }
+
+        return distinct_set.count();
+    }
+
+    /// Get first state observation for an entity
+    pub fn getFirstState(
+        self: *const TemporalIndex,
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+    ) !?StateChange {
+        const entity_key = try std.fmt.allocPrint(self.allocator, "{s}:{s}", .{ entity_namespace, entity_local_id });
+        defer self.allocator.free(entity_key);
+
+        const chunks = self.entity_chunks.get(entity_key) orelse return null;
+
+        var earliest_change: ?*const StateChange = null;
+        var earliest_ts: i64 = std.math.maxInt(i64);
+
+        // First pass: find the earliest change
+        for (chunks.items) |chunk| {
+            for (chunk.changes.items) |*change| {
+                const change_time = change.timestamp.value();
+                if (change_time < earliest_ts) {
+                    earliest_ts = change_time;
+                    earliest_change = change;
+                }
+            }
+        }
+
+        // Second pass: create copy if found
+        if (earliest_change) |ch| {
+            return StateChange{
+                .id = try self.allocator.dupe(u8, ch.id),
+                .txn_id = ch.txn_id,
+                .timestamp = ch.timestamp,
+                .entity_namespace = try self.allocator.dupe(u8, ch.entity_namespace),
+                .entity_local_id = try self.allocator.dupe(u8, ch.entity_local_id),
+                .change_type = ch.change_type,
+                .key = try self.allocator.dupe(u8, ch.key),
+                .old_value = if (ch.old_value) |v| try self.allocator.dupe(u8, v) else null,
+                .new_value = if (ch.new_value) |v| try self.allocator.dupe(u8, v) else null,
+                .metadata = try self.allocator.dupe(u8, ch.metadata),
+            };
+        }
+
+        return null;
+    }
+
+    /// Get last state observation for an entity
+    pub fn getLastState(
+        self: *const TemporalIndex,
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+    ) !?StateChange {
+        const entity_key = try std.fmt.allocPrint(self.allocator, "{s}:{s}", .{ entity_namespace, entity_local_id });
+        defer self.allocator.free(entity_key);
+
+        const chunks = self.entity_chunks.get(entity_key) orelse return null;
+
+        var latest_change: ?*const StateChange = null;
+        var latest_ts: i64 = std.math.minInt(i64);
+
+        // First pass: find the latest change
+        for (chunks.items) |chunk| {
+            for (chunk.changes.items) |*change| {
+                const change_time = change.timestamp.value();
+                if (change_time > latest_ts) {
+                    latest_ts = change_time;
+                    latest_change = change;
+                }
+            }
+        }
+
+        // Second pass: create copy if found
+        if (latest_change) |ch| {
+            return StateChange{
+                .id = try self.allocator.dupe(u8, ch.id),
+                .txn_id = ch.txn_id,
+                .timestamp = ch.timestamp,
+                .entity_namespace = try self.allocator.dupe(u8, ch.entity_namespace),
+                .entity_local_id = try self.allocator.dupe(u8, ch.entity_local_id),
+                .change_type = ch.change_type,
+                .key = try self.allocator.dupe(u8, ch.key),
+                .old_value = if (ch.old_value) |v| try self.allocator.dupe(u8, v) else null,
+                .new_value = if (ch.new_value) |v| try self.allocator.dupe(u8, v) else null,
+                .metadata = try self.allocator.dupe(u8, ch.metadata),
+            };
+        }
+
+        return null;
+    }
+
+    /// Query multiple entities at same timestamp (time-travel join)
+    pub fn queryMultipleAsOf(
+        self: *const TemporalIndex,
+        entities: []const struct { []const u8, []const u8 },
+        timestamp: i64,
+    ) !ArrayListManaged(?StateChange) {
+        var results = ArrayListManaged(?StateChange){};
+
+        for (entities) |entity| {
+            const ns, const id = entity;
+            const state = try self.queryAsOf(ns, id, timestamp);
+            if (state) |s| {
+                const copy = StateChange{
+                    .id = try self.allocator.dupe(u8, s.id),
+                    .txn_id = s.txn_id,
+                    .timestamp = s.timestamp,
+                    .entity_namespace = try self.allocator.dupe(u8, s.entity_namespace),
+                    .entity_local_id = try self.allocator.dupe(u8, s.entity_local_id),
+                    .change_type = s.change_type,
+                    .key = try self.allocator.dupe(u8, s.key),
+                    .old_value = if (s.old_value) |v| try self.allocator.dupe(u8, v) else null,
+                    .new_value = if (s.new_value) |v| try self.allocator.dupe(u8, v) else null,
+                    .metadata = try self.allocator.dupe(u8, s.metadata),
+                };
+                try results.append(self.allocator, copy);
+            } else {
+                try results.append(self.allocator, null);
             }
         }
 
@@ -1044,6 +1274,58 @@ pub const TemporalHistoryCartridge = struct {
         snapshot_id: []const u8,
     ) !?[]const u8 {
         return self.snapshot_manager.restoreFromSnapshot(snapshot_id);
+    }
+
+    // ==================== Temporal Aggregation API ====================
+
+    /// Compute change frequency for entity (hot/cold detection)
+    pub fn computeChangeFrequency(
+        self: *const TemporalHistoryCartridge,
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+        start_time: i64,
+        end_time: i64,
+    ) !?TemporalIndex.ChangeFrequency {
+        return self.index.computeChangeFrequency(entity_namespace, entity_local_id, start_time, end_time);
+    }
+
+    /// Count distinct values for an attribute over time
+    pub fn countDistinct(
+        self: *const TemporalHistoryCartridge,
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+        attribute_key: []const u8,
+        start_time: i64,
+        end_time: i64,
+    ) !u64 {
+        return self.index.countDistinct(entity_namespace, entity_local_id, attribute_key, start_time, end_time);
+    }
+
+    /// Get first state observation for an entity
+    pub fn getFirstState(
+        self: *const TemporalHistoryCartridge,
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+    ) !?StateChange {
+        return self.index.getFirstState(entity_namespace, entity_local_id);
+    }
+
+    /// Get last state observation for an entity
+    pub fn getLastState(
+        self: *const TemporalHistoryCartridge,
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+    ) !?StateChange {
+        return self.index.getLastState(entity_namespace, entity_local_id);
+    }
+
+    /// Query multiple entities at same timestamp (time-travel join)
+    pub fn queryMultipleAsOf(
+        self: *const TemporalHistoryCartridge,
+        entities: []const struct { []const u8, []const u8 },
+        timestamp: i64,
+    ) !ArrayListManaged(?StateChange) {
+        return self.index.queryMultipleAsOf(entities, timestamp);
     }
 };
 
@@ -1662,4 +1944,293 @@ test "TemporalHistoryCartridge.integratedOperations" {
     const snapshot = try cartridge.getSnapshotAsOf("test", "entity1", ts + 1000);
     try std.testing.expect(snapshot != null);
     try std.testing.expectEqualStrings(snapshot_id, snapshot.?.id);
+}
+
+// ==================== Temporal Aggregation Tests ====================
+
+test "TemporalIndex.computeChangeFrequency" {
+    var index = TemporalIndex.init(std.testing.allocator);
+    defer index.deinit();
+
+    const ts = std.time.timestamp();
+
+    // Add multiple changes for same entity
+    const changes = [_]StateChange{
+        .{ .id = "c1", .txn_id = 100, .timestamp = .{ .base = @intCast(ts), .delta = -300 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "status", .old_value = null, .new_value = "pending", .metadata = "{}" },
+        .{ .id = "c2", .txn_id = 101, .timestamp = .{ .base = @intCast(ts), .delta = -200 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "status", .old_value = "pending", .new_value = "active", .metadata = "{}" },
+        .{ .id = "c3", .txn_id = 102, .timestamp = .{ .base = @intCast(ts), .delta = -100 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "status", .old_value = "active", .new_value = "complete", .metadata = "{}" },
+    };
+
+    for (changes) |c| try index.addChange(c);
+
+    const freq = try index.computeChangeFrequency("test", "entity1", ts - 350, ts);
+    try std.testing.expect(freq != null);
+    try std.testing.expectEqual(@as(u64, 3), freq.?.change_count);
+}
+
+test "TemporalIndex.countDistinct" {
+    var index = TemporalIndex.init(std.testing.allocator);
+    defer index.deinit();
+
+    const ts = std.time.timestamp();
+
+    // Add changes with different values for same attribute
+    const changes = [_]StateChange{
+        .{ .id = "c1", .txn_id = 100, .timestamp = .{ .base = @intCast(ts), .delta = -300 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "priority", .old_value = null, .new_value = "low", .metadata = "{}" },
+        .{ .id = "c2", .txn_id = 101, .timestamp = .{ .base = @intCast(ts), .delta = -200 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "priority", .old_value = "low", .new_value = "high", .metadata = "{}" },
+        .{ .id = "c3", .txn_id = 102, .timestamp = .{ .base = @intCast(ts), .delta = -100 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "priority", .old_value = "high", .new_value = "low", .metadata = "{}" },
+    };
+
+    for (changes) |c| try index.addChange(c);
+
+    const count = try index.countDistinct("test", "entity1", "priority", ts - 350, ts);
+    // Should count "low" and "high" = 2 distinct values
+    try std.testing.expectEqual(@as(u64, 2), count);
+}
+
+test "TemporalIndex.getFirstState" {
+    var index = TemporalIndex.init(std.testing.allocator);
+    defer index.deinit();
+
+    const ts = std.time.timestamp();
+
+    const change1 = StateChange{
+        .id = "first",
+        .txn_id = 100,
+        .timestamp = .{ .base = @intCast(ts), .delta = -200 },
+        .entity_namespace = "test",
+        .entity_local_id = "entity1",
+        .change_type = .entity_created,
+        .key = "status",
+        .old_value = null,
+        .new_value = "initialized",
+        .metadata = "{}",
+    };
+
+    const change2 = StateChange{
+        .id = "second",
+        .txn_id = 101,
+        .timestamp = .{ .base = @intCast(ts), .delta = -100 },
+        .entity_namespace = "test",
+        .entity_local_id = "entity1",
+        .change_type = .attribute_update,
+        .key = "status",
+        .old_value = "initialized",
+        .new_value = "active",
+        .metadata = "{}",
+    };
+
+    try index.addChange(change1);
+    try index.addChange(change2);
+
+    const first = try index.getFirstState("test", "entity1");
+    try std.testing.expect(first != null);
+    try std.testing.expectEqualStrings("first", first.?.id);
+    try std.testing.expectEqualStrings("initialized", first.?.new_value.?);
+}
+
+test "TemporalIndex.getLastState" {
+    var index = TemporalIndex.init(std.testing.allocator);
+    defer index.deinit();
+
+    const ts = std.time.timestamp();
+
+    const change1 = StateChange{
+        .id = "early",
+        .txn_id = 100,
+        .timestamp = .{ .base = @intCast(ts), .delta = -200 },
+        .entity_namespace = "test",
+        .entity_local_id = "entity1",
+        .change_type = .attribute_update,
+        .key = "status",
+        .old_value = null,
+        .new_value = "pending",
+        .metadata = "{}",
+    };
+
+    const change2 = StateChange{
+        .id = "late",
+        .txn_id = 101,
+        .timestamp = .{ .base = @intCast(ts), .delta = -100 },
+        .entity_namespace = "test",
+        .entity_local_id = "entity1",
+        .change_type = .attribute_update,
+        .key = "status",
+        .old_value = "pending",
+        .new_value = "complete",
+        .metadata = "{}",
+    };
+
+    try index.addChange(change1);
+    try index.addChange(change2);
+
+    const last = try index.getLastState("test", "entity1");
+    try std.testing.expect(last != null);
+    try std.testing.expectEqualStrings("late", last.?.id);
+    try std.testing.expectEqualStrings("complete", last.?.new_value.?);
+}
+
+test "TemporalIndex.queryMultipleAsOf" {
+    var index = TemporalIndex.init(std.testing.allocator);
+    defer index.deinit();
+
+    const ts = std.time.timestamp();
+
+    // Entity1 at ts - 100
+    const change1 = StateChange{
+        .id = "entity1_v1",
+        .txn_id = 100,
+        .timestamp = .{ .base = @intCast(ts), .delta = -100 },
+        .entity_namespace = "test",
+        .entity_local_id = "entity1",
+        .change_type = .attribute_update,
+        .key = "value",
+        .old_value = null,
+        .new_value = "A",
+        .metadata = "{}",
+    };
+
+    // Entity2 at ts - 100
+    const change2 = StateChange{
+        .id = "entity2_v1",
+        .txn_id = 100,
+        .timestamp = .{ .base = @intCast(ts), .delta = -100 },
+        .entity_namespace = "test",
+        .entity_local_id = "entity2",
+        .change_type = .attribute_update,
+        .key = "value",
+        .old_value = null,
+        .new_value = "B",
+        .metadata = "{}",
+    };
+
+    // Entity3 (no changes at query time)
+
+    try index.addChange(change1);
+    try index.addChange(change2);
+
+    const entities = [_]struct { []const u8, []const u8 }{
+        .{ "test", "entity1" },
+        .{ "test", "entity2" },
+        .{ "test", "entity3" },
+    };
+
+    var results = try index.queryMultipleAsOf(&entities, ts - 50);
+    defer {
+        for (results.items) |r| {
+            if (r) |*s| s.deinit(std.testing.allocator);
+        }
+        results.deinit(std.testing.allocator);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), results.items.len);
+    try std.testing.expect(results.items[0] != null);
+    try std.testing.expect(results.items[1] != null);
+    try std.testing.expect(results.items[2] == null);
+}
+
+test "TemporalHistoryCartridge.temporalAggregations" {
+    var cartridge = try TemporalHistoryCartridge.init(std.testing.allocator, 100);
+    defer cartridge.deinit();
+
+    const ts = std.time.timestamp();
+
+    // Build up change history
+    const changes = [_]StateChange{
+        .{ .id = "c1", .txn_id = 100, .timestamp = .{ .base = @intCast(ts), .delta = -400 }, .entity_namespace = "file", .entity_local_id = "main.zig", .change_type = .attribute_update, .key = "lines", .old_value = null, .new_value = "100", .metadata = "{}" },
+        .{ .id = "c2", .txn_id = 101, .timestamp = .{ .base = @intCast(ts), .delta = -300 }, .entity_namespace = "file", .entity_local_id = "main.zig", .change_type = .attribute_update, .key = "lines", .old_value = "100", .new_value = "150", .metadata = "{}" },
+        .{ .id = "c3", .txn_id = 102, .timestamp = .{ .base = @intCast(ts), .delta = -200 }, .entity_namespace = "file", .entity_local_id = "main.zig", .change_type = .attribute_update, .key = "lines", .old_value = "150", .new_value = "200", .metadata = "{}" },
+        .{ .id = "c4", .txn_id = 103, .timestamp = .{ .base = @intCast(ts), .delta = -100 }, .entity_namespace = "file", .entity_local_id = "main.zig", .change_type = .attribute_update, .key = "lines", .old_value = "200", .new_value = "250", .metadata = "{}" },
+    };
+
+    for (changes) |c| try cartridge.addChange(c);
+
+    // Test change frequency
+    const freq = try cartridge.computeChangeFrequency("file", "main.zig", ts - 500, ts);
+    try std.testing.expect(freq != null);
+    try std.testing.expectEqual(@as(u64, 4), freq.?.change_count);
+
+    // Test distinct values (100, 150, 200, 250 = 4 distinct)
+    const distinct = try cartridge.countDistinct("file", "main.zig", "lines", ts - 500, ts);
+    try std.testing.expectEqual(@as(u64, 4), distinct);
+
+    // Test first state
+    const first = try cartridge.getFirstState("file", "main.zig");
+    try std.testing.expect(first != null);
+    try std.testing.expectEqualStrings("100", first.?.new_value.?);
+
+    // Test last state
+    const last = try cartridge.getLastState("file", "main.zig");
+    try std.testing.expect(last != null);
+    try std.testing.expectEqualStrings("250", last.?.new_value.?);
+}
+
+test "TemporalHistoryCartridge.crossEntityTimeTravel" {
+    var cartridge = try TemporalHistoryCartridge.init(std.testing.allocator, 100);
+    defer cartridge.deinit();
+
+    const ts = std.time.timestamp();
+
+    // Entity A: file1.txt
+    try cartridge.addChange(StateChange{
+        .id = "file1_v1",
+        .txn_id = 100,
+        .timestamp = .{ .base = @intCast(ts), .delta = -200 },
+        .entity_namespace = "document",
+        .entity_local_id = "file1.txt",
+        .change_type = .attribute_update,
+        .key = "size",
+        .old_value = null,
+        .new_value = "1024",
+        .metadata = "{}",
+    });
+
+    // Entity B: file2.txt
+    try cartridge.addChange(StateChange{
+        .id = "file2_v1",
+        .txn_id = 100,
+        .timestamp = .{ .base = @intCast(ts), .delta = -200 },
+        .entity_namespace = "document",
+        .entity_local_id = "file2.txt",
+        .change_type = .attribute_update,
+        .key = "size",
+        .old_value = null,
+        .new_value = "2048",
+        .metadata = "{}",
+    });
+
+    const entities = [_]struct { []const u8, []const u8 }{
+        .{ "document", "file1.txt" },
+        .{ "document", "file2.txt" },
+    };
+
+    // Query both entities at the same point in time
+    var results = try cartridge.queryMultipleAsOf(&entities, ts - 100);
+    defer {
+        for (results.items) |r| {
+            if (r) |*s| s.deinit(std.testing.allocator);
+        }
+        results.deinit(std.testing.allocator);
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), results.items.len);
+    try std.testing.expect(results.items[0] != null);
+    try std.testing.expect(results.items[1] != null);
+    try std.testing.expectEqualStrings("1024", results.items[0].?.new_value.?);
+    try std.testing.expectEqualStrings("2048", results.items[1].?.new_value.?);
+}
+
+test "TemporalIndex.ChangeFrequency struct" {
+    // Test the ChangeFrequency struct can be created
+    const freq = TemporalIndex.ChangeFrequency{
+        .entity_namespace = "test",
+        .entity_local_id = "entity1",
+        .change_count = 10,
+        .first_change_ts = 1000,
+        .last_change_ts = 2000,
+    };
+
+    try std.testing.expectEqual(@as(u64, 10), freq.change_count);
+    try std.testing.expectEqual(@as(i64, 1000), freq.first_change_ts);
+    try std.testing.expectEqual(@as(i64, 2000), freq.last_change_ts);
 }
