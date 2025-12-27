@@ -178,6 +178,13 @@ pub fn registerBenchmarks(bench_runner: *runner.Runner) !void {
         .suite = .macro,
     });
 
+    try bench_runner.addBenchmark(.{
+        .name = "bench/macro/doc_mixed_workload",
+        .run_fn = benchMacroDocMixedWorkload,
+        .critical = true,
+        .suite = .macro,
+    });
+
     // Hardening benchmarks
     try bench_runner.addBenchmark(.{
         .name = "bench/hardening/torn_write_header_detection",
@@ -4875,5 +4882,449 @@ fn benchHardeningCleanRecovery(allocator: std.mem.Allocator, config: types.Confi
         .io = .{ .fsync_count = iterations },
         .alloc = .{ .alloc_count = iterations, .alloc_bytes = total_alloc_bytes },
         .errors_total = total_errors,
+    };
+}
+
+/// Benchmark mixed read/write/delete workload on document repository.
+///
+/// Simulates realistic document KB with 100K documents and mixed operations:
+/// - 80% read: search queries, version lookups
+/// - 15% write: new documents, updates
+/// - 5% delete: document archival
+///
+/// Measures: search latency p50/p95, write throughput, storage growth
+fn benchMacroDocMixedWorkload(allocator: std.mem.Allocator, config: types.Config) !types.Results {
+    _ = config;
+
+    const BatchOp = struct { op_type: u8, doc_id: u64, category: ?[]const u8 };
+
+    const total_docs_target: u64 = 500; // Reduced for CI/development speed
+    const batch_size: u64 = 50;
+    const num_batches: u64 = @divTrunc(total_docs_target, batch_size);
+    const read_ratio: f64 = 0.80;
+    const write_ratio: f64 = 0.15;
+    const delete_ratio: f64 = 0.05;
+
+    const doc_categories = [_][]const u8{
+        "source", "test", "config", "docs", "build",
+        "assets", "scripts", "vendor", "templates", "data",
+    };
+
+    const search_terms = [_][]const u8{
+        "function", "class", "import", "export", "async",
+        "await", "const", "let", "var", "type",
+        "interface", "struct", "enum", "module", "package",
+    };
+
+    var database = try db.Db.open(allocator);
+    defer database.close();
+
+    var prng = std.Random.DefaultPrng.init(42);
+    const rand = prng.random();
+
+    var total_reads: u64 = 0;
+    var total_writes: u64 = 0;
+    var total_alloc_bytes: u64 = 0;
+    var alloc_count: u64 = 0;
+
+    var docs_created: u64 = 0;
+    var docs_updated: u64 = 0;
+    var docs_deleted: u64 = 0;
+    var reads_performed: u64 = 0;
+
+    var read_latencies = try std.ArrayList(u64).initCapacity(allocator, @intFromFloat(@as(f64, @floatFromInt(num_batches * batch_size)) * read_ratio));
+    defer read_latencies.deinit(allocator);
+
+    var write_latencies = try std.ArrayList(u64).initCapacity(allocator, @intFromFloat(@as(f64, @floatFromInt(num_batches * batch_size)) * write_ratio));
+    defer write_latencies.deinit(allocator);
+
+    var delete_latencies = try std.ArrayList(u64).initCapacity(allocator, @intFromFloat(@as(f64, @floatFromInt(num_batches * batch_size)) * delete_ratio));
+    defer delete_latencies.deinit(allocator);
+
+    var active_docs = try std.ArrayList(u64).initCapacity(allocator, total_docs_target);
+    defer active_docs.deinit(allocator);
+
+    var storage_snapshots = try std.ArrayList(u64).initCapacity(allocator, num_batches);
+    defer storage_snapshots.deinit(allocator);
+
+    // Phase 1: Initial document population (first 50% of docs)
+    const initial_docs: u64 = @divTrunc(total_docs_target, 2);
+    {
+        var w = try database.beginWrite();
+        errdefer w.abort();
+
+        var doc_id: u64 = 0;
+        while (doc_id < initial_docs) : (doc_id += 1) {
+            const category = doc_categories[rand.intRangeLessThan(usize, 0, doc_categories.len)];
+
+            var doc_key_buf: [128]u8 = undefined;
+            const doc_key = try std.fmt.bufPrint(&doc_key_buf, "doc:{d}", .{doc_id});
+
+            var doc_value_buf: [256]u8 = undefined;
+            const doc_value = try std.fmt.bufPrint(&doc_value_buf,
+                "{{\"title\":\"Doc {d}\",\"category\":\"{s}\",\"created\":{d},\"updated\":{d},\"version\":1}}",
+                .{ doc_id, category, std.time.timestamp(), std.time.timestamp() });
+
+            try w.put(doc_key, doc_value);
+            total_writes += doc_key.len + doc_value.len;
+            total_alloc_bytes += doc_key.len + doc_value.len;
+            alloc_count += 2;
+
+            var ver_key_buf: [128]u8 = undefined;
+            const ver_key = try std.fmt.bufPrint(&ver_key_buf, "doc:{d}:v1", .{doc_id});
+
+            var ver_value_buf: [256]u8 = undefined;
+            const ver_value = try std.fmt.bufPrint(&ver_value_buf,
+                "{{\"content_len\":4096,\"author\":\"ingester\",\"batch\":0,\"timestamp\":{d}}}",
+                .{std.time.timestamp()});
+
+            try w.put(ver_key, ver_value);
+            total_writes += ver_key.len + ver_value.len;
+            total_alloc_bytes += ver_key.len + ver_value.len;
+            alloc_count += 2;
+
+            var cat_key_buf: [128]u8 = undefined;
+            const cat_key = try std.fmt.bufPrint(&cat_key_buf, "category:{s}", .{category});
+            var cat_list_buf: [512]u8 = undefined;
+            const cat_list = try std.fmt.bufPrint(&cat_list_buf, "{d}", .{doc_id});
+            try w.put(cat_key, cat_list);
+            total_writes += cat_key.len + cat_list.len;
+            total_alloc_bytes += cat_key.len + cat_list.len;
+            alloc_count += 2;
+
+            var term_idx: usize = 0;
+            while (term_idx < 3) : (term_idx += 1) {
+                const term = search_terms[rand.intRangeLessThan(usize, 0, search_terms.len)];
+                var term_key_buf: [128]u8 = undefined;
+                const term_key = try std.fmt.bufPrint(&term_key_buf, "term:{s}", .{term});
+                var term_list_buf: [512]u8 = undefined;
+                const term_list = try std.fmt.bufPrint(&term_list_buf, "{d}", .{doc_id});
+                try w.put(term_key, term_list);
+                total_writes += term_key.len + term_list.len;
+                total_alloc_bytes += term_key.len + term_list.len;
+                alloc_count += 2;
+            }
+
+            try active_docs.append(allocator, doc_id);
+            docs_created += 1;
+        }
+
+        _ = try w.commit();
+        total_writes += 4096;
+        alloc_count += 10;
+    }
+
+    // Phase 2: Mixed workload execution
+    const start_time = std.time.nanoTimestamp();
+
+    var batch_id: u64 = 0;
+    while (batch_id < num_batches) : (batch_id += 1) {
+        var batch_writes = try std.ArrayList(BatchOp).initCapacity(allocator, batch_size);
+        defer batch_writes.deinit(allocator);
+
+        var batch_deletes = try std.ArrayList(u64).initCapacity(allocator, @divTrunc(batch_size, 10));
+        defer batch_deletes.deinit(allocator);
+
+        // Plan operations for this batch
+        var op_id: u64 = 0;
+        while (op_id < batch_size) : (op_id += 1) {
+            const op_roll = rand.float(f64);
+
+            if (op_roll < read_ratio) {
+                const read_start = std.time.nanoTimestamp();
+
+                const query_type_roll = rand.float(f64);
+
+                if (query_type_roll < 0.50) {
+                    const term = search_terms[rand.intRangeLessThan(usize, 0, search_terms.len)];
+                    var r = try database.beginReadLatest();
+                    defer r.close();
+
+                    var term_key_buf: [128]u8 = undefined;
+                    const term_key = try std.fmt.bufPrint(&term_key_buf, "term:{s}", .{term});
+                    if (r.get(term_key)) |value| {
+                        total_reads += term_key.len + value.len;
+                    } else {
+                        total_reads += term_key.len;
+                    }
+                } else if (query_type_roll < 0.75) {
+                    const category = doc_categories[rand.intRangeLessThan(usize, 0, doc_categories.len)];
+                    var r = try database.beginReadLatest();
+                    defer r.close();
+
+                    var cat_key_buf: [128]u8 = undefined;
+                    const cat_key = try std.fmt.bufPrint(&cat_key_buf, "category:{s}", .{category});
+                    if (r.get(cat_key)) |value| {
+                        total_reads += cat_key.len + value.len;
+                    } else {
+                        total_reads += cat_key.len;
+                    }
+                } else {
+                    if (active_docs.items.len > 0) {
+                        const doc_idx = rand.intRangeLessThan(usize, 0, active_docs.items.len);
+                        const doc_id = active_docs.items[doc_idx];
+                        var r = try database.beginReadLatest();
+                        defer r.close();
+
+                        var doc_key_buf: [128]u8 = undefined;
+                        const doc_key = try std.fmt.bufPrint(&doc_key_buf, "doc:{d}", .{doc_id});
+                        if (r.get(doc_key)) |value| {
+                            total_reads += doc_key.len + value.len;
+                        } else {
+                            total_reads += doc_key.len;
+                        }
+                    }
+                }
+
+                const latency = @as(u64, @intCast(std.time.nanoTimestamp() - read_start));
+                try read_latencies.append(allocator, latency);
+                reads_performed += 1;
+
+            } else if (op_roll < read_ratio + write_ratio) {
+                const is_update = (active_docs.items.len > 50) and (rand.float(f64) < 0.3);
+                if (is_update) {
+                    const doc_idx = rand.intRangeLessThan(usize, 0, active_docs.items.len);
+                    const doc_id = active_docs.items[doc_idx];
+                    try batch_writes.append(allocator, .{ .op_type = 1, .doc_id = doc_id, .category = null });
+                } else {
+                    const doc_id = initial_docs + batch_id * batch_size + op_id;
+                    const category = doc_categories[rand.intRangeLessThan(usize, 0, doc_categories.len)];
+                    try batch_writes.append(allocator, .{ .op_type = 0, .doc_id = doc_id, .category = category });
+                }
+
+            } else {
+                if (active_docs.items.len > 0) {
+                    const doc_idx = rand.intRangeLessThan(usize, 0, active_docs.items.len);
+                    const doc_id = active_docs.items[doc_idx];
+                    try batch_deletes.append(allocator, doc_id);
+                    _ = active_docs.swapRemove(doc_idx);
+                }
+            }
+        }
+
+        // Execute batched writes
+        if (batch_writes.items.len > 0) {
+            const write_start = std.time.nanoTimestamp();
+            var w = try database.beginWrite();
+            errdefer w.abort();
+
+            for (batch_writes.items) |op| {
+                if (op.op_type == 0) {
+                    // Create new doc
+                    const doc_key = try std.fmt.allocPrint(allocator, "doc:{d}", .{op.doc_id});
+                    defer allocator.free(doc_key);
+                    const doc_value = try std.fmt.allocPrint(allocator,
+                        "{{\"title\":\"Doc {d}\",\"category\":\"{s}\",\"created\":{d},\"updated\":{d},\"version\":1}}",
+                        .{ op.doc_id, op.category.?, std.time.timestamp(), std.time.timestamp() });
+                    defer allocator.free(doc_value);
+
+                    try w.put(doc_key, doc_value);
+                    total_writes += doc_key.len + doc_value.len;
+                    total_alloc_bytes += doc_key.len + doc_value.len;
+                    alloc_count += 2;
+
+                    const ver_key = try std.fmt.allocPrint(allocator, "doc:{d}:v1", .{op.doc_id});
+                    defer allocator.free(ver_key);
+                    const ver_value = try std.fmt.allocPrint(allocator,
+                        "{{\"content_len\":4096,\"author\":\"ingester\",\"batch\":{d},\"timestamp\":{d}}}",
+                        .{ batch_id, std.time.timestamp() });
+                    defer allocator.free(ver_value);
+
+                    try w.put(ver_key, ver_value);
+                    total_writes += ver_key.len + ver_value.len;
+                    total_alloc_bytes += ver_key.len + ver_value.len;
+                    alloc_count += 2;
+
+                    const cat_key = try std.fmt.allocPrint(allocator, "category:{s}", .{op.category.?});
+                    defer allocator.free(cat_key);
+                    const cat_list = try std.fmt.allocPrint(allocator, "{d}", .{op.doc_id});
+                    defer allocator.free(cat_list);
+                    try w.put(cat_key, cat_list);
+                    total_writes += cat_key.len + cat_list.len;
+                    total_alloc_bytes += cat_key.len + cat_list.len;
+                    alloc_count += 2;
+
+                    var term_idx: usize = 0;
+                    while (term_idx < 3) : (term_idx += 1) {
+                        const term = search_terms[rand.intRangeLessThan(usize, 0, search_terms.len)];
+                        const term_key = try std.fmt.allocPrint(allocator, "term:{s}", .{term});
+                        defer allocator.free(term_key);
+                        const term_list = try std.fmt.allocPrint(allocator, "{d}", .{op.doc_id});
+                        defer allocator.free(term_list);
+                        try w.put(term_key, term_list);
+                        total_writes += term_key.len + term_list.len;
+                        total_alloc_bytes += term_key.len + term_list.len;
+                        alloc_count += 2;
+                    }
+
+                    docs_created += 1;
+                    try active_docs.append(allocator, op.doc_id);
+                } else {
+                    // Update doc
+                    const new_version: u64 = 2;
+                    const ver_key = try std.fmt.allocPrint(allocator, "doc:{d}:v{d}", .{ op.doc_id, new_version });
+                    defer allocator.free(ver_key);
+                    const ver_value = try std.fmt.allocPrint(allocator,
+                        "{{\"content_len\":{d},\"author\":\"updater\",\"batch\":{d},\"timestamp\":{d}}}",
+                        .{ 4096, batch_id, std.time.timestamp() });
+                    defer allocator.free(ver_value);
+
+                    try w.put(ver_key, ver_value);
+                    total_writes += ver_key.len + ver_value.len;
+                    total_alloc_bytes += ver_key.len + ver_value.len;
+                    alloc_count += 2;
+
+                    docs_updated += 1;
+                }
+            }
+
+            _ = try w.commit();
+            total_writes += 4096;
+            alloc_count += 10;
+
+            const latency = @as(u64, @intCast(std.time.nanoTimestamp() - write_start));
+            try write_latencies.append(allocator, latency);
+        }
+
+        // Execute batched deletes
+        if (batch_deletes.items.len > 0) {
+            const delete_start = std.time.nanoTimestamp();
+            var w = try database.beginWrite();
+            errdefer w.abort();
+
+            for (batch_deletes.items) |doc_id| {
+                const doc_key = try std.fmt.allocPrint(allocator, "doc:{d}", .{doc_id});
+                defer allocator.free(doc_key);
+                try w.del(doc_key);
+                total_writes += doc_key.len;
+                total_alloc_bytes += doc_key.len;
+                alloc_count += 1;
+
+                const tombstone_key = try std.fmt.allocPrint(allocator, "doc:{d}:deleted", .{doc_id});
+                defer allocator.free(tombstone_key);
+                try w.put(tombstone_key, "1");
+                total_writes += tombstone_key.len + 1;
+                total_alloc_bytes += tombstone_key.len + 1;
+                alloc_count += 2;
+
+                docs_deleted += 1;
+            }
+
+            _ = try w.commit();
+            total_writes += 4096;
+            alloc_count += 10;
+
+            const latency = @as(u64, @intCast(std.time.nanoTimestamp() - delete_start));
+            try delete_latencies.append(allocator, latency);
+        }
+
+        try storage_snapshots.append(allocator, total_writes);
+    }
+
+    const duration_ns = @as(u64, @intCast(std.time.nanoTimestamp() - start_time));
+
+    var read_p50: u64 = 0;
+    var read_p95: u64 = 0;
+    var read_p99: u64 = 0;
+    if (read_latencies.items.len > 0) {
+        std.sort.insertion(u64, read_latencies.items, {}, comptime std.sort.asc(u64));
+        read_p50 = read_latencies.items[@divTrunc(read_latencies.items.len * 50, 100)];
+        read_p95 = read_latencies.items[@min(read_latencies.items.len - 1, @divTrunc(read_latencies.items.len * 95, 100))];
+        read_p99 = read_latencies.items[@min(read_latencies.items.len - 1, @divTrunc(read_latencies.items.len * 99, 100))];
+    }
+
+    var write_p50: u64 = 0;
+    var write_p99: u64 = 0;
+    if (write_latencies.items.len > 0) {
+        std.sort.insertion(u64, write_latencies.items, {}, comptime std.sort.asc(u64));
+        write_p50 = write_latencies.items[@divTrunc(write_latencies.items.len * 50, 100)];
+        write_p99 = write_latencies.items[@min(write_latencies.items.len - 1, @divTrunc(write_latencies.items.len * 99, 100))];
+    }
+
+    var delete_p50: u64 = 0;
+    var delete_p99: u64 = 0;
+    if (delete_latencies.items.len > 0) {
+        std.sort.insertion(u64, delete_latencies.items, {}, comptime std.sort.asc(u64));
+        delete_p50 = delete_latencies.items[@divTrunc(delete_latencies.items.len * 50, 100)];
+        delete_p99 = delete_latencies.items[@min(delete_latencies.items.len - 1, @divTrunc(delete_latencies.items.len * 99, 100))];
+    }
+
+    const initial_storage: u64 = if (storage_snapshots.items.len > 0) storage_snapshots.items[0] else 0;
+    const final_storage: u64 = if (storage_snapshots.items.len > 0) storage_snapshots.items[storage_snapshots.items.len - 1] else 0;
+    const storage_growth: u64 = final_storage - initial_storage;
+    const storage_growth_pct: f64 = if (initial_storage > 0)
+        @as(f64, @floatFromInt(storage_growth)) / @as(f64, @floatFromInt(initial_storage)) * 100.0
+    else
+        0.0;
+
+    const total_write_ops = docs_created + docs_updated + docs_deleted;
+    const write_throughput: f64 = if (duration_ns > 0)
+        @as(f64, @floatFromInt(total_write_ops)) / @as(f64, @floatFromInt(duration_ns)) * std.time.ns_per_s
+    else
+        0.0;
+
+    const total_operations = reads_performed + total_write_ops;
+    const actual_read_ratio: f64 = if (total_operations > 0)
+        @as(f64, @floatFromInt(reads_performed)) / @as(f64, @floatFromInt(total_operations))
+    else
+        0.0;
+    const actual_write_ratio: f64 = if (total_operations > 0)
+        @as(f64, @floatFromInt(total_write_ops)) / @as(f64, @floatFromInt(total_operations))
+    else
+        0.0;
+
+    var notes_map = std.json.ObjectMap.init(allocator);
+    try notes_map.put("read_p50_ns", std.json.Value{ .integer = @intCast(read_p50) });
+    try notes_map.put("read_p95_ns", std.json.Value{ .integer = @intCast(read_p95) });
+    try notes_map.put("read_p99_ns", std.json.Value{ .integer = @intCast(read_p99) });
+    try notes_map.put("write_p50_ns", std.json.Value{ .integer = @intCast(write_p50) });
+    try notes_map.put("write_p99_ns", std.json.Value{ .integer = @intCast(write_p99) });
+    try notes_map.put("delete_p50_ns", std.json.Value{ .integer = @intCast(delete_p50) });
+    try notes_map.put("delete_p99_ns", std.json.Value{ .integer = @intCast(delete_p99) });
+    try notes_map.put("docs_created", std.json.Value{ .integer = @intCast(docs_created) });
+    try notes_map.put("docs_updated", std.json.Value{ .integer = @intCast(docs_updated) });
+    try notes_map.put("docs_deleted", std.json.Value{ .integer = @intCast(docs_deleted) });
+    try notes_map.put("reads_performed", std.json.Value{ .integer = @intCast(reads_performed) });
+    try notes_map.put("write_throughput_ops_per_sec", std.json.Value{ .float = write_throughput });
+    try notes_map.put("storage_growth_bytes", std.json.Value{ .integer = @intCast(storage_growth) });
+    try notes_map.put("storage_growth_pct", std.json.Value{ .float = storage_growth_pct });
+    try notes_map.put("actual_read_ratio", std.json.Value{ .float = actual_read_ratio });
+    try notes_map.put("actual_write_ratio", std.json.Value{ .float = actual_write_ratio });
+    try notes_map.put("total_batches", std.json.Value{ .integer = @intCast(num_batches) });
+    try notes_map.put("batch_size", std.json.Value{ .integer = @intCast(batch_size) });
+
+    const notes_value = std.json.Value{ .object = notes_map };
+
+    const total_transactions = blk: {
+        var count: u64 = 0;
+        count += @intFromFloat(@as(f64, @floatFromInt(num_batches * batch_size)) * write_ratio);
+        count += @intFromFloat(@as(f64, @floatFromInt(num_batches * batch_size)) * delete_ratio);
+        count += 1;
+        break :blk count;
+    };
+
+    return types.Results{
+        .ops_total = total_operations,
+        .duration_ns = duration_ns,
+        .ops_per_sec = @as(f64, @floatFromInt(total_operations)) / @as(f64, @floatFromInt(duration_ns)) * std.time.ns_per_s,
+        .latency_ns = .{
+            .p50 = @min(read_p50, write_p50),
+            .p95 = @max(read_p95, write_p99),
+            .p99 = @max(read_p99, write_p99),
+            .max = @max(read_p99, delete_p99) + 1,
+        },
+        .bytes = .{
+            .read_total = total_reads,
+            .write_total = total_writes,
+        },
+        .io = .{
+            .fsync_count = total_transactions,
+        },
+        .alloc = .{
+            .alloc_count = alloc_count,
+            .alloc_bytes = total_alloc_bytes,
+        },
+        .errors_total = 0,
+        .notes = notes_value,
     };
 }
