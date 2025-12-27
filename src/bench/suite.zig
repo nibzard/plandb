@@ -20,6 +20,7 @@ const temporal = @import("../cartridges/temporal.zig");
 const temporal_history_bench = @import("temporal_history_bench.zig");
 const document_history_bench = @import("document_history_bench.zig");
 const storage_efficiency_bench = @import("storage_efficiency_bench.zig");
+const timeseries_telemetry_bench = @import("timeseries_telemetry_bench.zig");
 
 // Stub benchmark functions for testing the harness
 
@@ -235,6 +236,13 @@ pub fn registerBenchmarks(bench_runner: *runner.Runner) !void {
     try bench_runner.addBenchmark(.{
         .name = "bench/macro/storage_efficiency",
         .run_fn = storage_efficiency_bench.benchMacroStorageEfficiency,
+        .critical = true,
+        .suite = .macro,
+    });
+
+    try bench_runner.addBenchmark(.{
+        .name = "bench/macro/timeseries_telemetry",
+        .run_fn = timeseries_telemetry_bench.benchMacroTimeSeriesTelemetry,
         .critical = true,
         .suite = .macro,
     });
