@@ -675,11 +675,12 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - Include varying write frequencies (1s, 10s, 60s intervals)
   - Model metric lifecycle (creation, active, archived)
   - Support batch ingestion for efficiency
-- [ ] 🟠 Build time-window query operations
-  - Raw metric retrieval: time range with label filters
-  - Downsampling: auto-aggregate for large time ranges
-  - Rate calculation: compute per-second/minute derivatives
-  - Alert queries: threshold violations, anomaly detection
+- [x] 🟠 Build time-window query operations
+  - Raw metric retrieval: time range with label filters (✓ via queryBetween)
+  - Downsampling: auto-aggregate for large time ranges (✓ via downsampleSeries)
+  - Rate calculation: compute per-second/minute derivatives (✓ NEW calculateRate)
+  - Alert queries: threshold violations, anomaly detection (✓ NEW queryThresholdViolations)
+  - Added Phase 9-10 benchmark tests, RatePoint/RateSeries/ThresholdViolation/AlertResult types
 - [ ] 🟠 Implement aggregation and downsampling
   - Create rollups for multiple time windows (1m, 5m, 1h, 1d)
   - Compute aggregated statistics: min, max, avg, p95, count

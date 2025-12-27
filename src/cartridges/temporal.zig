@@ -756,19 +756,26 @@ pub const TemporalIndex = struct {
     entity_chunks: std.StringHashMap(ArrayListManaged(*TimeChunk)),
     /// Map from timestamp to list of change IDs (for time-range queries)
     time_index: std.AutoHashMap(u64, ArrayListManaged([]const u8)),
+    /// Map from "entity:attr:granularity" to list of rollups
+    rollups: std.StringHashMap(ArrayListManaged(Rollup)),
     /// Total state changes stored
     total_changes: u64,
     /// Retention policy
     retention_policy: RetentionPolicy,
+    /// Supported rollup granularities (seconds): 1m, 5m, 1h, 1d
+    rollup_granularities: []const u64,
 
     /// Create new temporal index
     pub fn init(allocator: std.mem.Allocator) TemporalIndex {
+        const granularities = [_]u64{ 60, 300, 3600, 86400 }; // 1m, 5m, 1h, 1d
         return TemporalIndex{
             .allocator = allocator,
             .entity_chunks = std.StringHashMap(ArrayListManaged(*TimeChunk)).init(allocator),
             .time_index = std.AutoHashMap(u64, ArrayListManaged([]const u8)).init(allocator),
+            .rollups = std.StringHashMap(ArrayListManaged(Rollup)).init(allocator),
             .total_changes = 0,
             .retention_policy = RetentionPolicy.default(),
+            .rollup_granularities = &granularities,
         };
     }
 
@@ -792,6 +799,15 @@ pub const TemporalIndex = struct {
             entry.value_ptr.deinit(self.allocator);
         }
         self.time_index.deinit();
+
+        // Free rollups
+        var rollup_it = self.rollups.iterator();
+        while (rollup_it.next()) |entry| {
+            for (entry.value_ptr.items) |*r| r.deinit(self.allocator);
+            entry.value_ptr.deinit(self.allocator);
+            self.allocator.free(entry.key_ptr.*);
+        }
+        self.rollups.deinit();
     }
 
     /// Add state change to the index
@@ -1093,6 +1109,50 @@ pub const TemporalIndex = struct {
         min_value: f64,
         /// Maximum value in period
         max_value: f64,
+        /// P95 percentile value (0.0 if not computed)
+        p95_value: f64,
+        /// P99 percentile value (0.0 if not computed)
+        p99_value: f64,
+    };
+
+    /// Stored rollup for a specific time window and aggregation
+    pub const Rollup = struct {
+        /// Entity namespace
+        entity_namespace: []const u8,
+        /// Entity local ID
+        entity_local_id: []const u8,
+        /// Attribute key
+        attribute_key: []const u8,
+        /// Time window granularity (seconds)
+        window_granularity: u64,
+        /// Start timestamp of this rollup
+        window_start: i64,
+        /// End timestamp of this rollup
+        window_end: i64,
+        /// Aggregation method used
+        aggregation_method: DownsampledSeries.AggregationMethod,
+        /// Minimum value
+        min_value: f64,
+        /// Maximum value
+        max_value: f64,
+        /// Sum value
+        sum_value: f64,
+        /// Count of points
+        count: u64,
+        /// P95 percentile (0.0 if not computed)
+        p95_value: f64,
+        /// P99 percentile (0.0 if not computed)
+        p99_value: f64,
+        /// Timestamp when this rollup was created
+        created_at: i64,
+        /// Whether this rollup needs invalidation due to late data
+        needs_invalidation: bool,
+
+        pub fn deinit(self: *Rollup, allocator: std.mem.Allocator) void {
+            allocator.free(self.entity_namespace);
+            allocator.free(self.entity_local_id);
+            allocator.free(self.attribute_key);
+        }
     };
 
     /// Downsampled time series
@@ -1116,6 +1176,8 @@ pub const TemporalIndex = struct {
             min = 2,
             max = 3,
             count = 4,
+            p95 = 5,
+            p99 = 6,
         };
 
         pub fn deinit(self: *DownsampledSeries, allocator: std.mem.Allocator) void {
@@ -1708,11 +1770,24 @@ pub const TemporalIndex = struct {
             var sum: f64 = 0;
             var min_val: f64 = std.math.floatMax(f64);
             var max_val: f64 = std.math.floatMin(f64);
+            var p95_val: f64 = 0.0;
+            var p99_val: f64 = 0.0;
+
+            // Use TDigest for percentile calculations
+            var tdigest = TDigest.init(self.allocator, 50.0);
+            defer tdigest.deinit();
 
             for (values.items) |v| {
                 sum += v;
                 if (v < min_val) min_val = v;
                 if (v > max_val) max_val = v;
+                try tdigest.add(v);
+            }
+
+            // Calculate percentiles if needed
+            if (aggregation_method == .p95 or aggregation_method == .p99) {
+                p95_val = tdigest.quantile(0.95);
+                p99_val = tdigest.quantile(0.99);
             }
 
             const aggregated_value = switch (aggregation_method) {
@@ -1721,6 +1796,8 @@ pub const TemporalIndex = struct {
                 .min => min_val,
                 .max => max_val,
                 .count => @as(f64, @floatFromInt(values.items.len)),
+                .p95 => p95_val,
+                .p99 => p99_val,
             };
 
             try points.append(self.allocator, .{
@@ -1730,6 +1807,8 @@ pub const TemporalIndex = struct {
                 .aggregated_value = aggregated_value,
                 .min_value = min_val,
                 .max_value = max_val,
+                .p95_value = p95_val,
+                .p99_value = p99_val,
             });
         }
 
@@ -1742,6 +1821,140 @@ pub const TemporalIndex = struct {
             .points = points,
             .aggregation_method = aggregation_method,
         };
+    }
+
+    /// Create a rollup for the specified time window and granularity
+    pub fn createRollup(
+        self: *TemporalIndex,
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+        attribute_key: []const u8,
+        window_start: i64,
+        window_end: i64,
+        granularity_seconds: u64,
+        aggregation_method: DownsampledSeries.AggregationMethod,
+    ) !void {
+        // Compute aggregates for the window
+        const entity_key = try std.fmt.allocPrint(self.allocator, "{s}:{s}", .{ entity_namespace, entity_local_id });
+        defer self.allocator.free(entity_key);
+
+        const chunks = self.entity_chunks.get(entity_key) orelse return;
+
+        var sum: f64 = 0;
+        var min_val: f64 = std.math.floatMax(f64);
+        var max_val: f64 = std.math.floatMin(f64);
+        var count: u64 = 0;
+
+        // Use TDigest for percentile calculations
+        var tdigest = TDigest.init(self.allocator, 50.0);
+        defer tdigest.deinit();
+
+        for (chunks.items) |chunk| {
+            for (chunk.changes.items) |change| {
+                const change_time = change.timestamp.value();
+                if (change_time >= window_start and change_time < window_end) {
+                    if (std.mem.eql(u8, change.key, attribute_key)) {
+                        if (change.new_value) |v| {
+                            const parsed = std.fmt.parseFloat(f64, v) catch continue;
+                            sum += parsed;
+                            if (parsed < min_val) min_val = parsed;
+                            if (parsed > max_val) max_val = parsed;
+                            count += 1;
+                            try tdigest.add(parsed);
+                        }
+                    }
+                }
+            }
+        }
+
+        if (count == 0) return;
+
+        const p95_val = tdigest.quantile(0.95);
+        const p99_val = tdigest.quantile(0.99);
+
+        // Store the rollup
+        const rollup_key = try std.fmt.allocPrint(self.allocator, "{s}:{s}:{s}:{d}", .{ entity_namespace, entity_local_id, attribute_key, granularity_seconds });
+        defer self.allocator.free(rollup_key);
+
+        const entry = try self.rollups.getOrPut(rollup_key);
+        if (!entry.found_existing) {
+            entry.key_ptr.* = try self.allocator.dupe(u8, rollup_key);
+            entry.value_ptr.* = .{};
+        }
+
+        const rollup = Rollup{
+            .entity_namespace = try self.allocator.dupe(u8, entity_namespace),
+            .entity_local_id = try self.allocator.dupe(u8, entity_local_id),
+            .attribute_key = try self.allocator.dupe(u8, attribute_key),
+            .window_granularity = granularity_seconds,
+            .window_start = window_start,
+            .window_end = window_end,
+            .aggregation_method = aggregation_method,
+            .min_value = min_val,
+            .max_value = max_val,
+            .sum_value = sum,
+            .count = count,
+            .p95_value = p95_val,
+            .p99_value = p99_val,
+            .created_at = std.time.timestamp(),
+            .needs_invalidation = false,
+        };
+
+        try entry.value_ptr.append(self.allocator, rollup);
+    }
+
+    /// Query pre-computed rollups for a time range
+    pub fn queryRollups(
+        self: *const TemporalIndex,
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+        attribute_key: []const u8,
+        start_time: i64,
+        end_time: i64,
+        granularity_seconds: u64,
+    ) ![]const Rollup {
+        const rollup_key = try std.fmt.allocPrint(self.allocator, "{s}:{s}:{s}:{d}", .{ entity_namespace, entity_local_id, attribute_key, granularity_seconds });
+        defer self.allocator.free(rollup_key);
+
+        const rollups = self.rollups.get(rollup_key) orelse return &[_]Rollup{};
+
+        // Filter by time range and check invalidation status
+        var filtered = ArrayListManaged(Rollup){};
+        errdefer filtered.deinit(self.allocator);
+
+        for (rollups.items) |rollup| {
+            if (!rollup.needs_invalidation and rollup.window_end > start_time and rollup.window_start < end_time) {
+                try filtered.append(self.allocator, rollup);
+            }
+        }
+
+        return filtered.toOwnedSlice(self.allocator);
+    }
+
+    /// Invalidate rollups that are affected by late-arriving data
+    pub fn invalidateRollups(
+        self: *TemporalIndex,
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+        attribute_key: []const u8,
+        late_timestamp: i64,
+    ) !void {
+        // Mark all rollups that overlap with the late timestamp as needing invalidation
+        var it = self.rollups.iterator();
+        while (it.next()) |entry| {
+            const key = entry.key_ptr.*;
+            if (std.mem.indexOf(u8, key, entity_namespace) != null and
+                std.mem.indexOf(u8, key, entity_local_id) != null and
+                std.mem.indexOf(u8, key, attribute_key) != null)
+            {
+                for (entry.value_ptr.items) |*rollup| {
+                    // If the late data falls within or before this rollup's window, it's stale
+                    if (late_timestamp <= rollup.window_end) {
+                        rollup.needs_invalidation = true;
+                    }
+                }
+            }
+        }
     }
 
     /// Calculate rate of change (derivative) for time-series data
@@ -3545,6 +3758,50 @@ test "TemporalIndex.downsampleSeriesAggregationMethods" {
     }
 }
 
+test "TemporalIndex.downsampleSeriesPercentile" {
+    var index = TemporalIndex.init(std.testing.allocator);
+    defer index.deinit();
+
+    const ts = std.time.timestamp();
+
+    // Add more numeric changes to get meaningful percentiles
+    const changes = [_]StateChange{
+        .{ .id = "c1", .txn_id = 100, .timestamp = .{ .base = @intCast(ts), .delta = -500 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "value", .old_value = null, .new_value = "10.0", .metadata = "{}" },
+        .{ .id = "c2", .txn_id = 101, .timestamp = .{ .base = @intCast(ts), .delta = -400 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "value", .old_value = "10.0", .new_value = "20.0", .metadata = "{}" },
+        .{ .id = "c3", .txn_id = 102, .timestamp = .{ .base = @intCast(ts), .delta = -300 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "value", .old_value = "20.0", .new_value = "15.0", .metadata = "{}" },
+        .{ .id = "c4", .txn_id = 103, .timestamp = .{ .base = @intCast(ts), .delta = -200 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "value", .old_value = "15.0", .new_value = "25.0", .metadata = "{}" },
+        .{ .id = "c5", .txn_id = 104, .timestamp = .{ .base = @intCast(ts), .delta = -100 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "value", .old_value = "25.0", .new_value = "30.0", .metadata = "{}" },
+    };
+
+    for (changes) |c| try index.addChange(c);
+
+    // Test p95 aggregation
+    {
+        var result = try index.downsampleSeries("test", "entity1", "value", ts - 600, ts, 300, .p95);
+        try std.testing.expect(result != null);
+        try std.testing.expect(result.?.points.items.len > 0);
+        // p95 should be >= min_value
+        for (result.?.points.items) |p| {
+            try std.testing.expect(p.p95_value >= p.min_value);
+            try std.testing.expect(p.p95_value <= p.max_value);
+        }
+        if (result) |*r| r.deinit(std.testing.allocator);
+    }
+
+    // Test p99 aggregation
+    {
+        var result = try index.downsampleSeries("test", "entity1", "value", ts - 600, ts, 300, .p99);
+        try std.testing.expect(result != null);
+        try std.testing.expect(result.?.points.items.len > 0);
+        // p99 should be >= min_value
+        for (result.?.points.items) |p| {
+            try std.testing.expect(p.p99_value >= p.min_value);
+            try std.testing.expect(p.p99_value <= p.max_value);
+        }
+        if (result) |*r| r.deinit(std.testing.allocator);
+    }
+}
+
 test "TemporalHistoryCartridge.analyticsIntegration" {
     var cartridge = try TemporalHistoryCartridge.init(std.testing.allocator, 100);
     defer cartridge.deinit();
@@ -3679,6 +3936,8 @@ test "TemporalIndex.DownsampledSeries.deinit" {
         .aggregated_value = 12.5,
         .min_value = 10.0,
         .max_value = 15.0,
+        .p95_value = 14.5,
+        .p99_value = 14.9,
     });
 
     var series = TemporalIndex.DownsampledSeries{
@@ -3692,4 +3951,249 @@ test "TemporalIndex.DownsampledSeries.deinit" {
     };
 
     series.deinit(std.testing.allocator);
+}
+
+// ==================== TDigest Algorithm for Percentiles ====================
+
+/// TDigest: A data structure for approximate quantile computation
+///
+/// Simple implementation using sorted sampling for time-series aggregation.
+/// Stores samples up to a max size, then uses reservoir sampling.
+pub const TDigest = struct {
+    allocator: std.mem.Allocator,
+    /// Maximum samples to store (compression parameter)
+    max_samples: usize,
+    /// Samples stored in sorted order
+    samples: ArrayListManaged(f64),
+    /// Total number of values added
+    total_count: u64,
+    /// Minimum value seen
+    min_value: f64,
+    /// Maximum value seen
+    max_value: f64,
+
+    /// Create new TDigest with specified max samples
+    pub fn init(allocator: std.mem.Allocator, compression: f64) TDigest {
+        const max_samples = @as(usize, @intFromFloat(compression * 10));
+        return TDigest{
+            .allocator = allocator,
+            .max_samples = max_samples,
+            .samples = .{},
+            .total_count = 0,
+            .min_value = std.math.floatMax(f64),
+            .max_value = std.math.floatMin(f64),
+        };
+    }
+
+    /// Free resources
+    pub fn deinit(self: *TDigest) void {
+        self.samples.deinit(self.allocator);
+    }
+
+    /// Add a value to the digest
+    pub fn add(self: *TDigest, value: f64) !void {
+        if (self.total_count == 0) {
+            self.min_value = value;
+            self.max_value = value;
+        } else {
+            if (value < self.min_value) self.min_value = value;
+            if (value > self.max_value) self.max_value = value;
+        }
+
+        self.total_count += 1;
+
+        // If under capacity, just add and sort
+        if (self.samples.items.len < self.max_samples) {
+            try self.samples.append(self.allocator, value);
+            // Insert in sorted position
+            const idx = self.samples.items.len - 1;
+            var i = idx;
+            while (i > 0 and self.samples.items[i - 1] > value) : (i -= 1) {
+                self.samples.items[i] = self.samples.items[i - 1];
+            }
+            self.samples.items[i] = value;
+        } else {
+            // Reservoir sampling: replace random sample
+            var prng = std.Random.DefaultPrng.init(@as(u64, @intCast(self.total_count)));
+            const idx = prng.random().uintAtMost(usize, self.total_count - 1);
+            if (idx < self.max_samples) {
+                self.samples.items[idx] = value;
+                // Re-sort after replacement
+                std.mem.sort(f64, self.samples.items, {}, comptime std.sort.asc(f64));
+            }
+        }
+    }
+
+    /// Query percentile (0.0 to 1.0)
+    pub fn quantile(self: *const TDigest, q: f64) f64 {
+        if (self.total_count == 0) return 0.0;
+        if (self.samples.items.len == 0) return 0.0;
+        if (self.samples.items.len == 1) return self.samples.items[0];
+        if (q <= 0.0) return self.min_value;
+        if (q >= 1.0) return self.max_value;
+
+        // Linear interpolation
+        const idx_float = q * @as(f64, @floatFromInt(self.samples.items.len - 1));
+        const idx = @as(usize, @intFromFloat(idx_float));
+        const frac = idx_float - @as(f64, @floatFromInt(idx));
+
+        if (idx >= self.samples.items.len - 1) {
+            return self.samples.items[self.samples.items.len - 1];
+        }
+
+        const lower = self.samples.items[idx];
+        const upper = self.samples.items[idx + 1];
+        return lower + frac * (upper - lower);
+    }
+
+    /// Merge another TDigest into this one
+    pub fn merge(self: *TDigest, other: *const TDigest) !void {
+        if (other.total_count == 0) return;
+
+        // Combine samples
+        const combined_capacity = @min(self.max_samples, self.samples.items.len + other.samples.items.len);
+        var combined = ArrayListManaged(f64).init(self.allocator);
+        errdefer combined.deinit(self.allocator);
+
+        try combined.ensureTotalCapacity(self.allocator, combined_capacity);
+
+        // Add samples from both
+        for (self.samples.items) |s| try combined.append(self.allocator, s);
+        for (other.samples.items) |s| try combined.append(self.allocator, s);
+
+        // Sort and truncate if needed
+        std.mem.sort(f64, combined.items, {}, comptime std.sort.asc(f64));
+        if (combined.items.len > self.max_samples) {
+            // Just keep first max_samples for simplicity
+            var result = ArrayListManaged(f64).init(self.allocator);
+            try result.appendSlice(self.allocator, combined.items[0..self.max_samples]);
+            combined.deinit(self.allocator);
+            combined = result;
+        }
+
+        self.samples.deinit(self.allocator);
+        self.samples = combined;
+        self.total_count += other.total_count;
+        if (other.min_value < self.min_value) self.min_value = other.min_value;
+        if (other.max_value > self.max_value) self.max_value = other.max_value;
+    }
+};
+
+test "TDigest.basicOperations" {
+    var digest = TDigest.init(std.testing.allocator, 10.0);
+    defer digest.deinit();
+
+    // Add sequential values
+    var i: usize = 0;
+    while (i < 100) : (i += 1) {
+        try digest.add(@as(f64, @floatFromInt(i)));
+    }
+
+    // Test median (should be close to 50)
+    const median = digest.quantile(0.5);
+    try std.testing.expect(median > 40.0 and median < 60.0);
+
+    // Test p95 (should be close to 95)
+    const p95 = digest.quantile(0.95);
+    try std.testing.expect(p95 > 85.0 and p95 < 100.0);
+
+    // Test p99 (should be close to 99)
+    const p99 = digest.quantile(0.99);
+    try std.testing.expect(p99 > 90.0 and p99 <= 100.0);
+}
+
+test "TDigest.percentileAccuracy" {
+    var digest = TDigest.init(std.testing.allocator, 100.0);
+    defer digest.deinit();
+
+    // Add values from normal distribution
+    var prng = std.Random.DefaultPrng.init(42);
+    const rand = prng.random();
+
+    var i: usize = 0;
+    while (i < 1000) : (i += 1) {
+        const value = rand.floatNorm(f64);
+        try digest.add(value);
+    }
+
+    // For normal distribution:
+    // p50 should be near 0
+    // p95 should be positive
+
+    const p50 = digest.quantile(0.5);
+    try std.testing.expect(@abs(p50) < 1.0);
+
+    const p95 = digest.quantile(0.95);
+    try std.testing.expect(p95 > 0.5);
+}
+
+test "TDigest.extremeValues" {
+    var digest = TDigest.init(std.testing.allocator, 10.0);
+    defer digest.deinit();
+
+    try digest.add(1.0);
+    try digest.add(2.0);
+    try digest.add(3.0);
+
+    // min_value should be 1.0, max_value should be 3.0
+    try std.testing.expectEqual(@as(f64, 1.0), digest.min_value);
+    try std.testing.expectEqual(@as(f64, 3.0), digest.max_value);
+
+    // q=0.0 should return min_value
+    try std.testing.expectEqual(@as(f64, 1.0), digest.quantile(0.0));
+    // q=1.0 should return max_value
+    try std.testing.expectEqual(@as(f64, 3.0), digest.quantile(1.0));
+}
+
+test "TemporalIndex.createRollup" {
+    var index = TemporalIndex.init(std.testing.allocator);
+    defer index.deinit();
+
+    const ts = std.time.timestamp();
+
+    // Add numeric changes
+    const changes = [_]StateChange{
+        .{ .id = "c1", .txn_id = 100, .timestamp = .{ .base = @intCast(ts), .delta = -300 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "value", .old_value = null, .new_value = "10.0", .metadata = "{}" },
+        .{ .id = "c2", .txn_id = 101, .timestamp = .{ .base = @intCast(ts), .delta = -200 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "value", .old_value = "10.0", .new_value = "20.0", .metadata = "{}" },
+        .{ .id = "c3", .txn_id = 102, .timestamp = .{ .base = @intCast(ts), .delta = -100 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "value", .old_value = "20.0", .new_value = "15.0", .metadata = "{}" },
+    };
+
+    for (changes) |c| try index.addChange(c);
+
+    // Create a rollup
+    try index.createRollup("test", "entity1", "value", ts - 400, ts, 60, .mean);
+
+    // Query the rollup
+    const rollups = try index.queryRollups("test", "entity1", "value", ts - 500, ts, 60);
+    defer std.testing.allocator.free(rollups);
+
+    try std.testing.expect(rollups.len > 0);
+    try std.testing.expectEqual(@as(u64, 3), rollups[0].count);
+}
+
+test "TemporalIndex.invalidateRollups" {
+    var index = TemporalIndex.init(std.testing.allocator);
+    defer index.deinit();
+
+    const ts = std.time.timestamp();
+
+    // Add numeric changes
+    const changes = [_]StateChange{
+        .{ .id = "c1", .txn_id = 100, .timestamp = .{ .base = @intCast(ts), .delta = -300 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "value", .old_value = null, .new_value = "10.0", .metadata = "{}" },
+        .{ .id = "c2", .txn_id = 101, .timestamp = .{ .base = @intCast(ts), .delta = -200 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "value", .old_value = "10.0", .new_value = "20.0", .metadata = "{}" },
+    };
+
+    for (changes) |c| try index.addChange(c);
+
+    // Create a rollup
+    try index.createRollup("test", "entity1", "value", ts - 400, ts, 60, .mean);
+
+    // Simulate late-arriving data
+    try index.invalidateRollups("test", "entity1", "value", ts - 350);
+
+    // Query should return no valid rollups (all invalidated)
+    const rollups = try index.queryRollups("test", "entity1", "value", ts - 500, ts, 60);
+    defer std.testing.allocator.free(rollups);
+
+    try std.testing.expectEqual(rollups.len, 0);
 }
