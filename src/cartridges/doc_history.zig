@@ -217,7 +217,7 @@ pub const DocumentHistory = struct {
         }
         self.versions.deinit(self.allocator);
 
-        // Free branch values
+        // Free branch keys and values
         var it = self.branches.iterator();
         while (it.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
@@ -231,13 +231,15 @@ pub const DocumentHistory = struct {
         try self.versions.append(self.allocator, version);
 
         // Update branch pointer
-        const entry = try self.branches.getOrPut(version.branch);
-        if (entry.found_existing) {
-            self.allocator.free(entry.value_ptr.*);
-        } else {
-            entry.key_ptr.* = try self.allocator.dupe(u8, version.branch);
+        // Remove old entry if exists
+        if (self.branches.fetchRemove(version.branch)) |old_kv| {
+            self.allocator.free(old_kv.key);
+            self.allocator.free(old_kv.value);
         }
-        entry.value_ptr.* = try self.allocator.dupe(u8, version.version_id);
+        // Add new entry with owned copies
+        const key_copy = try self.allocator.dupe(u8, version.branch);
+        const value_copy = try self.allocator.dupe(u8, version.version_id);
+        try self.branches.put(key_copy, value_copy);
     }
 
     /// Get version by ID
@@ -445,7 +447,7 @@ pub const DocumentHistoryIndex = struct {
         while (it.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
             entry.value_ptr.*.deinit();
-            self.allocator.destroy(entry.value_ptr);
+            self.allocator.destroy(entry.value_ptr.*);
         }
         self.histories.deinit();
 
