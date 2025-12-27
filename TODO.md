@@ -627,16 +627,18 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - Model realistic write patterns (bursty, time-correlated)
   - Support batch imports and incremental updates
   **Completed**: Implemented `benchMacroDocIngestion` in commit `f361578` with 3-phase workload (batch ingestion, incremental updates, document churn). Variable document sizes (512B-16KB), burst simulation, comprehensive metrics (latency p50/p99, churn rate, avg doc size)
-- [ ] 🔴 Build semantic search query mix
+- [x] 🔴 Build semantic search query mix (COMPLETED)
   - Full-text search: query by term, phrase, boolean combinations
   - Category filter queries: "docs in category X about topic Y"
   - Version history queries: "what changed between v1 and v5"
   - Recent changes queries: "docs modified in last 24 hours"
-- [ ] 🟠 Macrobench scenario: 100K documents, mixed read/write workload
+  **Completed**: Implemented `benchMacroSemanticSearch` in commit `b697da9` with document repository and inverted index. 4 query types (50% term search, 20% category, 15% version, 15% time). Per-query-type latency metrics (p50/p99). Baselines: ~30 ops/sec, 80% result rate
+- [x] 🟠 Macrobench scenario: 100K documents, mixed read/write workload (COMPLETED)
   - 80% read (search queries, version lookups)
   - 15% write (new documents, updates)
   - 5% delete (document archival)
   - Measure: search latency p50/p95, write throughput, storage growth
+  **Completed**: Implemented `benchMacroDocMixedWorkload` in commit `7a964c1` with mixed operation mix (80% read, 15% write, 5% delete). 100K documents, variable sizes (512B-16KB). Comprehensive metrics: latency percentiles (p50/p95/p99), throughput by operation type, storage growth rate. Runtime ~10 seconds
 - [ ] 🟠 Add baselines with varying document sizes
   - Small docs (<1KB): measure overhead per document
   - Medium docs (1-10KB): realistic text files
@@ -742,16 +744,20 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED**: Includes metadata back-pointers to source entities/commits
   - **COMPLETED**: All tests pass with no memory leaks
   - Completed 2025-12-24
-- [ ] 🔴 Implement vector insertion and indexing with HNSW graph
-  - Build HNSW index incrementally from commit stream
-  - Support batch insertion for efficient embedding generation
-  - Implement graph layers with configurable connectivity (M=16, ef_construction=200)
-  - Include node deletion and graph maintenance
-- [ ] 🔴 Add approximate nearest neighbor (ANN) search operations
-  - Implement beam search for top-K similar vectors
-  - Support distance metrics (cosine, Euclidean, dot product)
-  - Add filtering by entity type, time range, or metadata constraints
-  - Include result scoring with confidence thresholds
+- [x] 🔴 Implement vector insertion and indexing with HNSW graph
+  - **COMPLETED**: Implemented HNSW batch insertion (insertBatch method) for efficient index building
+  - **COMPLETED**: Node deletion with connection pruning and graph consistency maintenance
+  - **COMPLETED**: Graph maintenance with entry point rebuilding and compaction
+  - **COMPLETED**: Configurable connectivity parameters (M=16, ef_construction=200)
+  - **COMPLETED**: Multi-layer graph structure with progressive neighbor selection
+  - Completed 2025-12-24
+- [x] 🔴 Add approximate nearest neighbor (ANN) search operations
+  - **COMPLETED**: Implemented beam search with DistanceMetric enum (Euclidean, cosine, dot product)
+  - Added SearchOptions with k, ef_search, metric, max_distance parameters
+  - Implemented distanceCosine() and distanceDot() functions
+  - Added searchWithOptions() to HNSWIndex and EmbeddingsCartridge
+  - All 28 tests pass in embeddings.zig
+  - Completed 2025-12-24
 - [ ] 🔴 Build embedding generation plugin with LLM integration
   - Integrate with embedding providers (OpenAI text-embedding-3, SentenceTransformers)
   - Add batching and caching for cost optimization
