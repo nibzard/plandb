@@ -842,11 +842,17 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED**: Design parent-child relationship tracking for branching
   - **COMPLETED**: Diff indices for efficient "what changed between X and Y" queries
   - **STATUS**: Implementation complete, builds successfully. Minor memory ownership issue in tests to fix.
-- [ ] 🔴 Implement semantic diff extraction from commit stream
-  - Parse document mutations to extract meaningful changes
-  - Use LLM function calling to classify change intent
-  - Build diff indices for efficient blame queries
-  - Support merge conflict resolution tracking
+- [ ✅ ] 🔴 Implement semantic diff extraction from commit stream
+  - **COMPLETED**: Implemented semantic diff extraction plugin in src/plugins/semantic_diff.zig
+  - **COMPLETED**: Line-based diff extraction from document mutations
+  - **COMPLETED**: LLM-based semantic analysis for change classification (intent, severity)
+  - **COMPLETED**: Heuristic fallback when LLM unavailable
+  - **COMPLETED**: Blame index for "who last touched line N?" queries
+  - **COMPLETED**: Issue reference extraction (ISSUE-123, #456 patterns)
+  - **COMPLETED**: Graceful degradation with cost-optimized batching
+  - **COMPLETED**: Comprehensive unit tests
+  - **STATUS**: Implementation complete, committed
+  - **COMMIT**: feat(plugins): add semantic diff extraction plugin
 - [ ] 🟠 Add annotated history query operations
   - Query changelog by entity, author, intent, time range
   - Retrieve full version history with annotations

@@ -187,6 +187,27 @@ pub fn registerBenchmarks(bench_runner: *runner.Runner) !void {
     });
 
     try bench_runner.addBenchmark(.{
+        .name = "bench/macro/doc_small_baseline",
+        .run_fn = benchMacroDocSmallBaseline,
+        .critical = true,
+        .suite = .macro,
+    });
+
+    try bench_runner.addBenchmark(.{
+        .name = "bench/macro/doc_medium_baseline",
+        .run_fn = benchMacroDocMediumBaseline,
+        .critical = true,
+        .suite = .macro,
+    });
+
+    try bench_runner.addBenchmark(.{
+        .name = "bench/macro/doc_large_baseline",
+        .run_fn = benchMacroDocLargeBaseline,
+        .critical = true,
+        .suite = .macro,
+    });
+
+    try bench_runner.addBenchmark(.{
         .name = "bench/macro/vector_similarity_search_100k",
         .run_fn = benchMacroVectorSimilaritySearch,
         .critical = true,
@@ -5641,6 +5662,579 @@ fn benchMacroDocMixedWorkload(allocator: std.mem.Allocator, config: types.Config
         },
         .io = .{
             .fsync_count = total_transactions,
+        },
+        .alloc = .{
+            .alloc_count = alloc_count,
+            .alloc_bytes = total_alloc_bytes,
+        },
+        .errors_total = 0,
+        .notes = notes_value,
+    };
+}
+
+fn benchMacroDocSmallBaseline(allocator: std.mem.Allocator, config: types.Config) !types.Results {
+    _ = config;
+
+    const doc_count: u64 = 100;
+    const doc_size_min: u64 = 128;
+    const doc_size_max: u64 = 512;
+
+    const doc_categories = [_][]const u8{
+        "source", "test", "config", "docs", "build",
+    };
+
+    var database = try db.Db.open(allocator);
+    defer database.close();
+
+    var prng = std.Random.DefaultPrng.init(42);
+    const rand = prng.random();
+
+    var total_reads: u64 = 0;
+    var total_writes: u64 = 0;
+    var total_alloc_bytes: u64 = 0;
+    var alloc_count: u64 = 0;
+
+    var sequential_reads: u64 = 0;
+    var random_reads: u64 = 0;
+
+    var write_latencies = try std.ArrayList(u64).initCapacity(allocator, doc_count);
+    defer write_latencies.deinit(allocator);
+
+    var read_latencies = try std.ArrayList(u64).initCapacity(allocator, doc_count * 2);
+    defer read_latencies.deinit(allocator);
+
+    var doc_ids = try std.ArrayList(u64).initCapacity(allocator, doc_count);
+    defer doc_ids.deinit(allocator);
+
+    const start_time = std.time.nanoTimestamp();
+
+    var w = try database.beginWrite();
+    errdefer w.abort();
+
+    var doc_id: u64 = 0;
+    while (doc_id < doc_count) : (doc_id += 1) {
+        const write_start = std.time.nanoTimestamp();
+
+        const category = doc_categories[rand.intRangeLessThan(usize, 0, doc_categories.len)];
+        const content_size = rand.intRangeLessThan(u64, doc_size_min, doc_size_max);
+
+        var doc_key_buf: [128]u8 = undefined;
+        const doc_key = try std.fmt.bufPrint(&doc_key_buf, "doc:{d}", .{doc_id});
+
+        var content_buf: [1024]u8 = undefined;
+        const content = try std.fmt.bufPrint(&content_buf,
+            "{{\"id\":{d},\"category\":\"{s}\",\"size\":{d},\"data\":\"{s}\"}}",
+            .{ doc_id, category, content_size, "a" ** 100 });
+
+        try w.put(doc_key, content);
+        total_writes += doc_key.len + content.len;
+        total_alloc_bytes += doc_key.len + content.len;
+        alloc_count += 2;
+
+        try doc_ids.append(allocator, doc_id);
+
+        const latency = @as(u64, @intCast(std.time.nanoTimestamp() - write_start));
+        try write_latencies.append(allocator, latency);
+    }
+
+    _ = try w.commit();
+    total_writes += 4096;
+    alloc_count += 10;
+
+    var read_idx: u64 = 0;
+    while (read_idx < doc_count * 2) : (read_idx += 1) {
+        const read_start = std.time.nanoTimestamp();
+
+        const is_sequential = rand.boolean();
+        const target_doc_idx = if (is_sequential)
+            @as(usize, @intCast(read_idx % doc_count))
+        else
+            rand.intRangeLessThan(usize, 0, @intCast(doc_count));
+
+        const target_doc_id = doc_ids.items[target_doc_idx];
+
+        var doc_key_buf: [128]u8 = undefined;
+        const doc_key = try std.fmt.bufPrint(&doc_key_buf, "doc:{d}", .{target_doc_id});
+
+        var r = try database.beginReadLatest();
+        defer r.close();
+
+        if (r.get(doc_key)) |value| {
+            total_reads += doc_key.len + value.len;
+        } else {
+            total_reads += doc_key.len;
+        }
+
+        if (is_sequential) {
+            sequential_reads += 1;
+        } else {
+            random_reads += 1;
+        }
+
+        const latency = @as(u64, @intCast(std.time.nanoTimestamp() - read_start));
+        try read_latencies.append(allocator, latency);
+    }
+
+    const duration_ns = @as(u64, @intCast(std.time.nanoTimestamp() - start_time));
+
+    var write_p50: u64 = 0;
+    var write_p99: u64 = 0;
+    if (write_latencies.items.len > 0) {
+        std.sort.insertion(u64, write_latencies.items, {}, comptime std.sort.asc(u64));
+        write_p50 = write_latencies.items[@divTrunc(write_latencies.items.len * 50, 100)];
+        write_p99 = write_latencies.items[@min(write_latencies.items.len - 1, @divTrunc(write_latencies.items.len * 99, 100))];
+    }
+
+    var read_p50: u64 = 0;
+    var read_p99: u64 = 0;
+    if (read_latencies.items.len > 0) {
+        std.sort.insertion(u64, read_latencies.items, {}, comptime std.sort.asc(u64));
+        read_p50 = read_latencies.items[@divTrunc(read_latencies.items.len * 50, 100)];
+        read_p99 = read_latencies.items[@min(read_latencies.items.len - 1, @divTrunc(read_latencies.items.len * 99, 100))];
+    }
+
+    var notes_map = std.json.ObjectMap.init(allocator);
+    try notes_map.put("doc_count", std.json.Value{ .integer = @intCast(doc_count) });
+    try notes_map.put("doc_size_min", std.json.Value{ .integer = @intCast(doc_size_min) });
+    try notes_map.put("doc_size_max", std.json.Value{ .integer = @intCast(doc_size_max) });
+    try notes_map.put("write_p50_ns", std.json.Value{ .integer = @intCast(write_p50) });
+    try notes_map.put("write_p99_ns", std.json.Value{ .integer = @intCast(write_p99) });
+    try notes_map.put("read_p50_ns", std.json.Value{ .integer = @intCast(read_p50) });
+    try notes_map.put("read_p99_ns", std.json.Value{ .integer = @intCast(read_p99) });
+    try notes_map.put("sequential_reads", std.json.Value{ .integer = @intCast(sequential_reads) });
+    try notes_map.put("random_reads", std.json.Value{ .integer = @intCast(random_reads) });
+    try notes_map.put("io_pattern_ratio", std.json.Value{ .float = @as(f64, @floatFromInt(sequential_reads)) / @as(f64, @floatFromInt(sequential_reads + random_reads)) });
+
+    const notes_value = std.json.Value{ .object = notes_map };
+
+    return types.Results{
+        .ops_total = doc_count + doc_count * 2,
+        .duration_ns = duration_ns,
+        .ops_per_sec = @as(f64, @floatFromInt(doc_count + doc_count * 2)) / @as(f64, @floatFromInt(duration_ns)) * std.time.ns_per_s,
+        .latency_ns = .{
+            .p50 = (write_p50 + read_p50) / 2,
+            .p95 = @max(write_p99, read_p99),
+            .p99 = @max(write_p99, read_p99),
+            .max = @max(write_p99, read_p99) + 1,
+        },
+        .bytes = .{
+            .read_total = total_reads,
+            .write_total = total_writes,
+        },
+        .io = .{
+            .fsync_count = 1,
+        },
+        .alloc = .{
+            .alloc_count = alloc_count,
+            .alloc_bytes = total_alloc_bytes,
+        },
+        .errors_total = 0,
+        .notes = notes_value,
+    };
+}
+
+fn benchMacroDocMediumBaseline(allocator: std.mem.Allocator, config: types.Config) !types.Results {
+    _ = config;
+
+    const doc_count: u64 = 50;
+    const doc_size_min: u64 = 1024;
+    const doc_size_max: u64 = 10240;
+
+    const doc_categories = [_][]const u8{
+        "source", "test", "config", "docs", "build", "assets", "scripts",
+    };
+
+    var database = try db.Db.open(allocator);
+    defer database.close();
+
+    var prng = std.Random.DefaultPrng.init(42);
+    const rand = prng.random();
+
+    var total_reads: u64 = 0;
+    var total_writes: u64 = 0;
+    var total_alloc_bytes: u64 = 0;
+    var alloc_count: u64 = 0;
+
+    var sequential_reads: u64 = 0;
+    var random_reads: u64 = 0;
+    var scan_operations: u64 = 0;
+
+    var write_latencies = try std.ArrayList(u64).initCapacity(allocator, doc_count);
+    defer write_latencies.deinit(allocator);
+
+    var read_latencies = try std.ArrayList(u64).initCapacity(allocator, doc_count * 2);
+    defer read_latencies.deinit(allocator);
+
+    var scan_latencies = try std.ArrayList(u64).initCapacity(allocator, @divTrunc(doc_count, 10));
+    defer scan_latencies.deinit(allocator);
+
+    var doc_ids = try std.ArrayList(u64).initCapacity(allocator, doc_count);
+    defer doc_ids.deinit(allocator);
+
+    const start_time = std.time.nanoTimestamp();
+
+    var w = try database.beginWrite();
+    errdefer w.abort();
+
+    var doc_id: u64 = 0;
+    while (doc_id < doc_count) : (doc_id += 1) {
+        const write_start = std.time.nanoTimestamp();
+
+        const category = doc_categories[rand.intRangeLessThan(usize, 0, doc_categories.len)];
+        const content_size = rand.intRangeLessThan(u64, doc_size_min, doc_size_max);
+
+        var doc_key_buf: [128]u8 = undefined;
+        const doc_key = try std.fmt.bufPrint(&doc_key_buf, "doc:{d}", .{doc_id});
+
+        const content_value = try std.fmt.allocPrint(allocator,
+            "{{\"id\":{d},\"category\":\"{s}\",\"size\":{d},\"data\":\"{s}\"}}",
+            .{ doc_id, category, content_size, "x" ** 9000 });
+        defer allocator.free(content_value);
+
+        try w.put(doc_key, content_value);
+        total_writes += doc_key.len + content_value.len;
+        total_alloc_bytes += doc_key.len + content_value.len;
+        alloc_count += 2;
+
+        try doc_ids.append(allocator, doc_id);
+
+        const latency = @as(u64, @intCast(std.time.nanoTimestamp() - write_start));
+        try write_latencies.append(allocator, latency);
+    }
+
+    _ = try w.commit();
+    total_writes += 4096;
+    alloc_count += 10;
+
+    var read_idx: u64 = 0;
+    while (read_idx < doc_count * 2) : (read_idx += 1) {
+        const read_start = std.time.nanoTimestamp();
+
+        const is_sequential = rand.boolean();
+        const target_doc_idx = if (is_sequential)
+            @as(usize, @intCast(read_idx % doc_count))
+        else
+            rand.intRangeLessThan(usize, 0, @intCast(doc_count));
+
+        const target_doc_id = doc_ids.items[target_doc_idx];
+
+        var doc_key_buf: [128]u8 = undefined;
+        const doc_key = try std.fmt.bufPrint(&doc_key_buf, "doc:{d}", .{target_doc_id});
+
+        var r = try database.beginReadLatest();
+        defer r.close();
+
+        if (r.get(doc_key)) |value| {
+            total_reads += doc_key.len + value.len;
+        } else {
+            total_reads += doc_key.len;
+        }
+
+        if (is_sequential) {
+            sequential_reads += 1;
+        } else {
+            random_reads += 1;
+        }
+
+        const latency = @as(u64, @intCast(std.time.nanoTimestamp() - read_start));
+        try read_latencies.append(allocator, latency);
+    }
+
+    var scan_idx: u64 = 0;
+    while (scan_idx < @divTrunc(doc_count, 10)) : (scan_idx += 1) {
+        const scan_start = std.time.nanoTimestamp();
+
+        var r = try database.beginReadLatest();
+        defer r.close();
+
+        const scan_size = @min(10, doc_count);
+        const start_doc_id = if (scan_size < doc_count)
+            rand.intRangeLessThan(u64, 0, doc_count - scan_size)
+        else
+            0;
+        var scan_count: u64 = 0;
+        while (scan_count < scan_size) : (scan_count += 1) {
+            const target_doc_id = start_doc_id + scan_count;
+            var doc_key_buf: [128]u8 = undefined;
+            const doc_key = try std.fmt.bufPrint(&doc_key_buf, "doc:{d}", .{target_doc_id});
+            if (r.get(doc_key)) |value| {
+                total_reads += doc_key.len + value.len;
+            } else {
+                total_reads += doc_key.len;
+            }
+        }
+
+        scan_operations += 1;
+
+        const latency = @as(u64, @intCast(std.time.nanoTimestamp() - scan_start));
+        try scan_latencies.append(allocator, latency);
+    }
+
+    const duration_ns = @as(u64, @intCast(std.time.nanoTimestamp() - start_time));
+
+    var write_p50: u64 = 0;
+    var write_p99: u64 = 0;
+    if (write_latencies.items.len > 0) {
+        std.sort.insertion(u64, write_latencies.items, {}, comptime std.sort.asc(u64));
+        write_p50 = write_latencies.items[@divTrunc(write_latencies.items.len * 50, 100)];
+        write_p99 = write_latencies.items[@min(write_latencies.items.len - 1, @divTrunc(write_latencies.items.len * 99, 100))];
+    }
+
+    var read_p50: u64 = 0;
+    var read_p99: u64 = 0;
+    if (read_latencies.items.len > 0) {
+        std.sort.insertion(u64, read_latencies.items, {}, comptime std.sort.asc(u64));
+        read_p50 = read_latencies.items[@divTrunc(read_latencies.items.len * 50, 100)];
+        read_p99 = read_latencies.items[@min(read_latencies.items.len - 1, @divTrunc(read_latencies.items.len * 99, 100))];
+    }
+
+    var scan_p50: u64 = 0;
+    var scan_p99: u64 = 0;
+    if (scan_latencies.items.len > 0) {
+        std.sort.insertion(u64, scan_latencies.items, {}, comptime std.sort.asc(u64));
+        scan_p50 = scan_latencies.items[@divTrunc(scan_latencies.items.len * 50, 100)];
+        scan_p99 = scan_latencies.items[@min(scan_latencies.items.len - 1, @divTrunc(scan_latencies.items.len * 99, 100))];
+    }
+
+    var notes_map = std.json.ObjectMap.init(allocator);
+    try notes_map.put("doc_count", std.json.Value{ .integer = @intCast(doc_count) });
+    try notes_map.put("doc_size_min", std.json.Value{ .integer = @intCast(doc_size_min) });
+    try notes_map.put("doc_size_max", std.json.Value{ .integer = @intCast(doc_size_max) });
+    try notes_map.put("write_p50_ns", std.json.Value{ .integer = @intCast(write_p50) });
+    try notes_map.put("write_p99_ns", std.json.Value{ .integer = @intCast(write_p99) });
+    try notes_map.put("read_p50_ns", std.json.Value{ .integer = @intCast(read_p50) });
+    try notes_map.put("read_p99_ns", std.json.Value{ .integer = @intCast(read_p99) });
+    try notes_map.put("scan_p50_ns", std.json.Value{ .integer = @intCast(scan_p50) });
+    try notes_map.put("scan_p99_ns", std.json.Value{ .integer = @intCast(scan_p99) });
+    try notes_map.put("sequential_reads", std.json.Value{ .integer = @intCast(sequential_reads) });
+    try notes_map.put("random_reads", std.json.Value{ .integer = @intCast(random_reads) });
+    try notes_map.put("scan_operations", std.json.Value{ .integer = @intCast(scan_operations) });
+    try notes_map.put("io_pattern_ratio", std.json.Value{ .float = @as(f64, @floatFromInt(sequential_reads)) / @as(f64, @floatFromInt(sequential_reads + random_reads)) });
+
+    const notes_value = std.json.Value{ .object = notes_map };
+
+    return types.Results{
+        .ops_total = doc_count + doc_count * 2 + scan_operations,
+        .duration_ns = duration_ns,
+        .ops_per_sec = @as(f64, @floatFromInt(doc_count + doc_count * 2 + scan_operations)) / @as(f64, @floatFromInt(duration_ns)) * std.time.ns_per_s,
+        .latency_ns = .{
+            .p50 = (write_p50 + read_p50 + scan_p50) / 3,
+            .p95 = @max(@max(write_p99, read_p99), scan_p99),
+            .p99 = @max(@max(write_p99, read_p99), scan_p99),
+            .max = @max(@max(write_p99, read_p99), scan_p99) + 1,
+        },
+        .bytes = .{
+            .read_total = total_reads,
+            .write_total = total_writes,
+        },
+        .io = .{
+            .fsync_count = 1,
+        },
+        .alloc = .{
+            .alloc_count = alloc_count,
+            .alloc_bytes = total_alloc_bytes,
+        },
+        .errors_total = 0,
+        .notes = notes_value,
+    };
+}
+
+fn benchMacroDocLargeBaseline(allocator: std.mem.Allocator, config: types.Config) !types.Results {
+    _ = config;
+
+    const doc_count: u64 = 20;
+    const doc_size_min: u64 = 10240;
+    const doc_size_max: u64 = 102400;
+
+    const doc_categories = [_][]const u8{
+        "source", "test", "config", "docs", "build", "assets", "scripts", "vendor",
+    };
+
+    var database = try db.Db.open(allocator);
+    defer database.close();
+
+    var prng = std.Random.DefaultPrng.init(42);
+    const rand = prng.random();
+
+    var total_reads: u64 = 0;
+    var total_writes: u64 = 0;
+    var total_alloc_bytes: u64 = 0;
+    var alloc_count: u64 = 0;
+
+    var sequential_reads: u64 = 0;
+    var random_reads: u64 = 0;
+    var scan_operations: u64 = 0;
+
+    var write_latencies = try std.ArrayList(u64).initCapacity(allocator, doc_count);
+    defer write_latencies.deinit(allocator);
+
+    var read_latencies = try std.ArrayList(u64).initCapacity(allocator, doc_count);
+    defer read_latencies.deinit(allocator);
+
+    var scan_latencies = try std.ArrayList(u64).initCapacity(allocator, @divTrunc(doc_count, 5));
+    defer scan_latencies.deinit(allocator);
+
+    var doc_ids = try std.ArrayList(u64).initCapacity(allocator, doc_count);
+    defer doc_ids.deinit(allocator);
+
+    const start_time = std.time.nanoTimestamp();
+
+    var w = try database.beginWrite();
+    errdefer w.abort();
+
+    var doc_id: u64 = 0;
+    while (doc_id < doc_count) : (doc_id += 1) {
+        const write_start = std.time.nanoTimestamp();
+
+        const category = doc_categories[rand.intRangeLessThan(usize, 0, doc_categories.len)];
+        const content_size = rand.intRangeLessThan(u64, doc_size_min, doc_size_max);
+
+        var doc_key_buf: [128]u8 = undefined;
+        const doc_key = try std.fmt.bufPrint(&doc_key_buf, "doc:{d}", .{doc_id});
+
+        const content_value = try std.fmt.allocPrint(allocator,
+            "{{\"id\":{d},\"category\":\"{s}\",\"size\":{d},\"data\":\"{s}\"}}",
+            .{ doc_id, category, content_size, "y" ** 95000 });
+        defer allocator.free(content_value);
+
+        try w.put(doc_key, content_value);
+        total_writes += doc_key.len + content_value.len;
+        total_alloc_bytes += doc_key.len + content_value.len;
+        alloc_count += 2;
+
+        try doc_ids.append(allocator, doc_id);
+
+        const latency = @as(u64, @intCast(std.time.nanoTimestamp() - write_start));
+        try write_latencies.append(allocator, latency);
+    }
+
+    _ = try w.commit();
+    total_writes += 4096;
+    alloc_count += 10;
+
+    var read_idx: u64 = 0;
+    while (read_idx < doc_count) : (read_idx += 1) {
+        const read_start = std.time.nanoTimestamp();
+
+        const is_sequential = rand.boolean();
+        const target_doc_idx = if (is_sequential)
+            @as(usize, @intCast(read_idx % doc_count))
+        else
+            rand.intRangeLessThan(usize, 0, @intCast(doc_count));
+
+        const target_doc_id = doc_ids.items[target_doc_idx];
+
+        var doc_key_buf: [128]u8 = undefined;
+        const doc_key = try std.fmt.bufPrint(&doc_key_buf, "doc:{d}", .{target_doc_id});
+
+        var r = try database.beginReadLatest();
+        defer r.close();
+
+        if (r.get(doc_key)) |value| {
+            total_reads += doc_key.len + value.len;
+        } else {
+            total_reads += doc_key.len;
+        }
+
+        if (is_sequential) {
+            sequential_reads += 1;
+        } else {
+            random_reads += 1;
+        }
+
+        const latency = @as(u64, @intCast(std.time.nanoTimestamp() - read_start));
+        try read_latencies.append(allocator, latency);
+    }
+
+    var scan_idx: u64 = 0;
+    while (scan_idx < @divTrunc(doc_count, 5)) : (scan_idx += 1) {
+        const scan_start = std.time.nanoTimestamp();
+
+        var r = try database.beginReadLatest();
+        defer r.close();
+
+        const scan_size = @min(20, doc_count);
+        const start_doc_id = if (scan_size < doc_count)
+            rand.intRangeLessThan(u64, 0, doc_count - scan_size)
+        else
+            0;
+        var scan_count: u64 = 0;
+        while (scan_count < scan_size) : (scan_count += 1) {
+            const target_doc_id = start_doc_id + scan_count;
+            var doc_key_buf: [128]u8 = undefined;
+            const doc_key = try std.fmt.bufPrint(&doc_key_buf, "doc:{d}", .{target_doc_id});
+            if (r.get(doc_key)) |value| {
+                total_reads += doc_key.len + value.len;
+            } else {
+                total_reads += doc_key.len;
+            }
+        }
+
+        scan_operations += 1;
+
+        const latency = @as(u64, @intCast(std.time.nanoTimestamp() - scan_start));
+        try scan_latencies.append(allocator, latency);
+    }
+
+    const duration_ns = @as(u64, @intCast(std.time.nanoTimestamp() - start_time));
+
+    var write_p50: u64 = 0;
+    var write_p99: u64 = 0;
+    if (write_latencies.items.len > 0) {
+        std.sort.insertion(u64, write_latencies.items, {}, comptime std.sort.asc(u64));
+        write_p50 = write_latencies.items[@divTrunc(write_latencies.items.len * 50, 100)];
+        write_p99 = write_latencies.items[@min(write_latencies.items.len - 1, @divTrunc(write_latencies.items.len * 99, 100))];
+    }
+
+    var read_p50: u64 = 0;
+    var read_p99: u64 = 0;
+    if (read_latencies.items.len > 0) {
+        std.sort.insertion(u64, read_latencies.items, {}, comptime std.sort.asc(u64));
+        read_p50 = read_latencies.items[@divTrunc(read_latencies.items.len * 50, 100)];
+        read_p99 = read_latencies.items[@min(read_latencies.items.len - 1, @divTrunc(read_latencies.items.len * 99, 100))];
+    }
+
+    var scan_p50: u64 = 0;
+    var scan_p99: u64 = 0;
+    if (scan_latencies.items.len > 0) {
+        std.sort.insertion(u64, scan_latencies.items, {}, comptime std.sort.asc(u64));
+        scan_p50 = scan_latencies.items[@divTrunc(scan_latencies.items.len * 50, 100)];
+        scan_p99 = scan_latencies.items[@min(scan_latencies.items.len - 1, @divTrunc(scan_latencies.items.len * 99, 100))];
+    }
+
+    var notes_map = std.json.ObjectMap.init(allocator);
+    try notes_map.put("doc_count", std.json.Value{ .integer = @intCast(doc_count) });
+    try notes_map.put("doc_size_min", std.json.Value{ .integer = @intCast(doc_size_min) });
+    try notes_map.put("doc_size_max", std.json.Value{ .integer = @intCast(doc_size_max) });
+    try notes_map.put("write_p50_ns", std.json.Value{ .integer = @intCast(write_p50) });
+    try notes_map.put("write_p99_ns", std.json.Value{ .integer = @intCast(write_p99) });
+    try notes_map.put("read_p50_ns", std.json.Value{ .integer = @intCast(read_p50) });
+    try notes_map.put("read_p99_ns", std.json.Value{ .integer = @intCast(read_p99) });
+    try notes_map.put("scan_p50_ns", std.json.Value{ .integer = @intCast(scan_p50) });
+    try notes_map.put("scan_p99_ns", std.json.Value{ .integer = @intCast(scan_p99) });
+    try notes_map.put("sequential_reads", std.json.Value{ .integer = @intCast(sequential_reads) });
+    try notes_map.put("random_reads", std.json.Value{ .integer = @intCast(random_reads) });
+    try notes_map.put("scan_operations", std.json.Value{ .integer = @intCast(scan_operations) });
+    try notes_map.put("io_pattern_ratio", std.json.Value{ .float = @as(f64, @floatFromInt(sequential_reads)) / @as(f64, @floatFromInt(sequential_reads + random_reads)) });
+
+    const notes_value = std.json.Value{ .object = notes_map };
+
+    return types.Results{
+        .ops_total = doc_count + doc_count + scan_operations,
+        .duration_ns = duration_ns,
+        .ops_per_sec = @as(f64, @floatFromInt(doc_count + doc_count + scan_operations)) / @as(f64, @floatFromInt(duration_ns)) * std.time.ns_per_s,
+        .latency_ns = .{
+            .p50 = (write_p50 + read_p50 + scan_p50) / 3,
+            .p95 = @max(@max(write_p99, read_p99), scan_p99),
+            .p99 = @max(@max(write_p99, read_p99), scan_p99),
+            .max = @max(@max(write_p99, read_p99), scan_p99) + 1,
+        },
+        .bytes = .{
+            .read_total = total_reads,
+            .write_total = total_writes,
+        },
+        .io = .{
+            .fsync_count = 1,
         },
         .alloc = .{
             .alloc_count = alloc_count,
