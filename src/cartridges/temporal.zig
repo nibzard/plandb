@@ -984,6 +984,686 @@ pub const TemporalIndex = struct {
         last_change_ts: i64,
     };
 
+    /// Anomaly detection result
+    pub const AnomalyResult = struct {
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+        /// Number of anomalies detected
+        anomaly_count: u64,
+        /// Baseline mean value for metric
+        baseline_mean: f64,
+        /// Baseline standard deviation
+        baseline_stddev: f64,
+        /// Threshold used (Z-score or IQR multiplier)
+        threshold: f64,
+        /// List of anomaly timestamps
+        anomaly_timestamps: ArrayListManaged(i64),
+        /// List of anomaly values (optional, for numeric attributes)
+        anomaly_values: ArrayListManaged(f64),
+
+        pub fn deinit(self: *AnomalyResult, allocator: std.mem.Allocator) void {
+            allocator.free(self.entity_namespace);
+            allocator.free(self.entity_local_id);
+            self.anomaly_timestamps.deinit(allocator);
+            self.anomaly_values.deinit(allocator);
+        }
+    };
+
+    /// Temporal histogram bucket
+    pub const HistogramBucket = struct {
+        /// Time bucket identifier (e.g., hour of day: 0-23)
+        bucket_id: u64,
+        /// Count of events in this bucket
+        count: u64,
+        /// Start of this time period
+        period_start: i64,
+        /// End of this time period
+        period_end: i64,
+    };
+
+    /// Temporal histogram result
+    pub const TemporalHistogram = struct {
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+        /// Total events histogramed
+        total_events: u64,
+        /// Histogram buckets
+        buckets: ArrayListManaged(HistogramBucket),
+        /// Time granularity (seconds per bucket)
+        granularity_seconds: u64,
+
+        pub fn deinit(self: *TemporalHistogram, allocator: std.mem.Allocator) void {
+            allocator.free(self.entity_namespace);
+            allocator.free(self.entity_local_id);
+            self.buckets.deinit(allocator);
+        }
+    };
+
+    /// Activity heatmap cell
+    pub const HeatmapCell = struct {
+        /// Row index (e.g., hour of day)
+        row: u64,
+        /// Column index (e.g., day of week)
+        col: u64,
+        /// Activity count for this cell
+        count: u64,
+        /// Normalized intensity (0.0 - 1.0)
+        intensity: f64,
+    };
+
+    /// Activity heatmap result
+    pub const ActivityHeatmap = struct {
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+        /// Number of rows in heatmap
+        rows: u64,
+        /// Number of columns in heatmap
+        cols: u64,
+        /// Heatmap cells (row-major order)
+        cells: ArrayListManaged(HeatmapCell),
+        /// Row labels (optional, e.g., ["00:00", "01:00", ...])
+        row_labels: ArrayListManaged([]const u8),
+        /// Column labels (optional, e.g., ["Mon", "Tue", ...])
+        col_labels: ArrayListManaged([]const u8),
+        /// Maximum count (for normalization)
+        max_count: u64,
+
+        pub fn deinit(self: *ActivityHeatmap, allocator: std.mem.Allocator) void {
+            allocator.free(self.entity_namespace);
+            allocator.free(self.entity_local_id);
+            self.cells.deinit(allocator);
+            for (self.row_labels.items) |l| allocator.free(l);
+            self.row_labels.deinit(allocator);
+            for (self.col_labels.items) |l| allocator.free(l);
+            self.col_labels.deinit(allocator);
+        }
+    };
+
+    /// Downsampled data point
+    pub const DownsampledPoint = struct {
+        /// Time period start
+        period_start: i64,
+        /// Time period end
+        period_end: i64,
+        /// Number of original points in this period
+        point_count: u64,
+        /// Aggregated value (e.g., mean, sum, min, max)
+        aggregated_value: f64,
+        /// Minimum value in period
+        min_value: f64,
+        /// Maximum value in period
+        max_value: f64,
+    };
+
+    /// Downsampled time series
+    pub const DownsampledSeries = struct {
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+        /// Attribute key that was downsampled
+        attribute_key: []const u8,
+        /// Original granularity (seconds)
+        original_granularity: u64,
+        /// Downsampled granularity (seconds)
+        downsampled_granularity: u64,
+        /// Downsampled points
+        points: ArrayListManaged(DownsampledPoint),
+        /// Aggregation method used
+        aggregation_method: AggregationMethod,
+
+        pub const AggregationMethod = enum(u8) {
+            mean = 0,
+            sum = 1,
+            min = 2,
+            max = 3,
+            count = 4,
+        };
+
+        pub fn deinit(self: *DownsampledSeries, allocator: std.mem.Allocator) void {
+            allocator.free(self.entity_namespace);
+            allocator.free(self.entity_local_id);
+            allocator.free(self.attribute_key);
+            self.points.deinit(allocator);
+        }
+    };
+
+    /// Detect anomalies using Z-score method
+    pub fn detectAnomaliesZScore(
+        self: *const TemporalIndex,
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+        attribute_key: []const u8,
+        start_time: i64,
+        end_time: i64,
+        threshold: f64,
+    ) !?AnomalyResult {
+        const entity_key = try std.fmt.allocPrint(self.allocator, "{s}:{s}", .{ entity_namespace, entity_local_id });
+        defer self.allocator.free(entity_key);
+
+        const chunks = self.entity_chunks.get(entity_key) orelse return null;
+
+        // Collect numeric values over time
+        var values = ArrayListManaged(struct { i64, f64 }){};
+        defer values.deinit(self.allocator);
+
+        for (chunks.items) |chunk| {
+            for (chunk.changes.items) |change| {
+                const change_time = change.timestamp.value();
+                if (change_time >= start_time and change_time <= end_time) {
+                    if (std.mem.eql(u8, change.key, attribute_key)) {
+                        if (change.new_value) |v| {
+                            const parsed = std.fmt.parseFloat(f64, v) catch continue;
+                            try values.append(self.allocator, .{ change_time, parsed });
+                        }
+                    }
+                }
+            }
+        }
+
+        if (values.items.len < 3) return null; // Need minimum data points
+
+        // Calculate mean and standard deviation
+        var sum: f64 = 0;
+        for (values.items) |v| sum += v[1];
+        const mean = sum / @as(f64, @floatFromInt(values.items.len));
+
+        var variance: f64 = 0;
+        for (values.items) |v| {
+            const diff = v[1] - mean;
+            variance += diff * diff;
+        }
+        variance /= @as(f64, @floatFromInt(values.items.len));
+        const stddev = std.math.sqrt(variance);
+
+        if (stddev == 0) return null; // No variation
+
+        // Detect anomalies
+        var anomaly_timestamps = ArrayListManaged(i64){};
+        var anomaly_values = ArrayListManaged(f64){};
+        errdefer {
+            anomaly_timestamps.deinit(self.allocator);
+            anomaly_values.deinit(self.allocator);
+        }
+
+        for (values.items) |v| {
+            const z_score = @abs(v[1] - mean) / stddev;
+            if (z_score > threshold) {
+                try anomaly_timestamps.append(self.allocator, v[0]);
+                try anomaly_values.append(self.allocator, v[1]);
+            }
+        }
+
+        return AnomalyResult{
+            .entity_namespace = try self.allocator.dupe(u8, entity_namespace),
+            .entity_local_id = try self.allocator.dupe(u8, entity_local_id),
+            .anomaly_count = @intCast(anomaly_timestamps.items.len),
+            .baseline_mean = mean,
+            .baseline_stddev = stddev,
+            .threshold = threshold,
+            .anomaly_timestamps = anomaly_timestamps,
+            .anomaly_values = anomaly_values,
+        };
+    }
+
+    /// Detect anomalies using IQR (Interquartile Range) method
+    pub fn detectAnomaliesIQR(
+        self: *const TemporalIndex,
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+        attribute_key: []const u8,
+        start_time: i64,
+        end_time: i64,
+        multiplier: f64,
+    ) !?AnomalyResult {
+        const entity_key = try std.fmt.allocPrint(self.allocator, "{s}:{s}", .{ entity_namespace, entity_local_id });
+        defer self.allocator.free(entity_key);
+
+        const chunks = self.entity_chunks.get(entity_key) orelse return null;
+
+        // Collect numeric values
+        var values = ArrayListManaged(f64){};
+        defer values.deinit(self.allocator);
+        var timestamps = ArrayListManaged(i64){};
+        defer timestamps.deinit(self.allocator);
+
+        for (chunks.items) |chunk| {
+            for (chunk.changes.items) |change| {
+                const change_time = change.timestamp.value();
+                if (change_time >= start_time and change_time <= end_time) {
+                    if (std.mem.eql(u8, change.key, attribute_key)) {
+                        if (change.new_value) |v| {
+                            const parsed = std.fmt.parseFloat(f64, v) catch continue;
+                            try values.append(self.allocator, parsed);
+                            try timestamps.append(self.allocator, change_time);
+                        }
+                    }
+                }
+            }
+        }
+
+        if (values.items.len < 4) return null;
+
+        // Sort values to find quartiles
+        std.mem.sort(f64, values.items, {}, comptime std.sort.asc(f64));
+
+        // Calculate Q1, Q3, and IQR
+        const q1_idx = values.items.len / 4;
+        const q3_idx = (3 * values.items.len) / 4;
+        const q1 = values.items[q1_idx];
+        const q3 = values.items[q3_idx];
+        const iqr = q3 - q1;
+
+        if (iqr == 0) return null;
+
+        const lower_bound = q1 - (multiplier * iqr);
+        const upper_bound = q3 + (multiplier * iqr);
+
+        // Detect anomalies
+        var anomaly_timestamps = ArrayListManaged(i64){};
+        var anomaly_values = ArrayListManaged(f64){};
+        errdefer {
+            anomaly_timestamps.deinit(self.allocator);
+            anomaly_values.deinit(self.allocator);
+        }
+
+        for (values.items, 0..) |v, i| {
+            if (v < lower_bound or v > upper_bound) {
+                try anomaly_timestamps.append(self.allocator, timestamps.items[i]);
+                try anomaly_values.append(self.allocator, v);
+            }
+        }
+
+        // Calculate mean and stddev for baseline
+        var sum: f64 = 0;
+        for (values.items) |v| sum += v;
+        const mean = sum / @as(f64, @floatFromInt(values.items.len));
+
+        var variance: f64 = 0;
+        for (values.items) |v| {
+            const diff = v - mean;
+            variance += diff * diff;
+        }
+        variance /= @as(f64, @floatFromInt(values.items.len));
+        const stddev = std.math.sqrt(variance);
+
+        return AnomalyResult{
+            .entity_namespace = try self.allocator.dupe(u8, entity_namespace),
+            .entity_local_id = try self.allocator.dupe(u8, entity_local_id),
+            .anomaly_count = @intCast(anomaly_timestamps.items.len),
+            .baseline_mean = mean,
+            .baseline_stddev = stddev,
+            .threshold = multiplier,
+            .anomaly_timestamps = anomaly_timestamps,
+            .anomaly_values = anomaly_values,
+        };
+    }
+
+    /// Generate temporal histogram for time-based activity patterns
+    pub fn generateTemporalHistogram(
+        self: *const TemporalIndex,
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+        start_time: i64,
+        end_time: i64,
+        granularity_seconds: u64,
+    ) !?TemporalHistogram {
+        const entity_key = try std.fmt.allocPrint(self.allocator, "{s}:{s}", .{ entity_namespace, entity_local_id });
+        defer self.allocator.free(entity_key);
+
+        const chunks = self.entity_chunks.get(entity_key) orelse return null;
+
+        // Count events per time bucket
+        var buckets = std.AutoHashMap(u64, u64).init(self.allocator);
+        defer buckets.deinit();
+
+        var total_events: u64 = 0;
+        var min_bucket_id: u64 = std.math.maxInt(u64);
+        var max_bucket_id: u64 = 0;
+
+        for (chunks.items) |chunk| {
+            for (chunk.changes.items) |change| {
+                const change_time = change.timestamp.value();
+                if (change_time >= start_time and change_time <= end_time) {
+                    const bucket_id = @as(u64, @intCast(@divTrunc(change_time - start_time, @as(i64, @intCast(granularity_seconds)))));
+
+                    const gop = try buckets.getOrPut(bucket_id);
+                    if (!gop.found_existing) {
+                        gop.value_ptr.* = 0;
+                    }
+                    gop.value_ptr.* += 1;
+                    total_events += 1;
+
+                    if (bucket_id < min_bucket_id) min_bucket_id = bucket_id;
+                    if (bucket_id > max_bucket_id) max_bucket_id = bucket_id;
+                }
+            }
+        }
+
+        if (total_events == 0) return null;
+
+        // Convert to sorted buckets
+        const bucket_count = max_bucket_id - min_bucket_id + 1;
+        var histogram_buckets = ArrayListManaged(HistogramBucket){};
+        errdefer histogram_buckets.deinit(self.allocator);
+
+        var i: u64 = 0;
+        while (i < bucket_count) : (i += 1) {
+            const bucket_id = min_bucket_id + i;
+            const count = buckets.get(bucket_id) orelse 0;
+            const period_start = start_time + @as(i64, @intCast(bucket_id * granularity_seconds));
+            const period_end = period_start + @as(i64, @intCast(granularity_seconds));
+
+            try histogram_buckets.append(self.allocator, .{
+                .bucket_id = bucket_id,
+                .count = count,
+                .period_start = period_start,
+                .period_end = period_end,
+            });
+        }
+
+        return TemporalHistogram{
+            .entity_namespace = try self.allocator.dupe(u8, entity_namespace),
+            .entity_local_id = try self.allocator.dupe(u8, entity_local_id),
+            .total_events = total_events,
+            .buckets = histogram_buckets,
+            .granularity_seconds = granularity_seconds,
+        };
+    }
+
+    /// Generate hour-of-day histogram (24 buckets)
+    pub fn generateHourOfDayHistogram(
+        self: *const TemporalIndex,
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+        start_time: i64,
+        end_time: i64,
+    ) !?TemporalHistogram {
+        return self.generateTemporalHistogram(entity_namespace, entity_local_id, start_time, end_time, 3600);
+    }
+
+    /// Generate day-of-week histogram (7 buckets)
+    pub fn generateDayOfWeekHistogram(
+        self: *const TemporalIndex,
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+        start_time: i64,
+        end_time: i64,
+    ) !?TemporalHistogram {
+        const entity_key = try std.fmt.allocPrint(self.allocator, "{s}:{s}", .{ entity_namespace, entity_local_id });
+        defer self.allocator.free(entity_key);
+
+        const chunks = self.entity_chunks.get(entity_key) orelse return null;
+
+        // Count events per day of week (0=Sunday, 6=Saturday)
+        var day_counts: [7]u64 = [_]u64{0} ** 7;
+        var total_events: u64 = 0;
+
+        for (chunks.items) |chunk| {
+            for (chunk.changes.items) |change| {
+                const change_time = change.timestamp.value();
+                if (change_time >= start_time and change_time <= end_time) {
+                    // Calculate day of week
+                    const epoch_day = @divTrunc(change_time, 86400);
+                    const day_of_week = @as(u64, @intCast(@rem(epoch_day + 4, 7))); // +4 to align epoch (Thursday) to Sunday=0
+
+                    day_counts[day_of_week] += 1;
+                    total_events += 1;
+                }
+            }
+        }
+
+        if (total_events == 0) return null;
+
+        // Create buckets for each day
+        var histogram_buckets = ArrayListManaged(HistogramBucket){};
+        errdefer histogram_buckets.deinit(self.allocator);
+
+        // Create buckets for each day
+        for (day_counts, 0..) |count, i| {
+            try histogram_buckets.append(self.allocator, .{
+                .bucket_id = @intCast(i),
+                .count = count,
+                .period_start = @as(i64, @intCast(i * 86400)),
+                .period_end = @as(i64, @intCast((i + 1) * 86400)),
+            });
+        }
+
+        return TemporalHistogram{
+            .entity_namespace = try self.allocator.dupe(u8, entity_namespace),
+            .entity_local_id = try self.allocator.dupe(u8, entity_local_id),
+            .total_events = total_events,
+            .buckets = histogram_buckets,
+            .granularity_seconds = 86400,
+        };
+    }
+
+    /// Generate activity heatmap (hour vs day of week)
+    pub fn generateActivityHeatmap(
+        self: *const TemporalIndex,
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+        start_time: i64,
+        end_time: i64,
+    ) !?ActivityHeatmap {
+        const entity_key = try std.fmt.allocPrint(self.allocator, "{s}:{s}", .{ entity_namespace, entity_local_id });
+        defer self.allocator.free(entity_key);
+
+        const chunks = self.entity_chunks.get(entity_key) orelse return null;
+
+        // 24 hours x 7 days = 168 cells
+        const ROWS: u64 = 24;
+        const COLS: u64 = 7;
+        var cells_array: [ROWS][COLS]u64 = undefined;
+        for (0..ROWS) |r| {
+            for (0..COLS) |c| {
+                cells_array[r][c] = 0;
+            }
+        }
+
+        var max_count: u64 = 0;
+        var total_events: u64 = 0;
+
+        for (chunks.items) |chunk| {
+            for (chunk.changes.items) |change| {
+                const change_time = change.timestamp.value();
+                if (change_time >= start_time and change_time <= end_time) {
+                    // Extract hour and day of week
+                    const seconds_in_day = @as(u64, @intCast(@rem(change_time, 86400)));
+                    if (seconds_in_day < 0) continue;
+                    const hour = @divTrunc(seconds_in_day, 3600);
+
+                    const epoch_day = @divTrunc(change_time, 86400);
+                    const day_of_week = @as(usize, @intCast(@rem(epoch_day + 4, 7)));
+
+                    if (hour < ROWS and day_of_week < COLS) {
+                        cells_array[hour][day_of_week] += 1;
+                        total_events += 1;
+                        if (cells_array[hour][day_of_week] > max_count) {
+                            max_count = cells_array[hour][day_of_week];
+                        }
+                    }
+                }
+            }
+        }
+
+        if (total_events == 0) return null;
+
+        // Convert to heatmap cells
+        var cells = ArrayListManaged(HeatmapCell){};
+        errdefer cells.deinit(self.allocator);
+
+        var row_labels = ArrayListManaged([]const u8){};
+        errdefer {
+            for (row_labels.items) |l| self.allocator.free(l);
+            row_labels.deinit(self.allocator);
+        }
+
+        var col_labels = ArrayListManaged([]const u8){};
+        errdefer {
+            for (col_labels.items) |l| self.allocator.free(l);
+            col_labels.deinit(self.allocator);
+        }
+
+        const hour_names = [_][]const u8{
+            "00:00", "01:00", "02:00", "03:00", "04:00", "05:00",
+            "06:00", "07:00", "08:00", "09:00", "10:00", "11:00",
+            "12:00", "13:00", "14:00", "15:00", "16:00", "17:00",
+            "18:00", "19:00", "20:00", "21:00", "22:00", "23:00",
+        };
+
+        const day_names = [_][]const u8{ "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
+
+        var row: u64 = 0;
+        while (row < ROWS) : (row += 1) {
+            try row_labels.append(self.allocator, try self.allocator.dupe(u8, hour_names[row]));
+
+            var col: u64 = 0;
+            while (col < COLS) : (col += 1) {
+                if (row == 0) {
+                    try col_labels.append(self.allocator, try self.allocator.dupe(u8, day_names[col]));
+                }
+
+                const count = cells_array[row][col];
+                const intensity = if (max_count > 0)
+                    @as(f64, @floatFromInt(count)) / @as(f64, @floatFromInt(max_count))
+                else
+                    0;
+
+                try cells.append(self.allocator, .{
+                    .row = row,
+                    .col = col,
+                    .count = count,
+                    .intensity = intensity,
+                });
+            }
+        }
+
+        return ActivityHeatmap{
+            .entity_namespace = try self.allocator.dupe(u8, entity_namespace),
+            .entity_local_id = try self.allocator.dupe(u8, entity_local_id),
+            .rows = ROWS,
+            .cols = COLS,
+            .cells = cells,
+            .row_labels = row_labels,
+            .col_labels = col_labels,
+            .max_count = max_count,
+        };
+    }
+
+    /// Downsample time series data for long-term trend analysis
+    pub fn downsampleSeries(
+        self: *const TemporalIndex,
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+        attribute_key: []const u8,
+        start_time: i64,
+        end_time: i64,
+        target_granularity_seconds: u64,
+        aggregation_method: DownsampledSeries.AggregationMethod,
+    ) !?DownsampledSeries {
+        const entity_key = try std.fmt.allocPrint(self.allocator, "{s}:{s}", .{ entity_namespace, entity_local_id });
+        defer self.allocator.free(entity_key);
+
+        const chunks = self.entity_chunks.get(entity_key) orelse return null;
+
+        // Collect all changes for this attribute
+        var time_values = ArrayListManaged(struct { i64, f64 }){};
+        defer time_values.deinit(self.allocator);
+
+        for (chunks.items) |chunk| {
+            for (chunk.changes.items) |change| {
+                const change_time = change.timestamp.value();
+                if (change_time >= start_time and change_time <= end_time) {
+                    if (std.mem.eql(u8, change.key, attribute_key)) {
+                        if (change.new_value) |v| {
+                            const parsed = std.fmt.parseFloat(f64, v) catch continue;
+                            try time_values.append(self.allocator, .{ change_time, parsed });
+                        }
+                    }
+                }
+            }
+        }
+
+        if (time_values.items.len == 0) return null;
+
+        // Group by time periods
+        var periods = std.AutoHashMap(u64, ArrayListManaged(f64)).init(self.allocator);
+        defer {
+            var it = periods.iterator();
+            while (it.next()) |entry| {
+                entry.value_ptr.deinit(self.allocator);
+            }
+            periods.deinit();
+        }
+
+        for (time_values.items) |tv| {
+            const period_id = @as(u64, @intCast(@divTrunc(tv[0] - start_time, @as(i64, @intCast(target_granularity_seconds)))));
+            const gop = try periods.getOrPut(period_id);
+            if (!gop.found_existing) {
+                gop.value_ptr.* = .{};
+            }
+            try gop.value_ptr.append(self.allocator, tv[1]);
+        }
+
+        // Create downsampled points
+        var points = ArrayListManaged(DownsampledPoint){};
+        errdefer points.deinit(self.allocator);
+
+        // Sort period IDs and create points
+        var period_ids = ArrayListManaged(u64){};
+        defer period_ids.deinit(self.allocator);
+
+        var period_it = periods.iterator();
+        while (period_it.next()) |entry| {
+            try period_ids.append(self.allocator, entry.key_ptr.*);
+        }
+
+        std.mem.sort(u64, period_ids.items, {}, comptime std.sort.asc(u64));
+
+        for (period_ids.items) |period_id| {
+            const values = periods.get(period_id).?;
+            const period_start = start_time + @as(i64, @intCast(period_id * target_granularity_seconds));
+            const period_end = period_start + @as(i64, @intCast(target_granularity_seconds));
+
+            // Calculate aggregates
+            var sum: f64 = 0;
+            var min_val: f64 = std.math.floatMax(f64);
+            var max_val: f64 = std.math.floatMin(f64);
+
+            for (values.items) |v| {
+                sum += v;
+                if (v < min_val) min_val = v;
+                if (v > max_val) max_val = v;
+            }
+
+            const aggregated_value = switch (aggregation_method) {
+                .mean => sum / @as(f64, @floatFromInt(values.items.len)),
+                .sum => sum,
+                .min => min_val,
+                .max => max_val,
+                .count => @as(f64, @floatFromInt(values.items.len)),
+            };
+
+            try points.append(self.allocator, .{
+                .period_start = period_start,
+                .period_end = period_end,
+                .point_count = @intCast(values.items.len),
+                .aggregated_value = aggregated_value,
+                .min_value = min_val,
+                .max_value = max_val,
+            });
+        }
+
+        return DownsampledSeries{
+            .entity_namespace = try self.allocator.dupe(u8, entity_namespace),
+            .entity_local_id = try self.allocator.dupe(u8, entity_local_id),
+            .attribute_key = try self.allocator.dupe(u8, attribute_key),
+            .original_granularity = 1, // Placeholder
+            .downsampled_granularity = target_granularity_seconds,
+            .points = points,
+            .aggregation_method = aggregation_method,
+        };
+    }
+
     /// Compute change frequency for entity (hot/cold detection)
     pub fn computeChangeFrequency(
         self: *const TemporalIndex,
@@ -1326,6 +2006,93 @@ pub const TemporalHistoryCartridge = struct {
         timestamp: i64,
     ) !ArrayListManaged(?StateChange) {
         return self.index.queryMultipleAsOf(entities, timestamp);
+    }
+
+    // ==================== Analytics API ====================
+
+    /// Detect anomalies using Z-score method
+    pub fn detectAnomaliesZScore(
+        self: *const TemporalHistoryCartridge,
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+        attribute_key: []const u8,
+        start_time: i64,
+        end_time: i64,
+        threshold: f64,
+    ) !?TemporalIndex.AnomalyResult {
+        return self.index.detectAnomaliesZScore(entity_namespace, entity_local_id, attribute_key, start_time, end_time, threshold);
+    }
+
+    /// Detect anomalies using IQR method
+    pub fn detectAnomaliesIQR(
+        self: *const TemporalHistoryCartridge,
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+        attribute_key: []const u8,
+        start_time: i64,
+        end_time: i64,
+        multiplier: f64,
+    ) !?TemporalIndex.AnomalyResult {
+        return self.index.detectAnomaliesIQR(entity_namespace, entity_local_id, attribute_key, start_time, end_time, multiplier);
+    }
+
+    /// Generate temporal histogram
+    pub fn generateTemporalHistogram(
+        self: *const TemporalHistoryCartridge,
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+        start_time: i64,
+        end_time: i64,
+        granularity_seconds: u64,
+    ) !?TemporalIndex.TemporalHistogram {
+        return self.index.generateTemporalHistogram(entity_namespace, entity_local_id, start_time, end_time, granularity_seconds);
+    }
+
+    /// Generate hour-of-day histogram
+    pub fn generateHourOfDayHistogram(
+        self: *const TemporalHistoryCartridge,
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+        start_time: i64,
+        end_time: i64,
+    ) !?TemporalIndex.TemporalHistogram {
+        return self.index.generateHourOfDayHistogram(entity_namespace, entity_local_id, start_time, end_time);
+    }
+
+    /// Generate day-of-week histogram
+    pub fn generateDayOfWeekHistogram(
+        self: *const TemporalHistoryCartridge,
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+        start_time: i64,
+        end_time: i64,
+    ) !?TemporalIndex.TemporalHistogram {
+        return self.index.generateDayOfWeekHistogram(entity_namespace, entity_local_id, start_time, end_time);
+    }
+
+    /// Generate activity heatmap
+    pub fn generateActivityHeatmap(
+        self: *const TemporalHistoryCartridge,
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+        start_time: i64,
+        end_time: i64,
+    ) !?TemporalIndex.ActivityHeatmap {
+        return self.index.generateActivityHeatmap(entity_namespace, entity_local_id, start_time, end_time);
+    }
+
+    /// Downsample time series data
+    pub fn downsampleSeries(
+        self: *const TemporalHistoryCartridge,
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+        attribute_key: []const u8,
+        start_time: i64,
+        end_time: i64,
+        target_granularity_seconds: u64,
+        aggregation_method: TemporalIndex.DownsampledSeries.AggregationMethod,
+    ) !?TemporalIndex.DownsampledSeries {
+        return self.index.downsampleSeries(entity_namespace, entity_local_id, attribute_key, start_time, end_time, target_granularity_seconds, aggregation_method);
     }
 };
 
@@ -2233,4 +3000,408 @@ test "TemporalIndex.ChangeFrequency struct" {
     try std.testing.expectEqual(@as(u64, 10), freq.change_count);
     try std.testing.expectEqual(@as(i64, 1000), freq.first_change_ts);
     try std.testing.expectEqual(@as(i64, 2000), freq.last_change_ts);
+}
+
+// ==================== Analytics Tests ====================
+
+test "TemporalIndex.detectAnomaliesZScore" {
+    var index = TemporalIndex.init(std.testing.allocator);
+    defer index.deinit();
+
+    const ts = std.time.timestamp();
+
+    // Add changes with one anomaly (values around 10-12, with 100.0 as anomaly)
+    const changes = [_]StateChange{
+        .{ .id = "c1", .txn_id = 100, .timestamp = .{ .base = @intCast(ts), .delta = -500 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "metric", .old_value = null, .new_value = "10.0", .metadata = "{}" },
+        .{ .id = "c2", .txn_id = 101, .timestamp = .{ .base = @intCast(ts), .delta = -400 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "metric", .old_value = "10.0", .new_value = "11.0", .metadata = "{}" },
+        .{ .id = "c3", .txn_id = 102, .timestamp = .{ .base = @intCast(ts), .delta = -300 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "metric", .old_value = "11.0", .new_value = "10.5", .metadata = "{}" },
+        .{ .id = "c4", .txn_id = 103, .timestamp = .{ .base = @intCast(ts), .delta = -200 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "metric", .old_value = "10.5", .new_value = "11.5", .metadata = "{}" },
+        .{ .id = "c5", .txn_id = 104, .timestamp = .{ .base = @intCast(ts), .delta = -100 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "metric", .old_value = "11.5", .new_value = "10.2", .metadata = "{}" },
+        .{ .id = "c6", .txn_id = 105, .timestamp = .{ .base = @intCast(ts), .delta = -50 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "metric", .old_value = "10.2", .new_value = "100.0", .metadata = "{}" },
+        .{ .id = "c7", .txn_id = 106, .timestamp = .{ .base = @intCast(ts), .delta = 0 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "metric", .old_value = "100.0", .new_value = "10.8", .metadata = "{}" },
+    };
+
+    for (changes) |c| try index.addChange(c);
+
+    var result = try index.detectAnomaliesZScore("test", "entity1", "metric", ts - 600, ts, 2.0);
+
+    try std.testing.expect(result != null);
+    try std.testing.expect(result.?.anomaly_count > 0);
+    try std.testing.expect(result.?.baseline_mean > 0);
+    try std.testing.expect(result.?.baseline_stddev > 0);
+
+    // Verify cleanup
+    if (result) |*r| r.deinit(std.testing.allocator);
+}
+
+test "TemporalIndex.detectAnomaliesIQR" {
+    var index = TemporalIndex.init(std.testing.allocator);
+    defer index.deinit();
+
+    const ts = std.time.timestamp();
+
+    // Add changes with outliers
+    const changes = [_]StateChange{
+        .{ .id = "c1", .txn_id = 100, .timestamp = .{ .base = @intCast(ts), .delta = -400 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "value", .old_value = null, .new_value = "10.0", .metadata = "{}" },
+        .{ .id = "c2", .txn_id = 101, .timestamp = .{ .base = @intCast(ts), .delta = -300 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "value", .old_value = "10.0", .new_value = "12.0", .metadata = "{}" },
+        .{ .id = "c3", .txn_id = 102, .timestamp = .{ .base = @intCast(ts), .delta = -200 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "value", .old_value = "12.0", .new_value = "11.0", .metadata = "{}" },
+        .{ .id = "c4", .txn_id = 103, .timestamp = .{ .base = @intCast(ts), .delta = -100 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "value", .old_value = "11.0", .new_value = "13.0", .metadata = "{}" },
+        .{ .id = "c5", .txn_id = 104, .timestamp = .{ .base = @intCast(ts), .delta = 0 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "value", .old_value = "13.0", .new_value = "10.5", .metadata = "{}" },
+    };
+
+    for (changes) |c| try index.addChange(c);
+
+    var result = try index.detectAnomaliesIQR("test", "entity1", "value", ts - 500, ts, 1.5);
+
+    try std.testing.expect(result != null);
+    try std.testing.expect(result.?.baseline_mean > 0);
+
+    // Verify cleanup
+    if (result) |*r| r.deinit(std.testing.allocator);
+}
+
+test "TemporalIndex.generateTemporalHistogram" {
+    var index = TemporalIndex.init(std.testing.allocator);
+    defer index.deinit();
+
+    const ts = std.time.timestamp();
+
+    // Add changes spread across time
+    var i: u64 = 0;
+    while (i < 10) : (i += 1) {
+        const change = StateChange{
+            .id = try std.fmt.allocPrint(std.testing.allocator, "c{d}", .{i}),
+            .txn_id = 100 + i,
+            .timestamp = .{ .base = @intCast(ts), .delta = -@as(i64, @intCast(i * 100)) },
+            .entity_namespace = "test",
+            .entity_local_id = "entity1",
+            .change_type = .attribute_update,
+            .key = "status",
+            .old_value = null,
+            .new_value = "active",
+            .metadata = "{}",
+        };
+        defer std.testing.allocator.free(change.id);
+        try index.addChange(change);
+    }
+
+    var result = try index.generateTemporalHistogram("test", "entity1", ts - 1000, ts, 100);
+
+    try std.testing.expect(result != null);
+    try std.testing.expect(result.?.total_events == 10);
+    try std.testing.expect(result.?.buckets.items.len > 0);
+    try std.testing.expectEqual(@as(u64, 100), result.?.granularity_seconds);
+
+    // Verify cleanup
+    if (result) |*r| r.deinit(std.testing.allocator);
+}
+
+test "TemporalIndex.generateHourOfDayHistogram" {
+    var index = TemporalIndex.init(std.testing.allocator);
+    defer index.deinit();
+
+    const ts = std.time.timestamp();
+
+    // Add changes at different hours
+    const changes = [_]StateChange{
+        .{ .id = "c1", .txn_id = 100, .timestamp = .{ .base = @intCast(ts), .delta = -86400 - 3600 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "event", .old_value = null, .new_value = "a", .metadata = "{}" },
+        .{ .id = "c2", .txn_id = 101, .timestamp = .{ .base = @intCast(ts), .delta = -86400 + 3600 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "event", .old_value = null, .new_value = "b", .metadata = "{}" },
+        .{ .id = "c3", .txn_id = 102, .timestamp = .{ .base = @intCast(ts), .delta = -7200 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "event", .old_value = null, .new_value = "c", .metadata = "{}" },
+    };
+
+    for (changes) |c| try index.addChange(c);
+
+    var result = try index.generateHourOfDayHistogram("test", "entity1", ts - 100000, ts);
+
+    try std.testing.expect(result != null);
+    try std.testing.expect(result.?.total_events == 3);
+    try std.testing.expectEqual(@as(u64, 3600), result.?.granularity_seconds);
+
+    if (result) |*r| r.deinit(std.testing.allocator);
+}
+
+test "TemporalIndex.generateDayOfWeekHistogram" {
+    var index = TemporalIndex.init(std.testing.allocator);
+    defer index.deinit();
+
+    const ts = std.time.timestamp();
+
+    // Add changes across different days
+    const changes = [_]StateChange{
+        .{ .id = "c1", .txn_id = 100, .timestamp = .{ .base = @intCast(ts), .delta = -86400 * 3 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "event", .old_value = null, .new_value = "a", .metadata = "{}" },
+        .{ .id = "c2", .txn_id = 101, .timestamp = .{ .base = @intCast(ts), .delta = -86400 * 2 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "event", .old_value = null, .new_value = "b", .metadata = "{}" },
+        .{ .id = "c3", .txn_id = 102, .timestamp = .{ .base = @intCast(ts), .delta = -86400 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "event", .old_value = null, .new_value = "c", .metadata = "{}" },
+    };
+
+    for (changes) |c| try index.addChange(c);
+
+    var result = try index.generateDayOfWeekHistogram("test", "entity1", ts - 500000, ts);
+
+    try std.testing.expect(result != null);
+    try std.testing.expect(result.?.total_events == 3);
+    try std.testing.expectEqual(@as(u64, 7), result.?.buckets.items.len);
+
+    if (result) |*r| r.deinit(std.testing.allocator);
+}
+
+test "TemporalIndex.generateActivityHeatmap" {
+    var index = TemporalIndex.init(std.testing.allocator);
+    defer index.deinit();
+
+    const ts = std.time.timestamp();
+
+    // Add changes at different times
+    const changes = [_]StateChange{
+        .{ .id = "c1", .txn_id = 100, .timestamp = .{ .base = @intCast(ts), .delta = -86400 * 2 - 3600 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "event", .old_value = null, .new_value = "a", .metadata = "{}" },
+        .{ .id = "c2", .txn_id = 101, .timestamp = .{ .base = @intCast(ts), .delta = -86400 - 7200 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "event", .old_value = null, .new_value = "b", .metadata = "{}" },
+        .{ .id = "c3", .txn_id = 102, .timestamp = .{ .base = @intCast(ts), .delta = -3600 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "event", .old_value = null, .new_value = "c", .metadata = "{}" },
+    };
+
+    for (changes) |c| try index.addChange(c);
+
+    var result = try index.generateActivityHeatmap("test", "entity1", ts - 200000, ts);
+
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(u64, 24), result.?.rows);
+    try std.testing.expectEqual(@as(u64, 7), result.?.cols);
+    try std.testing.expectEqual(@as(usize, 24 * 7), result.?.cells.items.len);
+    try std.testing.expectEqual(@as(usize, 24), result.?.row_labels.items.len);
+    try std.testing.expectEqual(@as(usize, 7), result.?.col_labels.items.len);
+
+    if (result) |*r| r.deinit(std.testing.allocator);
+}
+
+test "TemporalIndex.downsampleSeries" {
+    var index = TemporalIndex.init(std.testing.allocator);
+    defer index.deinit();
+
+    const ts = std.time.timestamp();
+
+    // Add numeric changes
+    var i: u64 = 0;
+    while (i < 20) : (i += 1) {
+        const value_str = try std.fmt.allocPrint(std.testing.allocator, "{d:.1}", .{@as(f64, @floatFromInt(i)) * 1.5});
+        defer std.testing.allocator.free(value_str);
+
+        const change = StateChange{
+            .id = try std.fmt.allocPrint(std.testing.allocator, "c{d}", .{i}),
+            .txn_id = 100 + i,
+            .timestamp = .{ .base = @intCast(ts), .delta = -@as(i64, @intCast(i * 50)) },
+            .entity_namespace = "test",
+            .entity_local_id = "entity1",
+            .change_type = .attribute_update,
+            .key = "metric",
+            .old_value = null,
+            .new_value = value_str,
+            .metadata = "{}",
+        };
+        defer std.testing.allocator.free(change.id);
+        try index.addChange(change);
+    }
+
+    var result = try index.downsampleSeries("test", "entity1", "metric", ts - 2000, ts, 100, .mean);
+
+    try std.testing.expect(result != null);
+    try std.testing.expect(result.?.points.items.len > 0);
+    try std.testing.expectEqual(@as(u64, 100), result.?.downsampled_granularity);
+    try std.testing.expectEqual(TemporalIndex.DownsampledSeries.AggregationMethod.mean, result.?.aggregation_method);
+
+    if (result) |*r| r.deinit(std.testing.allocator);
+}
+
+test "TemporalIndex.downsampleSeriesAggregationMethods" {
+    var index = TemporalIndex.init(std.testing.allocator);
+    defer index.deinit();
+
+    const ts = std.time.timestamp();
+
+    // Add numeric changes
+    const changes = [_]StateChange{
+        .{ .id = "c1", .txn_id = 100, .timestamp = .{ .base = @intCast(ts), .delta = -300 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "value", .old_value = null, .new_value = "10.0", .metadata = "{}" },
+        .{ .id = "c2", .txn_id = 101, .timestamp = .{ .base = @intCast(ts), .delta = -200 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "value", .old_value = "10.0", .new_value = "20.0", .metadata = "{}" },
+        .{ .id = "c3", .txn_id = 102, .timestamp = .{ .base = @intCast(ts), .delta = -100 }, .entity_namespace = "test", .entity_local_id = "entity1", .change_type = .attribute_update, .key = "value", .old_value = "20.0", .new_value = "15.0", .metadata = "{}" },
+    };
+
+    for (changes) |c| try index.addChange(c);
+
+    // Test mean aggregation
+    {
+        var result = try index.downsampleSeries("test", "entity1", "value", ts - 500, ts, 200, .mean);
+        try std.testing.expect(result != null);
+        try std.testing.expect(result.?.points.items.len > 0);
+        if (result) |*r| r.deinit(std.testing.allocator);
+    }
+
+    // Test sum aggregation
+    {
+        var result = try index.downsampleSeries("test", "entity1", "value", ts - 500, ts, 200, .sum);
+        try std.testing.expect(result != null);
+        try std.testing.expect(result.?.points.items.len > 0);
+        if (result) |*r| r.deinit(std.testing.allocator);
+    }
+
+    // Test min aggregation
+    {
+        var result = try index.downsampleSeries("test", "entity1", "value", ts - 500, ts, 200, .min);
+        try std.testing.expect(result != null);
+        try std.testing.expect(result.?.points.items.len > 0);
+        if (result) |*r| r.deinit(std.testing.allocator);
+    }
+
+    // Test max aggregation
+    {
+        var result = try index.downsampleSeries("test", "entity1", "value", ts - 500, ts, 200, .max);
+        try std.testing.expect(result != null);
+        try std.testing.expect(result.?.points.items.len > 0);
+        if (result) |*r| r.deinit(std.testing.allocator);
+    }
+}
+
+test "TemporalHistoryCartridge.analyticsIntegration" {
+    var cartridge = try TemporalHistoryCartridge.init(std.testing.allocator, 100);
+    defer cartridge.deinit();
+
+    const ts = std.time.timestamp();
+
+    // Add numeric changes for testing
+    const changes = [_]StateChange{
+        .{ .id = "c1", .txn_id = 100, .timestamp = .{ .base = @intCast(ts), .delta = -400 }, .entity_namespace = "metrics", .entity_local_id = "cpu", .change_type = .attribute_update, .key = "usage", .old_value = null, .new_value = "10.5", .metadata = "{}" },
+        .{ .id = "c2", .txn_id = 101, .timestamp = .{ .base = @intCast(ts), .delta = -300 }, .entity_namespace = "metrics", .entity_local_id = "cpu", .change_type = .attribute_update, .key = "usage", .old_value = "10.5", .new_value = "11.2", .metadata = "{}" },
+        .{ .id = "c3", .txn_id = 102, .timestamp = .{ .base = @intCast(ts), .delta = -200 }, .entity_namespace = "metrics", .entity_local_id = "cpu", .change_type = .attribute_update, .key = "usage", .old_value = "11.2", .new_value = "10.8", .metadata = "{}" },
+        .{ .id = "c4", .txn_id = 103, .timestamp = .{ .base = @intCast(ts), .delta = -100 }, .entity_namespace = "metrics", .entity_local_id = "cpu", .change_type = .attribute_update, .key = "usage", .old_value = "10.8", .new_value = "11.0", .metadata = "{}" },
+    };
+
+    for (changes) |c| try cartridge.addChange(c);
+
+    // Test anomaly detection through cartridge
+    {
+        var anomalies = try cartridge.detectAnomaliesZScore("metrics", "cpu", "usage", ts - 500, ts, 2.0);
+        if (anomalies) |*a| {
+            try std.testing.expect(a.baseline_mean > 0);
+            a.deinit(std.testing.allocator);
+        }
+    }
+
+    // Test histogram through cartridge
+    {
+        var hist = try cartridge.generateTemporalHistogram("metrics", "cpu", ts - 500, ts, 100);
+        if (hist) |*h| {
+            try std.testing.expect(h.total_events > 0);
+            h.deinit(std.testing.allocator);
+        }
+    }
+
+    // Test heatmap through cartridge
+    {
+        var heatmap = try cartridge.generateActivityHeatmap("metrics", "cpu", ts - 500000, ts);
+        if (heatmap) |*hm| {
+            try std.testing.expectEqual(@as(u64, 24), hm.rows);
+            hm.deinit(std.testing.allocator);
+        }
+    }
+
+    // Test downsampling through cartridge
+    {
+        var downsampled = try cartridge.downsampleSeries("metrics", "cpu", "usage", ts - 500, ts, 100, .mean);
+        if (downsampled) |*ds| {
+            try std.testing.expect(ds.points.items.len > 0);
+            ds.deinit(std.testing.allocator);
+        }
+    }
+}
+
+test "TemporalIndex.AnomalyResult.deinit" {
+    // Test that AnomalyResult.deinit properly cleans up
+    var result = TemporalIndex.AnomalyResult{
+        .entity_namespace = try std.testing.allocator.dupe(u8, "test"),
+        .entity_local_id = try std.testing.allocator.dupe(u8, "entity1"),
+        .anomaly_count = 2,
+        .baseline_mean = 10.5,
+        .baseline_stddev = 2.3,
+        .threshold = 2.0,
+        .anomaly_timestamps = .{},
+        .anomaly_values = .{},
+    };
+
+    try result.anomaly_timestamps.append(std.testing.allocator, 1000);
+    try result.anomaly_timestamps.append(std.testing.allocator, 2000);
+    try result.anomaly_values.append(std.testing.allocator, 15.0);
+    try result.anomaly_values.append(std.testing.allocator, 18.0);
+
+    result.deinit(std.testing.allocator);
+
+    // If no crash/panic, test passes
+}
+
+test "TemporalIndex.TemporalHistogram.deinit" {
+    var buckets = ArrayListManaged(TemporalIndex.HistogramBucket){};
+    try buckets.append(std.testing.allocator, .{
+        .bucket_id = 0,
+        .count = 10,
+        .period_start = 0,
+        .period_end = 100,
+    });
+
+    var hist = TemporalIndex.TemporalHistogram{
+        .entity_namespace = try std.testing.allocator.dupe(u8, "test"),
+        .entity_local_id = try std.testing.allocator.dupe(u8, "entity1"),
+        .total_events = 10,
+        .buckets = buckets,
+        .granularity_seconds = 100,
+    };
+
+    hist.deinit(std.testing.allocator);
+}
+
+test "TemporalIndex.ActivityHeatmap.deinit" {
+    var cells = ArrayListManaged(TemporalIndex.HeatmapCell){};
+    try cells.append(std.testing.allocator, .{
+        .row = 0,
+        .col = 0,
+        .count = 5,
+        .intensity = 0.5,
+    });
+
+    var row_labels = ArrayListManaged([]const u8){};
+    try row_labels.append(std.testing.allocator, try std.testing.allocator.dupe(u8, "00:00"));
+
+    var col_labels = ArrayListManaged([]const u8){};
+    try col_labels.append(std.testing.allocator, try std.testing.allocator.dupe(u8, "Mon"));
+
+    var heatmap = TemporalIndex.ActivityHeatmap{
+        .entity_namespace = try std.testing.allocator.dupe(u8, "test"),
+        .entity_local_id = try std.testing.allocator.dupe(u8, "entity1"),
+        .rows = 1,
+        .cols = 1,
+        .cells = cells,
+        .row_labels = row_labels,
+        .col_labels = col_labels,
+        .max_count = 10,
+    };
+
+    heatmap.deinit(std.testing.allocator);
+}
+
+test "TemporalIndex.DownsampledSeries.deinit" {
+    var points = ArrayListManaged(TemporalIndex.DownsampledPoint){};
+    try points.append(std.testing.allocator, .{
+        .period_start = 0,
+        .period_end = 100,
+        .point_count = 5,
+        .aggregated_value = 12.5,
+        .min_value = 10.0,
+        .max_value = 15.0,
+    });
+
+    var series = TemporalIndex.DownsampledSeries{
+        .entity_namespace = try std.testing.allocator.dupe(u8, "test"),
+        .entity_local_id = try std.testing.allocator.dupe(u8, "entity1"),
+        .attribute_key = try std.testing.allocator.dupe(u8, "metric"),
+        .original_granularity = 1,
+        .downsampled_granularity = 100,
+        .points = points,
+        .aggregation_method = .mean,
+    };
+
+    series.deinit(std.testing.allocator);
 }
