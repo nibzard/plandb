@@ -1645,7 +1645,7 @@ Transform NorthstarDB's scattered markdown files into a modern, developer-friend
   - Data flow
   - Technology choices
   - *Completed: Full system architecture with diagrams, component interactions, data flow docs, and technology rationale*
-- [ ] 🔴 Establish ADR system and document 6 key decisions
+- [x] 🔴 Establish ADR system and document 6 key decisions
   - Create ADR template
   - ADR-001: MVCC snapshot isolation design
   - ADR-002: Copy-on-write B+tree strategy
@@ -1654,6 +1654,8 @@ Transform NorthstarDB's scattered markdown files into a modern, developer-friend
   - ADR-005: AI plugin architecture
   - ADR-006: Single-writer concurrency model
   - Establish ADR process for future decisions
+  - *Completed: Full ADR system with template and 6 architectural decision records*
+  - *Completed 2025-12-28: Created docs/adr/ with ADR template and 6 architectural decision records*
 - [ ] 🟠 Document file format internals
   - Page structure
   - Meta pages

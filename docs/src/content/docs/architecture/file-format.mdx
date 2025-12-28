@@ -1,0 +1,446 @@
+---
+title: File Format Internals
+description: Detailed technical specification of NorthstarDB's on-disk storage format, including page structure, meta pages, B+tree nodes, checksums, and corruption handling.
+---
+
+# File Format Internals
+
+This document provides a detailed technical specification of NorthstarDB's on-disk storage format. Understanding the file format is essential for:
+
+- Building database tools (dump, repair, migrate)
+- Implementing compatibility layers
+- Debugging corruption issues
+- Contributing to storage engine development
+
+## Overview
+
+NorthstarDB V0 uses a **single-file page-based storage format**:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  NorthstarDB Database File (.ndb)                        │
+├─────────────────────────────────────────────────────────┤
+│  Page 0 (16KB)      │ Meta A                            │
+│  Page 1 (16KB)      │ Meta B                            │
+│  Page 2 (16KB)      │ B+tree Root / Data                │
+│  Page 3 (16KB)      │ B+tree Internal / Leaf Nodes       │
+│  Page 4 (16KB)      │ Freelist / Log Segment            │
+│  ...               │                                    │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Key Constants
+
+```zig
+// Page size
+DEFAULT_PAGE_SIZE: u16 = 16384  // 16KB
+
+// Format version
+FORMAT_VERSION: u16 = 0
+
+// Magic numbers
+PAGE_MAGIC: u32 = 0x4E534442    // "NSDB"
+META_MAGIC: u32 = 0x4D455441    // "META"
+BTREE_MAGIC: u32 = 0x42545245   // "BTRE"
+```
+
+## Page Structure
+
+Every page in NorthstarDB begins with a **common page header**:
+
+### PageHeader (48 bytes)
+
+```zig
+pub const PageHeader = struct {
+    magic: u32 = 0x4E534442,        // "NSDB" - File identification
+    format_version: u16 = 0,         // Format version (for compatibility)
+    page_type: u8,                   // Page type enum
+    flags: u8 = 0,                   // Reserved flags
+    page_id: u64,                    // Unique page identifier
+    txn_id: u64,                     // Transaction that wrote this page
+    payload_len: u32,                // Bytes used after header
+    header_crc32c: u32,              // Header checksum
+    page_crc32c: u32,                // Full page checksum
+};
+```
+
+### Page Type Enum
+
+```zig
+pub const PageType = enum(u8) {
+    meta = 0,           // Meta page (A or B)
+    btree_internal = 1, // B+tree internal node
+    btree_leaf = 2,     // B+tree leaf node
+    freelist = 3,       // Freelist page
+    log_segment = 4,    // WAL/commit log segment
+};
+```
+
+### Checksum Calculation
+
+NorthstarDB uses **CRC32C** (Castagnoli polynomial) for checksums:
+
+```zig
+// Header checksum (excludes checksum fields)
+fn calculateHeaderChecksum(header: PageHeader) u32 {
+    // Zero out checksum fields
+    const temp = header.withChecksumsZeroed();
+    const bytes = std.mem.asBytes(&temp);
+    // CRC32C of bytes up to header_crc32c offset
+    return crc32c(bytes[0..offsetOf(PageHeader, "header_crc32c")]);
+}
+
+// Page checksum (entire page with page_crc32c zeroed)
+fn calculatePageChecksum(page: []const u8) u32 {
+    const page_crc_offset = offsetOf(PageHeader, "page_crc32c");
+    // Calculate CRC32C of entire page with checksum field zeroed
+    var crc: u32 = crc32c(page[0..page_crc_offset]);
+    crc = crc32c(page[page_crc_offset + 4..]);  // Skip checksum field
+    return crc;
+}
+```
+
+## Meta Pages
+
+Meta pages store the **durable commit point** and database state. NorthstarDB uses two meta pages (A and B) for atomic commits via **toggle switching**.
+
+### Location and Selection
+
+- **Meta A**: Page 0
+- **Meta B**: Page 1
+
+**Selection rule**: Choose the valid meta with the highest `committed_txn_id`
+
+### Meta Page Layout
+
+```
+┌────────────────────────────────────────┐
+│  PageHeader (page_type = meta)        │
+├────────────────────────────────────────┤
+│  MetaPayload (44 bytes)                │
+├────────────────────────────────────────┤
+│  Padding (to 16KB page boundary)       │
+└────────────────────────────────────────┘
+```
+
+### MetaPayload Structure (44 bytes)
+
+```zig
+pub const MetaPayload = struct {
+    meta_magic: u32 = 0x4D455441,   // "META"
+    format_version: u16 = 0,         // Format version
+    page_size: u16 = 16384,          // Page size
+    committed_txn_id: u64,           // Latest committed transaction
+    root_page_id: u64,               // B+tree root page (0 = empty)
+    freelist_head_page_id: u64,      // Head of freelist (0 = none)
+    log_tail_lsn: u64,               // WAL tail position
+    meta_crc32c: u32,                // Meta payload checksum
+};
+```
+
+### Meta Validation Rules
+
+1. **Magic check**: `meta_magic == 0x4D455441`
+2. **Checksum validation**: `meta_crc32c == calculateChecksum()`
+3. **Page ID consistency**: Meta A is page 0, Meta B is page 1
+4. **TxnId monotonic**: `committed_txn_id` increases by 1
+
+### Commit Protocol (Toggle Switch)
+
+```
+1. Write all new B+tree pages
+2. Write commit record to WAL
+3. Update opposite meta page (A→B or B→A)
+4. Fsync database file
+5. Commit complete: new meta is now authoritative
+```
+
+**Crash safety**: If crash occurs before step 4 completes, the old meta page remains valid. If crash occurs during step 4, exactly one meta page is valid (choose highest TxnId).
+
+### Open Protocol
+
+```
+1. Read Meta A (page 0)
+2. Read Meta B (page 1)
+3. Validate both checksums
+4. If neither valid → Corrupt error
+5. If both valid → Choose higher committed_txn_id
+6. If one valid → Use valid meta
+7. Load B+tree root from selected meta
+```
+
+## B+tree Node Format
+
+NorthstarDB stores the ordered key-value index in a B+tree structure. All B+tree nodes share a common header.
+
+### B+tree Node Header (44 bytes)
+
+```zig
+pub const BtreeNodeHeader = struct {
+    node_magic: u32 = 0x42545245,    // "BTRE"
+    level: u16,                       // 0 = leaf, >0 = internal
+    key_count: u16,                   // Number of keys
+    right_sibling: u64,               // Right sibling page (0 = none)
+    reserved: [32]u8,                 // Reserved for future use
+};
+```
+
+### Leaf Node Format
+
+Leaf nodes store **sorted key-value pairs** with optional slotted encoding:
+
+```
+┌────────────────────────────────────────┐
+│  PageHeader (page_type = btree_leaf)  │
+├────────────────────────────────────────┤
+│  BtreeNodeHeader (level = 0)           │
+├────────────────────────────────────────┤
+│  Entry 0: [key_len][val_len][key][val] │
+│  Entry 1: [key_len][val_len][key][val] │
+│  ...                                  │
+├────────────────────────────────────────┤
+│  Free space                            │
+└────────────────────────────────────────┘
+```
+
+#### Entry Encoding
+
+```zig
+// Slotted page entry format
+const Entry = struct {
+    key_len: u16,      // Key length in bytes
+    val_len: u32,      // Value length in bytes (0 = tombstone)
+    // Followed by key_len bytes of key
+    // Followed by val_len bytes of value
+};
+```
+
+**Invariants**:
+- Keys are **strictly increasing** within leaf
+- Keys are **lexicographically ordered**
+- `val_len == 0` indicates a deleted key (tombstone)
+
+### Internal Node Format
+
+Internal nodes store **separator keys and child pointers**:
+
+```
+┌────────────────────────────────────────────────┐
+│  PageHeader (page_type = btree_internal)      │
+├────────────────────────────────────────────────┤
+│  BtreeNodeHeader (level > 0)                   │
+├────────────────────────────────────────────────┤
+│  Child 0 PageId (8 bytes)                      │
+│  Separator 0: [key_len][key]                   │
+│  Child 1 PageId (8 bytes)                      │
+│  Separator 1: [key_len][key]                   │
+│  ...                                           │
+│  Child N PageId (8 bytes)                      │
+├────────────────────────────────────────────────┤
+│  Free space                                    │
+└────────────────────────────────────────────────┘
+```
+
+#### Internal Node Encoding
+
+```zig
+// Internal node has (key_count + 1) children
+const InternalNode = struct {
+    child_count: u16,  // = key_count + 1
+    children: []u64,   // PageIds
+    separators: []Key, // Separator keys
+};
+```
+
+**Invariants**:
+- All keys in `children[i]` < `separators[i]`
+- All keys in `children[i+1]` >= `separators[i]`
+- All children are at `level - 1`
+
+### Right Sibling Pointer
+
+The `right_sibling` field enables **efficient range scans**:
+
+```
+Leaf nodes linked: [Leaf A] → [Leaf B] → [Leaf C]
+
+Range scan:
+1. Find starting leaf via B+tree traversal
+2. Scan entries in leaf
+3. Follow right_sibling to next leaf
+4. Continue until key range exhausted
+```
+
+## Checksums and Corruption Handling
+
+NorthstarDB provides **explicit corruption detection** at multiple levels:
+
+### Level 1: Page Header Validation
+
+```zig
+pub fn validatePageHeader(page: []const u8) !void {
+    const header = std.mem.bytesAsValue(PageHeader, page[0..48]);
+
+    // Check magic number
+    if (header.magic != PAGE_MAGIC)
+        return error.InvalidMagic;
+
+    // Check format version
+    if (header.format_version != FORMAT_VERSION)
+        return error.UnsupportedFormat;
+
+    // Validate header checksum
+    if (!header.validateHeaderChecksum())
+        return error.HeaderChecksumMismatch;
+
+    // Validate payload length
+    if (header.payload_len > DEFAULT_PAGE_SIZE - PageHeader.SIZE)
+        return error.InvalidPayloadLength;
+}
+```
+
+### Level 2: Page Checksum Validation
+
+```zig
+pub fn validatePageChecksum(page: []const u8) !void {
+    const header = std.mem.bytesAsValue(PageHeader, page[0..48]);
+    const calculated = calculatePageChecksum(page);
+
+    if (header.page_crc32c != calculated)
+        return error.PageChecksumMismatch;
+}
+```
+
+### Level 3: Meta Payload Validation
+
+```zig
+pub fn validateMetaPayload(meta: MetaPayload) !void {
+    // Check magic
+    if (meta.meta_magic != META_MAGIC)
+        return error.InvalidMetaMagic;
+
+    // Check version
+    if (meta.format_version != FORMAT_VERSION)
+        return error.UnsupportedFormat;
+
+    // Validate checksum
+    if (!meta.validateChecksum())
+        return error.MetaChecksumMismatch;
+
+    // Validate root page exists if tree non-empty
+    if (meta.committed_txn_id > 0 and meta.root_page_id == 0)
+        return error.InconsistentState;
+}
+```
+
+### Level 4: B+tree Node Validation
+
+```zig
+pub fn validateBtreeNode(page: []const u8) !void {
+    const header = std.mem.bytesAsValue(PageHeader, page[0..48]);
+
+    // Check page type
+    if (header.page_type != .btree_internal and
+        header.page_type != .btree_leaf)
+        return error.InvalidPageType;
+
+    // Validate B+tree magic
+    const node_header = std.mem.bytesAsValue(
+        BtreeNodeHeader,
+        page[48..48 + 44]
+    );
+
+    if (node_header.node_magic != BTREE_MAGIC)
+        return error.InvalidBtreeMagic;
+
+    // Additional validation:
+    // - Keys sorted in leaf nodes
+    // - Child ranges non-overlapping in internal nodes
+    // - Node checksums valid
+}
+```
+
+### Corruption Recovery Policy
+
+1. **Meta page corruption**: Use the other meta page
+2. **Both meta pages corrupt**: Return `error.Corrupt` (cannot recover)
+3. **B+tree page corruption**: Return `error.Corrupt` for that read
+4. **Checksum mismatch on write**: Retry write with new page allocation
+5. **Freelist corruption**: Rebuild freelist from committed B+tree graph
+
+### Error Reporting
+
+All corruption errors include **diagnostic context**:
+
+```zig
+pub const DbError = error{
+    Corrupt,
+    InvalidMagic,
+    ChecksumMismatch,
+    InconsistentState,
+
+    // With context:
+    fn withContext(err: DbError, page_id: u64, operation: []const u8) DbErrorWithContext {
+        return DbErrorWithContext{
+            .err = err,
+            .page_id = page_id,
+            .operation = operation,
+        };
+    }
+};
+```
+
+## Tools and Utilities
+
+NorthstarDB provides tools for file format inspection:
+
+### dbdump
+
+```bash
+# Dump entire database structure
+zig build tools -- dbdump database.ndb
+
+# Output:
+# Meta A: txn_id=100, root=42
+# Meta B: txn_id=99, root=38
+# Selected: Meta A
+#
+# B+tree Root (page 42):
+#   Level: 2
+#   Keys: 3
+#   Children: [10, 15, 20, 25]
+```
+
+### dbrepair
+
+```bash
+# Attempt to repair corrupted database
+zig build tools -- dbrepair database.ndb --rebuild-freelist
+```
+
+## Performance Characteristics
+
+### Page IO
+
+- **Page size**: 16KB (optimized for NVMe SSD block size)
+- **Random read**: O(1) page read via `pread()`
+- **Sequential scan**: Read pages in order for range queries
+
+### B+tree Traversal
+
+- **Point lookup**: O(log<sub>512</sub>(N)) for 16KB pages
+- **Range scan**: O(K + log<sub>512</sub>(N)) where K = results
+- **Insert/Delete**: O(log<sub>512</sub>(N)) pages copied (COW)
+
+### Space Efficiency
+
+- **Page overhead**: 92 bytes (48 header + 44 node header)
+- **Utilization**: ~90% for random inserts, ~95% for sequential
+- **Write amplification**: ~2x for random updates (COW)
+
+## Related Documentation
+
+- [ADR-002: Copy-on-Write B+tree Strategy](/adr/002-copy-on-write-btree)
+- [ADR-006: Single-Writer Concurrency Model](/adr/006-single-writer-concurrency)
+- [File Format V0 Specification](/specs/file_format_v0)
+- [Semantics V0](/specs/semantics_v0)
