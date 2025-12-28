@@ -234,6 +234,7 @@ pub const PatternDetector = struct {
     }
 
     fn calculateColdScore(self: *Self, pattern: *const EntityPattern, age_ms: u64) f32 {
+        _ = self;
         _ = pattern;
         // Cold score based primarily on age
         const age_days = @as(f32, @floatFromInt(age_ms)) / (1000 * 60 * 60 * 24);

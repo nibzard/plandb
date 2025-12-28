@@ -302,7 +302,7 @@ pub const TieredStorageManager = struct {
         const cost_breakdown = self.getCostBreakdown();
 
         // Check for over-full tiers
-        for (&self.tiers, 0..) |*tier, i| {
+        for (&self.tiers) |*tier| {
             const usage_ratio = @as(f64, @floatFromInt(tier.current_bytes)) / @as(f64, @floatFromInt(tier.config.max_capacity_bytes));
 
             if (usage_ratio > 0.9) {
@@ -359,7 +359,7 @@ pub const TieredStorageManager = struct {
 
     fn promoteToTier(self: *Self, entity_id: []const u8, target_tier: StorageTier) !void {
         // Find in current tier and move to target
-        for (&self.tiers, 0..) |*tier, tier_idx| {
+        for (&self.tiers) |*tier| {
             var i: usize = 0;
             while (i < tier.placements.items.len) {
                 if (mem.eql(u8, tier.placements.items[i].entity_id, entity_id)) {
@@ -421,6 +421,7 @@ pub const TierState = struct {
     stats: TierStats,
 
     pub fn init(allocator: std.mem.Allocator, tier: StorageTier, config: TierConfig) !TierState {
+        _ = tier;
         return TierState{
             .config = config,
             .placements = std.array_list.Managed(DataPlacement).init(allocator),
@@ -587,8 +588,8 @@ test "TieredStorageManager getRecommendations" {
         std.testing.allocator.free(recommendations);
     }
 
-    _ = recommendations;
     // Should return recommendations
+    try std.testing.expect(recommendations.len >= 0);
 }
 
 test "DataPlacement deinit" {

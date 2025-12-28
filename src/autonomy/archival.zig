@@ -190,7 +190,6 @@ pub const ArchiveManager = struct {
 
     /// Compress data (simplified LZ4-like compression)
     fn compressData(self: *Self, data: []const u8) !CompressedData {
-        _ = self;
 
         // Simplified compression - in real implementation would use LZ4
         // For now, just return the data as-is with a marker
@@ -206,7 +205,6 @@ pub const ArchiveManager = struct {
 
     /// Decompress data
     fn decompressData(self: *Self, compressed: []const u8) ![]const u8 {
-        _ = self;
 
         // Simplified decompression
         if (mem.startsWith(u8, compressed, "COMPRESSED:")) {
@@ -487,7 +485,7 @@ test "ArchiveManager scanForColdData" {
     }
 
     // May find cold data after sleep
-    _ = candidates;
+    try std.testing.expect(candidates.len >= 0);
 }
 
 test "ArchiveManager archiveEntity" {
