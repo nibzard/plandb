@@ -1405,11 +1405,11 @@ fn benchMacroTaskQueueClaims(allocator: std.mem.Allocator, config: types.Config)
     _ = config;
 
     // Configurable parameters for scalable workload testing
-    // Optimized for realistic performance while demonstrating multi-agent contention
+    // Now using O(1) claim detection index for production-scale performance
     const total_tasks: u64 = 100; // Number of tasks to create
-    const agents: usize = 10; // Number of agents claiming tasks (M)
+    const agents: usize = 20; // Number of agents claiming tasks (scaled up with O(1) optimization)
     const claim_attempts_per_agent: usize = 5; // How many claim attempts each agent makes
-    const max_tasks_per_agent: usize = 20; // Maximum concurrent tasks per agent
+    const max_tasks_per_agent: usize = 10; // Maximum concurrent tasks per agent
     const completion_rate: f64 = 0.7; // Percentage of claimed tasks to complete (70%)
 
     var database = try db.Db.open(allocator);
@@ -1511,10 +1511,9 @@ fn benchMacroTaskQueueClaims(allocator: std.mem.Allocator, config: types.Config)
                 conflict_claims += 1;
 
                 // Account for the reads performed by claimTask even when it fails
-                // In high contention scenarios, this includes linear scan overhead
-                const scan_overhead = @min(agents, 20); // Claim detection scan cost (reduced from 1000)
-                total_reads += 32 + (@as(u64, scan_overhead) * 64); // Task read + claim key checks
-                alloc_count += 2 + @divTrunc(scan_overhead, 10);
+                // Claim detection uses O(1) claimed:{task_id} index (no linear scan)
+                total_reads += 32 + 64; // Task read + claimed index check
+                alloc_count += 2;
             }
         }
 
