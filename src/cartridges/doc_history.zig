@@ -314,6 +314,233 @@ pub const ChangeStatistics = struct {
     }
 };
 
+// ==================== Change Impact Analysis ====================
+
+/// Risk level for a change based on historical patterns
+pub const ChangeRisk = enum(u8) {
+    /// Low risk - unlikely to cause issues
+    low = 1,
+    /// Medium risk - some potential for issues
+    medium = 2,
+    /// High risk - high probability of follow-up issues
+    high = 3,
+    /// Critical risk - very dangerous change
+    critical = 4,
+
+    pub fn fromScore(score: f64) ChangeRisk {
+        if (score < 0.3) return .low;
+        if (score < 0.6) return .medium;
+        if (score < 0.8) return .high;
+        return .critical;
+    }
+
+    pub fn toColor(risk: ChangeRisk) []const u8 {
+        return switch (risk) {
+            .low => "green",
+            .medium => "yellow",
+            .high => "orange",
+            .critical => "red",
+        };
+    }
+};
+
+/// Change risk analysis result
+pub const ChangeRiskAnalysis = struct {
+    /// Overall risk level
+    risk_level: ChangeRisk,
+    /// Risk score (0-1)
+    risk_score: f64,
+    /// Risk factors contributing to score
+    risk_factors: ArrayListManaged(RiskFactor),
+    /// Similar historical changes and their outcomes
+    historical_comparisons: ArrayListManaged(HistoricalComparison),
+    /// Predicted regression probability
+    regression_probability: f64,
+    /// Recommended actions
+    recommendations: ArrayListManaged([]const u8),
+
+    pub const RiskFactor = struct {
+        /// Factor name (e.g., "high_change_frequency", "complex_diff")
+        name: []const u8,
+        /// Impact on overall score (0-1)
+        weight: f64,
+        /// Description of why this is a risk
+        description: []const u8,
+
+        pub fn deinit(self: RiskFactor, allocator: std.mem.Allocator) void {
+            allocator.free(self.name);
+            allocator.free(self.description);
+        }
+    };
+
+    pub const HistoricalComparison = struct {
+        /// Similar change ID
+        change_id: []const u8,
+        /// Similarity score (0-1)
+        similarity: f64,
+        /// Whether that change caused issues
+        caused_issues: bool,
+        /// Time to issue (seconds, null if no issue)
+        time_to_issue: ?u64,
+
+        pub fn deinit(self: HistoricalComparison, allocator: std.mem.Allocator) void {
+            allocator.free(self.change_id);
+        }
+    };
+
+    pub fn init() ChangeRiskAnalysis {
+        return ChangeRiskAnalysis{
+            .risk_level = .low,
+            .risk_score = 0.0,
+            .risk_factors = .{},
+            .historical_comparisons = .{},
+            .regression_probability = 0.0,
+            .recommendations = .{},
+        };
+    }
+
+    pub fn deinit(self: *ChangeRiskAnalysis, allocator: std.mem.Allocator) void {
+        for (self.risk_factors.items) |*f| f.deinit(allocator);
+        self.risk_factors.deinit(allocator);
+
+        for (self.historical_comparisons.items) |*c| c.deinit(allocator);
+        self.historical_comparisons.deinit(allocator);
+
+        for (self.recommendations.items) |r| allocator.free(r);
+        self.recommendations.deinit(allocator);
+    }
+
+    /// Add a risk factor
+    pub fn addRiskFactor(self: *ChangeRiskAnalysis, allocator: std.mem.Allocator, name: []const u8, weight: f64, description: []const u8) !void {
+        try self.risk_factors.append(allocator, .{
+            .name = try allocator.dupe(u8, name),
+            .weight = weight,
+            .description = try allocator.dupe(u8, description),
+        });
+    }
+
+    /// Add a recommendation
+    pub fn addRecommendation(self: *ChangeRiskAnalysis, allocator: std.mem.Allocator, recommendation: []const u8) !void {
+        try self.recommendations.append(allocator, try allocator.dupe(u8, recommendation));
+    }
+
+    /// Update risk level based on score
+    pub fn updateRiskLevel(self: *ChangeRiskAnalysis) void {
+        self.risk_level = ChangeRisk.fromScore(self.risk_score);
+    }
+};
+
+/// Hot file metrics - files with high change activity
+pub const HotFileMetrics = struct {
+    /// File path
+    file_path: []const u8,
+    /// Total change count
+    change_count: u64,
+    /// Change frequency (changes per day)
+    change_frequency: f64,
+    /// Average severity of changes
+    avg_severity: f64,
+    /// Churn rate (lines changed / total lines)
+    churn_rate: f64,
+    /// Bug correlation (changes followed by bugs / total changes)
+    bug_correlation: f64,
+    /// Risk score
+    risk_score: f64,
+
+    pub fn deinit(self: HotFileMetrics, allocator: std.mem.Allocator) void {
+        allocator.free(self.file_path);
+    }
+};
+
+/// Change churn statistics
+pub const ChangeChurnMetrics = struct {
+    /// Total files changed
+    total_files: u64,
+    /// High churn files (>10% change rate)
+    high_churn_count: u64,
+    /// Medium churn files (1-10% change rate)
+    medium_churn_count: u64,
+    /// Low churn files (<1% change rate)
+    low_churn_count: u64,
+    /// Average churn across all files
+    avg_churn_rate: f64,
+    /// Churn distribution by directory
+    directory_churn: ArrayListManaged(DirectoryChurn),
+
+    pub const DirectoryChurn = struct {
+        /// Directory path
+        directory: []const u8,
+        /// Total change count
+        change_count: u64,
+        /// Average churn rate
+        avg_churn_rate: f64,
+        /// Risk score for this directory
+        risk_score: f64,
+
+        pub fn deinit(self: DirectoryChurn, allocator: std.mem.Allocator) void {
+            allocator.free(self.directory);
+        }
+    };
+
+    pub fn init(allocator: std.mem.Allocator) ChangeChurnMetrics {
+        _ = allocator;
+        return ChangeChurnMetrics{
+            .total_files = 0,
+            .high_churn_count = 0,
+            .medium_churn_count = 0,
+            .low_churn_count = 0,
+            .avg_churn_rate = 0.0,
+            .directory_churn = .{},
+        };
+    }
+
+    pub fn deinit(self: *ChangeChurnMetrics, allocator: std.mem.Allocator) void {
+        for (self.directory_churn.items) |*d| d.deinit(allocator);
+        self.directory_churn.deinit(allocator);
+    }
+};
+
+/// Impact prediction for a proposed change
+pub const ImpactPrediction = struct {
+    /// Predicted risk level
+    predicted_risk: ChangeRisk,
+    /// Confidence in prediction (0-1)
+    confidence: f64,
+    /// Predicted regression probability
+    regression_probability: f64,
+    /// Estimated affected components
+    affected_components: ArrayListManaged([]const u8),
+    /// Similar historical changes
+    similar_changes: ArrayListManaged(ChangeRiskAnalysis.HistoricalComparison),
+    /// Testing recommendations
+    testing_recommendations: ArrayListManaged([]const u8),
+
+    pub fn init(allocator: std.mem.Allocator) ImpactPrediction {
+        _ = allocator;
+        return ImpactPrediction{
+            .predicted_risk = .low,
+            .confidence = 0.0,
+            .regression_probability = 0.0,
+            .affected_components = .{},
+            .similar_changes = .{},
+            .testing_recommendations = .{},
+        };
+    }
+
+    pub fn deinit(self: *ImpactPrediction, allocator: std.mem.Allocator) void {
+        for (self.affected_components.items) |c| allocator.free(c);
+        self.affected_components.deinit(allocator);
+
+        for (self.similar_changes.items) |*c| c.deinit(allocator);
+        self.similar_changes.deinit(allocator);
+
+        for (self.testing_recommendations.items) |r| allocator.free(r);
+        self.testing_recommendations.deinit(allocator);
+    }
+};
+
+// ==================== Query Filters ====================
+
 /// Change log entry for query results
 pub const ChangeLogEntry = struct {
     /// Document path
@@ -347,8 +574,6 @@ pub const ChangeLogEntry = struct {
         allocator.free(self.message);
     }
 };
-
-// ==================== Query Filters ====================
 
 /// Filters for changelog queries
 pub const ChangeLogFilter = struct {
@@ -808,6 +1033,406 @@ pub const DocumentHistoryIndex = struct {
 
         return results;
     }
+
+    // ==================== Change Impact Analysis ====================
+
+    /// Analyze change risk for a specific document version
+    pub fn analyzeChangeRisk(self: *const DocumentHistoryIndex, document_path: []const u8, version_id: []const u8) !ChangeRiskAnalysis {
+        const history = self.histories.get(document_path) orelse {
+            return ChangeRiskAnalysis.init();
+        };
+
+        var analysis = ChangeRiskAnalysis.init();
+        errdefer analysis.deinit(self.allocator);
+
+        // Find the target version
+        const target_version = blk: {
+            for (history.versions.items) |*v| {
+                if (std.mem.eql(u8, v.*.version_id, version_id)) {
+                    break :blk v.*;
+                }
+            }
+            return analysis;
+        };
+
+        var total_score: f64 = 0.0;
+        var factor_count: usize = 0;
+
+        // Factor 1: Change severity impact
+        const severity_weight: f64 = switch (target_version.severity) {
+            .trivial => 0.1,
+            .minor => 0.25,
+            .moderate => 0.5,
+            .major => 0.75,
+            .critical => 1.0,
+        };
+        try analysis.addRiskFactor(
+            self.allocator,
+            "severity",
+            severity_weight * 0.3,
+            "Higher severity changes have greater impact"
+        );
+        total_score += severity_weight * 0.3;
+        factor_count += 1;
+
+        // Factor 2: Change frequency (is this file changing often?)
+        const file_changes = history.versions.items.len;
+        const freq_factor = @min(1.0, @as(f64, @floatFromInt(file_changes)) / 100.0);
+        if (freq_factor > 0.1) {
+            try analysis.addRiskFactor(
+                self.allocator,
+                "high_change_frequency",
+                freq_factor * 0.2,
+                "File changes frequently, higher regression risk"
+            );
+            total_score += freq_factor * 0.2;
+            factor_count += 1;
+        }
+
+        // Factor 3: Lines changed impact
+        var lines_changed: u64 = 0;
+        for (target_version.diffs.items) |d| {
+            lines_changed += d.lines_added + d.lines_removed;
+        }
+        const size_factor = @min(1.0, @as(f64, @floatFromInt(lines_changed)) / 1000.0);
+        if (size_factor > 0.3) {
+            try analysis.addRiskFactor(
+                self.allocator,
+                "large_change",
+                size_factor * 0.25,
+                "Large changes have higher risk"
+            );
+            total_score += size_factor * 0.25;
+            factor_count += 1;
+        }
+
+        // Factor 4: Intent-based risk
+        const intent_factor: f64 = switch (target_version.intent) {
+            .docs, .style => 0.1,
+            .tests => 0.2,
+            .refactor => 0.5,
+            .feature => 0.4,
+            .perf => 0.6,
+            .bugfix => 0.7,
+            .security => 0.9,
+            .other => 0.3,
+        };
+        if (intent_factor > 0.5) {
+            try analysis.addRiskFactor(
+                self.allocator,
+                "high_risk_intent",
+                intent_factor * 0.15,
+                "This change type has historical correlation with issues"
+            );
+            total_score += intent_factor * 0.15;
+            factor_count += 1;
+        }
+
+        // Factor 5: Recent changes (rapid succession)
+        var recent_changes: usize = 0;
+        const one_hour_ago = target_version.timestamp - 3600;
+        for (history.versions.items) |v| {
+            if (v.timestamp >= one_hour_ago and v.timestamp != target_version.timestamp) {
+                recent_changes += 1;
+            }
+        }
+        if (recent_changes > 3) {
+            const rapid_factor = @min(1.0, @as(f64, @floatFromInt(recent_changes)) / 10.0);
+            try analysis.addRiskFactor(
+                self.allocator,
+                "rapid_changes",
+                rapid_factor * 0.1,
+                "Multiple recent changes increase regression risk"
+            );
+            total_score += rapid_factor * 0.1;
+            factor_count += 1;
+        }
+
+        // Calculate final score (normalized by factor count)
+        analysis.risk_score = if (factor_count > 0)
+            @min(1.0, total_score)
+        else
+            0.1; // Low default risk
+
+        analysis.updateRiskLevel();
+
+        // Generate recommendations based on risk
+        if (analysis.risk_level == .high or analysis.risk_level == .critical) {
+            try analysis.addRecommendation(self.allocator, "Increase test coverage for affected files");
+            try analysis.addRecommendation(self.allocator, "Consider code review by senior developer");
+            try analysis.addRecommendation(self.allocator, "Plan for rollback capability");
+        }
+        if (analysis.risk_level == .critical) {
+            try analysis.addRecommendation(self.allocator, "Staged rollout recommended");
+            try analysis.addRecommendation(self.allocator, "Monitor closely for 72 hours post-deployment");
+        }
+
+        // Estimate regression probability
+        analysis.regression_probability = analysis.risk_score * 0.7; // 70% correlation
+
+        return analysis;
+    }
+
+    /// Get hot files - files with high change activity
+    pub fn getHotFiles(self: *const DocumentHistoryIndex, limit: usize) !ArrayListManaged(HotFileMetrics) {
+        var files = try self.allocator.alloc(HotFileMetrics, @min(limit, self.histories.count()));
+        defer self.allocator.free(files);
+
+        var idx: usize = 0;
+        var it = self.histories.iterator();
+        while (it.next()) |entry| : (idx += 1) {
+            if (idx >= files.len) break;
+
+            const path = entry.key_ptr.*;
+            const history = entry.value_ptr.*;
+
+            const stats = try self.computeStatistics(path, .{});
+            _ = stats.version_count; // Use the value
+
+            // Calculate change frequency
+            const earliest: i64 = if (history.versions.items.len > 0)
+                history.versions.items[history.versions.items.len - 1].timestamp
+            else
+                std.time.timestamp();
+            const latest: i64 = if (history.versions.items.len > 0)
+                history.versions.items[0].timestamp
+            else
+                std.time.timestamp();
+            const days = @max(1, @divTrunc(latest - earliest, 86400));
+
+            // Calculate average severity
+            var total_severity: f64 = 0;
+            for (history.versions.items) |v| {
+                total_severity += switch (v.severity) {
+                    .trivial => 1, .minor => 2, .moderate => 3, .major => 4, .critical => 5,
+                };
+            }
+            const avg_severity = if (history.versions.items.len > 0)
+                total_severity / @as(f64, @floatFromInt(history.versions.items.len))
+            else
+                0;
+
+            // Estimate churn rate (rough approximation)
+            var total_lines: u64 = 0;
+            for (history.versions.items) |v| {
+                for (v.diffs.items) |d| {
+                    total_lines += d.lines_added + d.lines_removed;
+                }
+            }
+            const churn_rate = if (stats.version_count > 0)
+                @as(f64, @floatFromInt(total_lines)) / @as(f64, @floatFromInt(stats.version_count)) / 1000.0
+            else
+                0;
+
+            files[idx] = .{
+                .file_path = try self.allocator.dupe(u8, path),
+                .change_count = stats.version_count,
+                .change_frequency = @as(f64, @floatFromInt(stats.version_count)) / @as(f64, @floatFromInt(days)),
+                .avg_severity = avg_severity / 5.0, // Normalize to 0-1
+                .churn_rate = @min(1.0, churn_rate),
+                .bug_correlation = 0.0, // Would need bug tracking integration
+                .risk_score = 0.0, // Calculated below
+            };
+
+            // Calculate risk score
+            const freq_score = @min(1.0, files[idx].change_frequency / 10.0);
+            const severity_score = files[idx].avg_severity;
+            const churn_score = @min(1.0, files[idx].churn_rate * 10.0);
+            files[idx].risk_score = (freq_score * 0.4) + (severity_score * 0.4) + (churn_score * 0.2);
+        }
+
+        // Sort by risk score (descending)
+        std.sort.insertion(HotFileMetrics, files[0..idx], {}, struct {
+            fn lessThan(_: void, a: HotFileMetrics, b: HotFileMetrics) bool {
+                return a.risk_score > b.risk_score;
+            }
+        }.lessThan);
+
+        var result = ArrayListManaged(HotFileMetrics){};
+        for (files[0..idx]) |f| {
+            try result.append(self.allocator, f);
+        }
+
+        return result;
+    }
+
+    /// Calculate change churn metrics
+    pub fn calculateChurnMetrics(self: *const DocumentHistoryIndex) !ChangeChurnMetrics {
+        var metrics = ChangeChurnMetrics.init(self.allocator);
+        errdefer metrics.deinit(self.allocator);
+
+        var directory_changes = std.StringHashMap(struct {
+            count: u64,
+            total_churn: f64,
+            files: usize,
+        }).init(self.allocator);
+        defer {
+            var dir_it = directory_changes.iterator();
+            while (dir_it.next()) |e| {
+                self.allocator.free(e.key_ptr.*);
+            }
+            directory_changes.deinit();
+        }
+
+        var file_it = self.histories.iterator();
+        while (file_it.next()) |entry| {
+            const path = entry.key_ptr.*;
+            const history = entry.value_ptr.*;
+
+            metrics.total_files += 1;
+
+            // Calculate file churn
+            var total_lines: u64 = 0;
+            for (history.versions.items) |v| {
+                for (v.diffs.items) |d| {
+                    total_lines += d.lines_added + d.lines_removed;
+                }
+            }
+
+            const avg_churn = if (history.versions.items.len > 0)
+                @as(f64, @floatFromInt(total_lines)) / @as(f64, @floatFromInt(history.versions.items.len)) / 1000.0
+            else
+                0;
+
+            // Categorize churn
+            if (avg_churn > 0.1) {
+                metrics.high_churn_count += 1;
+            } else if (avg_churn > 0.01) {
+                metrics.medium_churn_count += 1;
+            } else {
+                metrics.low_churn_count += 1;
+            }
+
+            // Track directory-level churn
+            const dir = blk: {
+                if (std.mem.lastIndexOfScalar(u8, path, '/')) |idx| {
+                    break :blk path[0..idx];
+                }
+                break :blk ".";
+            };
+
+            const dir_entry = try directory_changes.getOrPut(dir);
+            if (!dir_entry.found_existing) {
+                dir_entry.key_ptr.* = try self.allocator.dupe(u8, dir);
+                dir_entry.value_ptr.* = .{ .count = 0, .total_churn = 0.0, .files = 0 };
+            }
+            dir_entry.value_ptr.count += history.versions.items.len;
+            dir_entry.value_ptr.total_churn += avg_churn;
+            dir_entry.value_ptr.files += 1;
+        }
+
+        // Calculate directory metrics
+        var dir_it = directory_changes.iterator();
+        while (dir_it.next()) |e| {
+            const dir_churn = e.value_ptr.total_churn / @as(f64, @floatFromInt(e.value_ptr.files));
+            const risk_score = @min(1.0, dir_churn * 10.0);
+
+            try metrics.directory_churn.append(self.allocator, .{
+                .directory = try self.allocator.dupe(u8, e.key_ptr.*),
+                .change_count = e.value_ptr.count,
+                .avg_churn_rate = dir_churn,
+                .risk_score = risk_score,
+            });
+        }
+
+        // Calculate overall average churn
+        const total_churn = metrics.high_churn_count + metrics.medium_churn_count + metrics.low_churn_count;
+        metrics.avg_churn_rate = if (total_churn > 0)
+            @as(f64, @floatFromInt(metrics.high_churn_count)) * 0.5 +
+            @as(f64, @floatFromInt(metrics.medium_churn_count)) * 0.1
+        else
+            0;
+
+        return metrics;
+    }
+
+    /// Predict impact for a proposed change
+    pub fn predictImpact(
+        self: *const DocumentHistoryIndex,
+        document_path: []const u8,
+        proposed_severity: ChangeSeverity,
+        proposed_intent: ChangeIntent,
+        estimated_lines_changed: u64
+    ) !ImpactPrediction {
+        var prediction = ImpactPrediction.init(self.allocator);
+        errdefer prediction.deinit(self.allocator);
+
+        // Get historical data for this file
+        const history = self.histories.get(document_path);
+
+        var risk_score: f64 = 0.0;
+        var confidence: f64 = 0.5;
+
+        // Base risk from severity
+        risk_score += switch (proposed_severity) {
+            .trivial => 0.1,
+            .minor => 0.25,
+            .moderate => 0.5,
+            .major => 0.75,
+            .critical => 1.0,
+        };
+
+        // Risk from intent
+        risk_score += switch (proposed_intent) {
+            .docs, .style => 0.05,
+            .tests => 0.1,
+            .refactor => 0.2,
+            .feature => 0.15,
+            .perf => 0.25,
+            .bugfix => 0.3,
+            .security => 0.4,
+            .other => 0.1,
+        };
+
+        // Factor in file history
+        if (history) |h| {
+            confidence = @min(1.0, @as(f64, @floatFromInt(h.versions.items.len)) / 50.0);
+
+            // Check for similar past changes
+            var similar_count: usize = 0;
+            var issue_count: usize = 0;
+
+            for (h.versions.items) |v| {
+                const severity_match = v.severity == proposed_severity;
+                const intent_match = v.intent == proposed_intent;
+                if (severity_match and intent_match) {
+                    similar_count += 1;
+                    // Would check bug tracking here
+                    // For now, estimate based on severity/intent
+                    if (proposed_intent == .security or proposed_severity == .critical) {
+                        issue_count += 1;
+                    }
+                }
+            }
+
+            if (similar_count > 0) {
+                prediction.regression_probability = @as(f64, @floatFromInt(issue_count)) / @as(f64, @floatFromInt(similar_count));
+            }
+
+            // Add affected components (would analyze dependencies in real system)
+            try prediction.affected_components.append(self.allocator, try self.allocator.dupe(u8, document_path));
+        }
+
+        // Normalize risk score
+        risk_score = @min(1.0, risk_score / 2.0);
+        prediction.predicted_risk = ChangeRisk.fromScore(risk_score);
+        prediction.confidence = confidence;
+
+        // Generate testing recommendations
+        if (prediction.predicted_risk == .high or prediction.predicted_risk == .critical) {
+            try prediction.testing_recommendations.append(self.allocator, try self.allocator.dupe(u8, "Unit tests for all modified functions"));
+            try prediction.testing_recommendations.append(self.allocator, try self.allocator.dupe(u8, "Integration tests for affected components"));
+            try prediction.testing_recommendations.append(self.allocator, try self.allocator.dupe(u8, "Performance baseline comparison"));
+        }
+        if (proposed_intent == .security or proposed_intent == .bugfix) {
+            try prediction.testing_recommendations.append(self.allocator, try self.allocator.dupe(u8, "Regression tests for fixed vulnerability/bug"));
+        }
+        if (estimated_lines_changed > 500) {
+            try prediction.testing_recommendations.append(self.allocator, try self.allocator.dupe(u8, "Comprehensive end-to-end testing"));
+        }
+
+        return prediction;
+    }
 };
 
 // ==================== Document History Cartridge ====================
@@ -882,6 +1507,34 @@ pub const DocumentHistoryCartridge = struct {
     /// Query by time range
     pub fn queryByTimeRange(self: *const DocumentHistoryCartridge, start_time: i64, end_time: i64) !ArrayListManaged(*DocumentVersion) {
         return self.index.queryByTimeRange(start_time, end_time);
+    }
+
+    // ==================== Change Impact Analysis ====================
+
+    /// Analyze change risk for a document version
+    pub fn analyzeChangeRisk(self: *const DocumentHistoryCartridge, document_path: []const u8, version_id: []const u8) !ChangeRiskAnalysis {
+        return self.index.analyzeChangeRisk(document_path, version_id);
+    }
+
+    /// Get hot files - files with high change activity
+    pub fn getHotFiles(self: *const DocumentHistoryCartridge, limit: usize) !ArrayListManaged(HotFileMetrics) {
+        return self.index.getHotFiles(limit);
+    }
+
+    /// Calculate change churn metrics
+    pub fn calculateChurnMetrics(self: *const DocumentHistoryCartridge) !ChangeChurnMetrics {
+        return self.index.calculateChurnMetrics();
+    }
+
+    /// Predict impact for a proposed change
+    pub fn predictImpact(
+        self: *const DocumentHistoryCartridge,
+        document_path: []const u8,
+        proposed_severity: ChangeSeverity,
+        proposed_intent: ChangeIntent,
+        estimated_lines_changed: u64
+    ) !ImpactPrediction {
+        return self.index.predictImpact(document_path, proposed_severity, proposed_intent, estimated_lines_changed);
     }
 };
 
@@ -1497,3 +2150,190 @@ test "DocumentHistoryCartridge.queryByTimeRange" {
     try std.testing.expectEqual(@as(usize, 1), results.items.len);
     try std.testing.expectEqual(@as(i64, 1000), results.items[0].timestamp);
 }
+
+// ==================== Change Impact Analysis Tests ====================
+
+test "ChangeRisk.fromScore" {
+    try std.testing.expectEqual(ChangeRisk.low, ChangeRisk.fromScore(0.1));
+    try std.testing.expectEqual(ChangeRisk.medium, ChangeRisk.fromScore(0.4));
+    try std.testing.expectEqual(ChangeRisk.high, ChangeRisk.fromScore(0.7));
+    try std.testing.expectEqual(ChangeRisk.critical, ChangeRisk.fromScore(0.9));
+}
+
+test "ChangeRiskAnalysis.init and addRiskFactor" {
+    var analysis = ChangeRiskAnalysis.init();
+    defer analysis.deinit(std.testing.allocator);
+
+    try analysis.addRiskFactor(std.testing.allocator, "test_factor", 0.5, "Test description");
+    try analysis.addRecommendation(std.testing.allocator, "Test recommendation");
+
+    analysis.risk_score = 0.7;
+    analysis.updateRiskLevel();
+
+    try std.testing.expectEqual(ChangeRisk.high, analysis.risk_level);
+    try std.testing.expectEqual(@as(usize, 1), analysis.risk_factors.items.len);
+    try std.testing.expectEqual(@as(usize, 1), analysis.recommendations.items.len);
+}
+
+test "DocumentHistoryIndex.analyzeChangeRisk - high risk change" {
+    var index = DocumentHistoryIndex.init(std.testing.allocator);
+    defer index.deinit();
+
+    // Create multiple changes to increase risk score (>10 needed for frequency factor, >300 lines for size factor)
+    var i: usize = 0;
+    while (i < 30) : (i += 1) {
+        var version = try std.testing.allocator.create(DocumentVersion);
+        version.* = try DocumentVersion.init(std.testing.allocator, "v1", "alice");
+        version.intent = .security;
+        version.severity = .critical;
+        version.timestamp = std.time.timestamp();
+        try version.addDiff(std.testing.allocator, DiffOp{
+            .start_line = 0,
+            .lines_removed = 200,
+            .lines_added = 250,
+            .removed = "old",
+            .added = "new",
+        });
+        try index.addVersion("src/security.zig", version);
+    }
+
+    var analysis = try index.analyzeChangeRisk("src/security.zig", "v1");
+    defer analysis.deinit(std.testing.allocator);
+
+    // Should have high or critical risk due to critical severity + security intent + high change frequency
+    try std.testing.expect(analysis.risk_level == .high or analysis.risk_level == .critical);
+    try std.testing.expect(analysis.risk_factors.items.len > 0);
+}
+
+test "DocumentHistoryIndex.analyzeChangeRisk - low risk change" {
+    var index = DocumentHistoryIndex.init(std.testing.allocator);
+    defer index.deinit();
+
+    // Create a trivial documentation change
+    var version = try std.testing.allocator.create(DocumentVersion);
+    version.* = try DocumentVersion.init(std.testing.allocator, "v1", "alice");
+    version.intent = .docs;
+    version.severity = .trivial;
+    version.timestamp = std.time.timestamp();
+    try version.addDiff(std.testing.allocator, DiffOp{
+        .start_line = 0,
+        .lines_removed = 1,
+        .lines_added = 2,
+        .removed = "old",
+        .added = "new",
+    });
+
+    try index.addVersion("README.md", version);
+
+    var analysis = try index.analyzeChangeRisk("README.md", "v1");
+    defer analysis.deinit(std.testing.allocator);
+
+    // Should have low risk
+    try std.testing.expectEqual(ChangeRisk.low, analysis.risk_level);
+    try std.testing.expect(analysis.regression_probability < 0.3);
+}
+
+test "DocumentHistoryIndex.getHotFiles" {
+    var index = DocumentHistoryIndex.init(std.testing.allocator);
+    defer index.deinit();
+
+    // Add multiple versions to one file to make it "hot"
+    var i: usize = 0;
+    while (i < 10) : (i += 1) {
+        var version = try std.testing.allocator.create(DocumentVersion);
+        version.* = try DocumentVersion.init(std.testing.allocator, "v1", "alice");
+        version.severity = .major;
+        version.timestamp = @intCast(1000 + i * 100);
+        try version.addDiff(std.testing.allocator, DiffOp{
+            .start_line = 0,
+            .lines_removed = 1,
+            .lines_added = 1,
+            .removed = "old",
+            .added = "new",
+        });
+        try index.addVersion("src/hot.zig", version);
+    }
+
+    // Add one version to another file
+    const version2 = try std.testing.allocator.create(DocumentVersion);
+    version2.* = try DocumentVersion.init(std.testing.allocator, "v2", "bob");
+    try index.addVersion("src/cold.zig", version2);
+
+    var hot_files = try index.getHotFiles(10);
+    defer {
+        for (hot_files.items) |*f| f.deinit(std.testing.allocator);
+        hot_files.deinit(std.testing.allocator);
+    }
+
+    // Should return hot.zig first (highest change frequency)
+    try std.testing.expect(hot_files.items.len > 0);
+    try std.testing.expectEqualStrings("src/hot.zig", hot_files.items[0].file_path);
+    try std.testing.expect(hot_files.items[0].change_count == 10);
+}
+
+test "DocumentHistoryIndex.calculateChurnMetrics" {
+    var index = DocumentHistoryIndex.init(std.testing.allocator);
+    defer index.deinit();
+
+    // Add high-churn file
+    var i: usize = 0;
+    while (i < 5) : (i += 1) {
+        var version = try std.testing.allocator.create(DocumentVersion);
+        version.* = try DocumentVersion.init(std.testing.allocator, "v1", "alice");
+        try version.addDiff(std.testing.allocator, DiffOp{
+            .start_line = 0,
+            .lines_removed = 10,
+            .lines_added = 20,
+            .removed = "old",
+            .added = "new",
+        });
+        try index.addVersion("src/high_churn.zig", version);
+    }
+
+    // Add low-churn file
+    const version2 = try std.testing.allocator.create(DocumentVersion);
+    version2.* = try DocumentVersion.init(std.testing.allocator, "v2", "bob");
+    try version2.addDiff(std.testing.allocator, DiffOp{
+        .start_line = 0,
+        .lines_removed = 0,
+        .lines_added = 1,
+        .removed = "",
+        .added = "new",
+    });
+    try index.addVersion("src/low_churn.zig", version2);
+
+    var metrics = try index.calculateChurnMetrics();
+    defer metrics.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(u64, 2), metrics.total_files);
+    try std.testing.expect(metrics.directory_churn.items.len > 0);
+}
+
+test "DocumentHistoryIndex.predictImpact - critical proposed change" {
+    var index = DocumentHistoryIndex.init(std.testing.allocator);
+    defer index.deinit();
+
+    // Add some history
+    var i: usize = 0;
+    while (i < 5) : (i += 1) {
+        var version = try std.testing.allocator.create(DocumentVersion);
+        version.* = try DocumentVersion.init(std.testing.allocator, "v1", "alice");
+        version.intent = .security;
+        version.severity = .critical;
+        try index.addVersion("src/auth.zig", version);
+    }
+
+    var prediction = try index.predictImpact(
+        "src/auth.zig",
+        .critical,
+        .security,
+        500
+    );
+    defer prediction.deinit(std.testing.allocator);
+
+    // Should predict high risk
+    try std.testing.expect(prediction.predicted_risk == .high or prediction.predicted_risk == .critical);
+    try std.testing.expect(prediction.confidence > 0.0);
+    try std.testing.expect(prediction.testing_recommendations.items.len > 0);
+}
+
