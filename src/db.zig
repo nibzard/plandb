@@ -220,8 +220,7 @@ pub const Db = struct {
                     try pager_inst.putBtreeValue(put_op.key, put_op.value, txn_ctx.txn_id);
                 },
                 .delete => |del_op| {
-                    // TODO: Implement delete operation when needed
-                    _ = del_op;
+                    _ = try pager_inst.deleteBtreeValue(del_op.key, txn_ctx.txn_id);
                 },
             }
         }
@@ -1630,4 +1629,88 @@ test "attachPluginManager_method" {
     // Should now have plugin manager
     try testing.expect(db.plugin_manager != null);
     try testing.expectEqual(@as(*plugins.PluginManager, @ptrCast(db.plugin_manager.?)), @as(*plugins.PluginManager, @ptrCast(&plugin_manager)));
+}
+
+test "delete_operation" {
+    const test_db = "test_delete.db";
+    const test_wal = "test_delete.wal";
+    defer {
+        std.fs.cwd().deleteFile(test_db) catch {};
+        std.fs.cwd().deleteFile(test_wal) catch {};
+    }
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var db = try Db.openWithFile(arena.allocator(), test_db, test_wal);
+    defer db.close();
+
+    // Write initial data
+    var w1 = try db.beginWrite();
+    try w1.put("key1", "value1");
+    try w1.put("key2", "value2");
+    try w1.put("key3", "value3");
+    _ = try w1.commit();
+
+    // Verify data exists
+    var r1 = try db.beginRead();
+    try testing.expectEqualStrings("value1", r1.get("key1").?);
+    try testing.expectEqualStrings("value2", r1.get("key2").?);
+    try testing.expectEqualStrings("value3", r1.get("key3").?);
+    r1.end();
+
+    // Delete key2
+    var w2 = try db.beginWrite();
+    try w2.delete("key2");
+    _ = try w2.commit();
+
+    // Verify key2 is deleted but others remain
+    var r2 = try db.beginRead();
+    try testing.expectEqualStrings("value1", r2.get("key1").?);
+    try testing.expect(r2.get("key2") == null); // Deleted
+    try testing.expectEqualStrings("value3", r2.get("key3").?);
+    r2.end();
+
+    // Delete non-existent key should not error
+    var w3 = try db.beginWrite();
+    try w3.delete("nonexistent");
+    _ = try w3.commit();
+
+    // Verify state unchanged
+    var r3 = try db.beginRead();
+    try testing.expectEqualStrings("value1", r3.get("key1").?);
+    try testing.expect(r3.get("key2") == null);
+    try testing.expectEqualStrings("value3", r3.get("key3").?);
+    r3.end();
+}
+
+test "delete_then_put" {
+    const test_db = "test_delete_put.db";
+    const test_wal = "test_delete_put.wal";
+    defer {
+        std.fs.cwd().deleteFile(test_db) catch {};
+        std.fs.cwd().deleteFile(test_wal) catch {};
+    }
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var db = try Db.openWithFile(arena.allocator(), test_db, test_wal);
+    defer db.close();
+
+    // Write initial value
+    var w1 = try db.beginWrite();
+    try w1.put("key1", "old_value");
+    _ = try w1.commit();
+
+    // Delete and then put in same transaction
+    var w2 = try db.beginWrite();
+    try w2.delete("key1");
+    try w2.put("key1", "new_value");
+    _ = try w2.commit();
+
+    // Should have new value
+    var r = try db.beginRead();
+    try testing.expectEqualStrings("new_value", r.get("key1").?);
+    r.end();
 }
