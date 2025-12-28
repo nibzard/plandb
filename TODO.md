@@ -29,6 +29,13 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMMIT**: ad2df1b
   - **STATUS**: Project now builds successfully, no blockers
   - **PROJECT STATE**: Clean compilation, ready for testing
+- [ ✅ ] 🟠 Implement delete operation in WriteTxn two-phase commit
+  - **COMPLETED**: Implemented delete operation in WriteTxn with proper two-phase commit integration
+  - **COMPLETED**: Added comprehensive tests for delete operation covering edge cases
+  - **FILES MODIFIED**: src/db.zig
+  - **COMMIT**: 7795d29
+  - **STATUS**: Delete operation complete with full test coverage
+  - **TEST COVERAGE**: Delete existing keys, delete non-existent keys, delete after updates, sequential deletes
 
 **Completed 2025-12-24:**
 - [ ✅ ] Added CI baselines for pager benchmarks
