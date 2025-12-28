@@ -1148,10 +1148,13 @@ pub const TemporalIndex = struct {
         /// Whether this rollup needs invalidation due to late data
         needs_invalidation: bool,
 
+        /// Cleanup owned resources.
+        /// NOTE: String slices (entity_namespace, entity_local_id, attribute_key)
+        /// are borrowed from the TemporalIndex storage and should NOT be freed here.
         pub fn deinit(self: *Rollup, allocator: std.mem.Allocator) void {
-            allocator.free(self.entity_namespace);
-            allocator.free(self.entity_local_id);
-            allocator.free(self.attribute_key);
+            _ = allocator;
+            _ = self;
+            // Strings are owned by TemporalIndex, not by Rollup instances
         }
     };
 
