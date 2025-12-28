@@ -1569,12 +1569,13 @@ Transform NorthstarDB's scattered markdown files into a modern, developer-friend
   - Updated index page to link to tutorial
   - Completed 2025-12-28
   - **Unblocks**: Phase 4 CRUD guide can reference this tutorial for patterns
-- [ ] 🟠 Document core concepts (MVCC, B+tree, cartridges)
-  - MVCC snapshots explained
-  - B+tree storage
-  - Commit stream
-  - Cartridges
-  - AI plugin system
+- [x] 🟠 Document core concepts (MVCC, B+tree, cartridges)
+  - **COMPLETED**: Added Commit Stream documentation at /home/niko/plandb/docs/src/content/docs/concepts/commit-stream.mdx
+  - **COMPLETED**: Updated concepts index page to link to Commit Stream doc
+  - Covers: LSN (Log Sequence Number), commit log append-only semantics, MVCC snapshot derivation, time travel queries, crash recovery, write-ahead logging
+  - Still needed: MVCC snapshots deep dive, B+tree storage details, Cartridges system, AI plugin system
+  - Modified: /home/niko/plandb/docs/src/content/docs/concepts/commit-stream.mdx, /home/niko/plandb/docs/src/content/docs/concepts/_index.mdx
+  - Completed 2025-12-28
 
 ### Phase 3: API Reference
 - [x] 🔴 Document Db API (open, close, config)
@@ -1583,27 +1584,32 @@ Transform NorthstarDB's scattered markdown files into a modern, developer-friend
   - Error handling
   - Code examples for each method
   - (Completed: added comprehensive docs for Db.open, Db.openWithFile, close, config, with examples - commit 7964447)
-- [ ] 🔴 Document Transaction APIs (ReadTxn, WriteTxn)
+- [x] 🔴 Document Transaction APIs (ReadTxn, WriteTxn)
+  - (Completed: all ReadTxn and WriteTxn methods documented with examples, parameters, return values, and error handling in docs/src/content/docs/reference/readtxn.md and docs/src/content/docs/reference/writetxn.md)
   - ReadTxn operations (get, scan)
   - WriteTxn operations (put, del, commit, abort)
   - Snapshot isolation semantics
   - Transaction lifecycle
-- [ ] 🔴 Document Cartridge API (all cartridge types)
+- [x] 🔴 Document Cartridge API (all cartridge types)
   - PendingTasksCartridge
   - EntityIndexCartridge
   - TopicCartridge
   - RelationshipCartridge
-  - Cartridge lifecycle (build, query, rebuild)
-- [ ] 🟠 Document Plugin API and hook system
+  - EmbeddingsCartridge
+  - Cartridge lifecycle (build, query, rebuild, invalidation)
+  - (Completed: added comprehensive docs for all 5 cartridge types with examples, lifecycle, and file format spec - docs/src/content/docs/reference/cartridges.md)
+- [x] 🟠 Document Plugin API and hook system
   - Plugin registration
   - Hook system (on_commit, on_query)
   - LLM integration
   - Plugin development guide
-- [ ] 🟠 Document LLM integration API
+  - (Completed: added comprehensive Plugin API reference with Plugin trait, PluginManager, all hook types, LLM integration with JSON Schema, complete plugin development guide, built-in plugins reference, and security/configuration sections - docs/src/content/docs/reference/plugins.md)
+- [x] 🟠 Document LLM integration API
   - Provider configuration (OpenAI, Anthropic, local)
   - Function calling
   - Query planning
   - Natural language processing
+  - (Completed: added comprehensive LLM integration API documentation covering provider creation, function schemas, function calling, multi-model orchestration, health monitoring, task classification, and complete examples with error handling - docs/src/content/docs/reference/llm.md)
 
 ### Phase 4: Guides
 - [ ] 🟠 Write CRUD operations guide
