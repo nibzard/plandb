@@ -1,49 +1,160 @@
-# Starlight Starter Kit: Basics
+# NorthstarDB Documentation
 
+[![Documentation Build](https://github.com/northstardb/plandb/actions/workflows/docs.yml/badge.svg)](https://github.com/northstardb/plandb/actions/workflows/docs.yml)
 [![Built with Starlight](https://astro.badg.es/v2/built-with-starlight/tiny.svg)](https://starlight.astro.build)
 
-```
-npm create astro@latest -- --template starlight
-```
+This is the official documentation for NorthstarDB, built with [Astro](https://astro.build) and [Starlight](https://starlight.astro.build).
 
-> 🧑‍🚀 **Seasoned astronaut?** Delete this file. Have fun!
-
-## 🚀 Project Structure
-
-Inside of your Astro + Starlight project, you'll see the following folders and files:
+## 📚 Documentation Structure
 
 ```
-.
-├── public/
+docs/
 ├── src/
-│   ├── assets/
 │   ├── content/
 │   │   └── docs/
-│   └── content.config.ts
-├── astro.config.mjs
-├── package.json
-└── tsconfig.json
+│   │       ├── index.mdx           # Landing page
+│   │       ├── concepts/           # Core concepts
+│   │       ├── guides/             # How-to guides
+│   │       ├── reference/          # API reference
+│   │       ├── architecture/       # Architecture docs
+│   │       ├── ai/                 # AI features
+│   │       └── specs/              # Specifications
+│   └── assets/                     # Images, diagrams
+├── adr/                            # Architecture Decision Records
+├── public/                         # Static assets
+├── astro.config.mjs                # Astro configuration
+└── package.json                    # Dependencies
 ```
 
-Starlight looks for `.md` or `.mdx` files in the `src/content/docs/` directory. Each file is exposed as a route based on its file name.
+## 🚀 Local Development
 
-Images can be added to `src/assets/` and embedded in Markdown with a relative link.
+### Prerequisites
 
-Static assets, like favicons, can be placed in the `public/` directory.
+- Node.js 20 or later
+- npm (comes with Node.js)
 
-## 🧞 Commands
+### Setup
 
-All commands are run from the root of the project, from a terminal:
+```bash
+cd docs
+npm install
+```
 
-| Command                   | Action                                           |
-| :------------------------ | :----------------------------------------------- |
-| `npm install`             | Installs dependencies                            |
-| `npm run dev`             | Starts local dev server at `localhost:4321`      |
-| `npm run build`           | Build your production site to `./dist/`          |
-| `npm run preview`         | Preview your build locally, before deploying     |
-| `npm run astro ...`       | Run CLI commands like `astro add`, `astro check` |
-| `npm run astro -- --help` | Get help using the Astro CLI                     |
+### Run Development Server
 
-## 👀 Want to learn more?
+```bash
+npm run dev
+```
 
-Check out [Starlight’s docs](https://starlight.astro.build/), read [the Astro documentation](https://docs.astro.build), or jump into the [Astro Discord server](https://astro.build/chat).
+Open `http://localhost:4321` in your browser.
+
+### Build Documentation
+
+```bash
+npm run build
+```
+
+The built documentation will be in the `dist/` directory.
+
+### Preview Production Build
+
+```bash
+npm run build
+npm run preview
+```
+
+## 🌐 Deployment
+
+### GitHub Pages
+
+Documentation is automatically deployed to GitHub Pages when changes are pushed to the `main` branch:
+
+- **Production**: https://northstardb.github.io/plandb/
+- **Build Trigger**: Push to `main` branch
+- **Preview**: Download artifact from Actions tab for PRs
+
+### Manual Deployment
+
+To manually deploy the documentation:
+
+```bash
+cd docs
+npm run build
+# Deploy dist/ folder to your hosting provider
+```
+
+## 📝 Adding Documentation
+
+### Creating New Pages
+
+1. Create a new `.mdx` file in `src/content/docs/`
+2. Add frontmatter with title and description:
+
+```mdx
+---
+title: Your Page Title
+description: A brief description of the page content
+---
+
+# Your Content
+
+Write your documentation here using Markdown.
+```
+
+### Code Examples
+
+Use fenced code blocks with language identifiers:
+
+``````mdx
+```zig
+const db = try Db.open(allocator);
+defer db.close();
+
+var w = try db.beginWrite();
+try w.put("key", "value");
+_ = try w.commit();
+```
+``````
+
+### Diagrams
+
+For simple diagrams, use ASCII art or Mermaid:
+
+```mermaid
+graph TD
+    A[Client] --> B[WriteTxn]
+    B --> C[B+tree]
+    B --> D[WAL]
+    D --> E[Commit]
+```
+
+## 🔧 Configuration
+
+### Site Configuration (`astro.config.mjs`)
+
+Edit `astro.config.mjs` to change:
+- Site title and logo
+- Navigation menu
+- Sidebar structure
+- Theme colors
+
+### Content Configuration (`src/content.config.ts`)
+
+Define collections and schema for content validation.
+
+## 📖 Resources
+
+- [Astro Documentation](https://docs.astro.build)
+- [Starlight Documentation](https://starlight.astro.build)
+- [MDX Specification](https://mdxjs.com/)
+
+## 🤝 Contributing
+
+When contributing documentation changes:
+
+1. **Test locally**: Run `npm run dev` and preview your changes
+2. **Build check**: Run `npm run build` to ensure no build errors
+3. **Link check**: Verify all internal and external links work
+4. **Spelling**: Use correct spelling and consistent terminology
+
+See [Contributing Guide](https://northstardb.github.io/plandb/contributing) for more details.

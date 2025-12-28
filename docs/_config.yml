@@ -1,0 +1,6 @@
+# GitHub Pages configuration for Jekyll compatibility
+# This file tells GitHub Pages to use the existing Astro build
+# and not attempt to build with Jekyll
+
+theme: null
+plugins: []
