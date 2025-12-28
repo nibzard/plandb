@@ -429,13 +429,68 @@ pub const SnapshotManager = struct {
             std.math.maxInt(i64),
         ) orelse return null;
 
-        // For now, use simple field-level delta (placeholder)
-        // In real implementation, would parse JSON and compute actual field deltas
-        _ = prev_snapshot;
-        _ = new_state;
+        // Parse both JSON states
+        const prev_parsed = std.json.parseFromSlice(
+            std.json.Value,
+            self.allocator,
+            prev_snapshot.state_data,
+            .{ .allocate = .alloc_if_needed },
+        ) catch |err| {
+            std.log.warn("Failed to parse previous snapshot state: {}", .{err});
+            return null;
+        };
+        defer prev_parsed.deinit();
 
-        // TODO: Implement actual delta computation
-        return null;
+        const new_parsed = std.json.parseFromSlice(
+            std.json.Value,
+            self.allocator,
+            new_state,
+            .{ .allocate = .alloc_if_needed },
+        ) catch |err| {
+            std.log.warn("Failed to parse new state: {}", .{err});
+            return null;
+        };
+        defer new_parsed.deinit();
+
+        // Compute field-level delta
+        const delta_result = try computeFieldDelta(
+            self.allocator,
+            prev_parsed.value,
+            new_parsed.value,
+        );
+
+        // If no fields changed, return null (no delta needed)
+        if (delta_result.changed_fields.items.len == 0) {
+            delta_result.deinit(self.allocator);
+            return null;
+        }
+
+        // Serialize delta data
+        var delta_data_buffer = std.ArrayList(u8).init(self.allocator);
+        defer delta_data_buffer.deinit();
+
+        // Build delta data as JSON array of changed fields
+        try delta_data_buffer.append('[');
+        for (delta_result.changed_fields.items, 0..) |field, i| {
+            if (i > 0) try delta_data_buffer.append(',');
+            try delta_data_buffer.append('"');
+            try delta_data_buffer.appendSlice(field);
+            try delta_data_buffer.append('"');
+        }
+        try delta_data_buffer.append(']');
+
+        const delta_data = try self.allocator.dupe(u8, delta_data_buffer.items);
+        const base_snapshot_id = try self.allocator.dupe(u8, prev_snapshot.id);
+
+        // Clean up
+        delta_result.deinit(self.allocator);
+
+        return EntitySnapshot.DeltaInfo{
+            .base_snapshot_id = base_snapshot_id,
+            .changed_field_count = @intCast(delta_result.changed_fields.items.len),
+            .delta_data = delta_data,
+            .compression = .field_delta,
+        };
     }
 
     /// Restore entity state from snapshot
@@ -462,6 +517,89 @@ pub const SnapshotManager = struct {
         return null;
     }
 };
+
+// ==================== Delta Computation Helpers ====================
+
+/// Result of field delta computation
+pub const FieldDeltaResult = struct {
+    changed_fields: std.ArrayList([]const u8),
+    prev_value: std.json.Value,
+    new_value: std.json.Value,
+
+    pub fn deinit(self: *FieldDeltaResult, allocator: std.mem.Allocator) void {
+        for (self.changed_fields.items) |field| {
+            allocator.free(field);
+        }
+        self.changed_fields.deinit();
+    }
+};
+
+/// Compare two JSON values for equality
+pub fn jsonValuesEqual(a: std.json.Value, b: std.json.Value) bool {
+    return switch (a) {
+        .null => b == .null,
+        .bool => |ab| b == .bool and ab == b.bool,
+        .integer => |ai| b == .integer and ai == b.integer,
+        .float => |af| b == .float and af == b.float,
+        .string => |as| b == .string and std.mem.eql(u8, as, b.string),
+        .array => |aa| {
+            const ba = b.array orelse return false;
+            if (aa.items.len != ba.items.len) return false;
+            for (aa.items, ba.items) |ai, bi| {
+                if (!jsonValuesEqual(ai, bi)) return false;
+            }
+            return true;
+        },
+        .object => |ao| {
+            const bo = b.object orelse return false;
+            if (ao.count() != bo.count()) return false;
+            var it = ao.iterator();
+            while (it.next()) |entry| {
+                const b_val = bo.get(entry.key_ptr.*) orelse return false;
+                if (!jsonValuesEqual(entry.value_ptr.*, b_val)) return false;
+            }
+            return true;
+        },
+    };
+}
+
+/// Compute field-level delta between two JSON objects
+pub fn computeFieldDelta(
+    allocator: std.mem.Allocator,
+    prev: std.json.Value,
+    new: std.json.Value,
+) !FieldDeltaResult {
+    var result = FieldDeltaResult{
+        .changed_fields = std.ArrayList([]const u8).init(allocator),
+        .prev_value = prev,
+        .new_value = new,
+    };
+
+    const prev_obj = prev.object orelse return result;
+    const new_obj = new.object orelse return result;
+
+    // Find added/modified fields
+    var new_it = new_obj.iterator();
+    while (new_it.next()) |entry| {
+        const field_name = entry.key_ptr.*;
+
+        if (prev_obj.get(field_name)) |prev_value| {
+            // Field exists in both, check if changed
+            if (!jsonValuesEqual(prev_value, entry.value_ptr.*)) {
+                try result.changed_fields.append(try allocator.dupe(u8, field_name));
+            }
+        } else {
+            // Field is new
+            try result.changed_fields.append(try allocator.dupe(u8, field_name));
+        }
+    }
+
+    // Note: We don't track deleted fields since the full new state
+    // is stored in the snapshot. The delta only indicates which fields
+    // changed to enable delta compression optimization.
+
+    return result;
+}
 
 // ==================== State Change Types ====================
 
@@ -4199,4 +4337,166 @@ test "TemporalIndex.invalidateRollups" {
     defer std.testing.allocator.free(rollups);
 
     try std.testing.expectEqual(rollups.len, 0);
+}
+
+// ==================== Delta Computation Tests ====================
+
+test "jsonValuesEqual identical primitives" {
+    try std.testing.expect(jsonValuesEqual(
+        std.json.Value{ .integer = 42 },
+        std.json.Value{ .integer = 42 },
+    ));
+
+    try std.testing.expect(jsonValuesEqual(
+        std.json.Value{ .string = "hello" },
+        std.json.Value{ .string = "hello" },
+    ));
+
+    try std.testing.expect(jsonValuesEqual(
+        std.json.Value{ .bool = true },
+        std.json.Value{ .bool = true },
+    ));
+
+    try std.testing.expect(jsonValuesEqual(
+        std.json.Value.null,
+        std.json.Value.null,
+    ));
+}
+
+test "jsonValuesEqual different primitives" {
+    try std.testing.expect(!jsonValuesEqual(
+        std.json.Value{ .integer = 42 },
+        std.json.Value{ .integer = 43 },
+    ));
+
+    try std.testing.expect(!jsonValuesEqual(
+        std.json.Value{ .string = "hello" },
+        std.json.Value{ .string = "world" },
+    ));
+
+    try std.testing.expect(!jsonValuesEqual(
+        std.json.Value{ .integer = 42 },
+        std.json.Value{ .string = "42" },
+    ));
+}
+
+test "jsonValuesEqual arrays" {
+    const allocator = std.testing.allocator;
+
+    const arr1 = try std.json.parseFromSlice(std.json.Value, allocator, "[1,2,3]", .{});
+    defer arr1.deinit();
+
+    const arr2 = try std.json.parseFromSlice(std.json.Value, allocator, "[1,2,3]", .{});
+    defer arr2.deinit();
+
+    const arr3 = try std.json.parseFromSlice(std.json.Value, allocator, "[1,2,4]", .{});
+    defer arr3.deinit();
+
+    try std.testing.expect(jsonValuesEqual(arr1.value, arr2.value));
+    try std.testing.expect(!jsonValuesEqual(arr1.value, arr3.value));
+}
+
+test "jsonValuesEqual objects" {
+    const allocator = std.testing.allocator;
+
+    const obj1 = try std.json.parseFromSlice(std.json.Value, allocator, "{\"a\":1,\"b\":2}", .{});
+    defer obj1.deinit();
+
+    const obj2 = try std.json.parseFromSlice(std.json.Value, allocator, "{\"b\":2,\"a\":1}", .{});
+    defer obj2.deinit();
+
+    const obj3 = try std.json.parseFromSlice(std.json.Value, allocator, "{\"a\":1,\"b\":3}", .{});
+    defer obj3.deinit();
+
+    try std.testing.expect(jsonValuesEqual(obj1.value, obj2.value));
+    try std.testing.expect(!jsonValuesEqual(obj1.value, obj3.value));
+}
+
+test "computeFieldDelta no changes" {
+    const allocator = std.testing.allocator;
+
+    const prev = try std.json.parseFromSlice(std.json.Value, allocator, "{\"a\":1,\"b\":2}", .{});
+    defer prev.deinit();
+
+    const new = try std.json.parseFromSlice(std.json.Value, allocator, "{\"a\":1,\"b\":2}", .{});
+    defer new.deinit();
+
+    const result = try computeFieldDelta(allocator, prev.value, new.value);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), result.changed_fields.items.len);
+}
+
+test "computeFieldDelta single field change" {
+    const allocator = std.testing.allocator;
+
+    const prev = try std.json.parseFromSlice(std.json.Value, allocator, "{\"a\":1,\"b\":2}", .{});
+    defer prev.deinit();
+
+    const new = try std.json.parseFromSlice(std.json.Value, allocator, "{\"a\":1,\"b\":3}", .{});
+    defer new.deinit();
+
+    const result = try computeFieldDelta(allocator, prev.value, new.value);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.changed_fields.items.len);
+    try std.testing.expectEqualStrings("b", result.changed_fields.items[0]);
+}
+
+test "computeFieldDelta multiple field changes" {
+    const allocator = std.testing.allocator;
+
+    const prev = try std.json.parseFromSlice(std.json.Value, allocator, "{\"a\":1,\"b\":2,\"c\":3}", .{});
+    defer prev.deinit();
+
+    const new = try std.json.parseFromSlice(std.json.Value, allocator, "{\"a\":10,\"b\":20,\"c\":3}", .{});
+    defer new.deinit();
+
+    const result = try computeFieldDelta(allocator, prev.value, new.value);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), result.changed_fields.items.len);
+
+    // Sort for consistent comparison
+    std.mem.sort([]const u8, result.changed_fields.items, {}, struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.lessThan);
+
+    try std.testing.expectEqualStrings("a", result.changed_fields.items[0]);
+    try std.testing.expectEqualStrings("b", result.changed_fields.items[1]);
+}
+
+test "computeFieldDelta new field" {
+    const allocator = std.testing.allocator;
+
+    const prev = try std.json.parseFromSlice(std.json.Value, allocator, "{\"a\":1,\"b\":2}", .{});
+    defer prev.deinit();
+
+    const new = try std.json.parseFromSlice(std.json.Value, allocator, "{\"a\":1,\"b\":2,\"c\":3}", .{});
+    defer new.deinit();
+
+    const result = try computeFieldDelta(allocator, prev.value, new.value);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), result.changed_fields.items.len);
+    try std.testing.expectEqualStrings("c", result.changed_fields.items[0]);
+}
+
+test "computeFieldDelta nested objects" {
+    const allocator = std.testing.allocator;
+
+    const prev = try std.json.parseFromSlice(std.json.Value, allocator, "{\"a\":{\"x\":1},\"b\":2}", .{});
+    defer prev.deinit();
+
+    const new = try std.json.parseFromSlice(std.json.Value, allocator, "{\"a\":{\"x\":2},\"b\":2}", .{});
+    defer new.deinit();
+
+    const result = try computeFieldDelta(allocator, prev.value, new.value);
+    defer result.deinit(allocator);
+
+    // The entire "a" field should be marked as changed
+    try std.testing.expectEqual(@as(usize, 1), result.changed_fields.items.len);
+    try std.testing.expectEqualStrings("a", result.changed_fields.items[0]);
 }
