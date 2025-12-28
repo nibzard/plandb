@@ -1,0 +1,352 @@
+---
+title: Release Process
+description: Guide to creating releases for NorthstarDB, including versioning strategy, release checklist, changelog generation, and deployment.
+---
+
+# Release Process
+
+This guide covers the complete release process for NorthstarDB, from versioning strategy to deployment.
+
+## Table of Contents
+
+- [Versioning Strategy](#versioning-strategy)
+- [Release Checklist](#release-checklist)
+- [Changelog Generation](#changelog-generation)
+- [Deployment Process](#deployment-process)
+- [Post-Release](#post-release)
+
+## Versioning Strategy
+
+NorthstarDB uses [Semantic Versioning 2.0.0](https://semver.org/).
+
+### Version Format
+
+```
+MAJOR.MINOR.PATCH
+
+Example: 1.2.3
+  MAJOR (1):   Breaking changes
+  MINOR (2):   New features (backward compatible)
+  PATCH (3):   Bug fixes (backward compatible)
+```
+
+### Version Types
+
+| Type | When to Use | Examples |
+|------|-------------|----------|
+| **Major** | Breaking API changes, file format changes | 1.0 → 2.0 |
+| **Minor** | New features, backward compatible | 1.0 → 1.1 |
+| **Patch** | Bug fixes, minor improvements | 1.0.0 → 1.0.1 |
+
+### Pre-Release Versions
+
+For development and testing:
+
+```
+1.2.3-alpha.1   # Alpha release (feature incomplete)
+1.2.3-beta.1    # Beta release (feature complete, testing)
+1.2.3-rc.1      # Release candidate (final testing)
+```
+
+### Development Versions
+
+For active development:
+
+```
+1.2.3-dev       # Development version (not released)
+```
+
+### Version Lifecycle
+
+```
+Development → Alpha → Beta → RC → Release
+     ↓          ↓       ↓      ↓       ↓
+  1.2-dev   1.2-alpha  1.2-beta  1.2-rc   1.2.0
+```
+
+## Release Checklist
+
+### Pre-Release
+
+- [ ] **All tests passing**
+  - [ ] Unit tests: `zig build test`
+  - [ ] Property tests: `zig test src/property_based.zig`
+  - [ ] Hardening tests: `zig test src/hardening.zig`
+
+- [ ] **Benchmarks green**
+  - [ ] Micro benchmarks: No regression >5% throughput, +10% p99 latency
+  - [ ] Macro benchmarks: No significant regressions
+  - [ ] Update baselines if improvements made
+
+- [ ] **Documentation complete**
+  - [ ] API docs updated
+  - [ ] Changelog written
+  - [ ] Migration guide (if breaking changes)
+
+- [ ] **Code quality**
+  - [ ] No compiler warnings
+  - [ ] Code reviewed and approved
+  - [ ] Spec files updated if needed
+
+### Release Candidate
+
+- [ ] **Tag RC version**
+  ```bash
+  git tag -a v1.2.3-rc.1 -m "Release candidate 1.2.3-rc.1"
+  git push origin v1.2.3-rc.1
+  ```
+
+- [ ] **Run full test suite**
+  - [ ] Test on supported platforms
+  - [ ] Test with Zig versions: 0.11.0, 0.12.0, 0.13.0
+  - [ ] Verify upgrade from previous version
+
+- [ ] **Smoke tests**
+  - [ ] Create database
+  - [ ] Read/write operations
+  - [ ] Crash recovery
+  - [ ] Time travel queries
+
+- [ ] **Performance validation**
+  - [ ] Benchmark comparisons stable
+  - [ ] No memory leaks detected
+  - [ ] Crash recovery tests pass
+
+### Final Release
+
+- [ ] **Update version numbers**
+  - [ ] `build.zig`: Update `version` field
+  - [ ] Docs: Update version references
+
+- [ ] **Write release notes**
+  - [ ] Summary of changes
+  - [ ] Breaking changes (if any)
+  - [ ] New features
+  - [ ] Bug fixes
+  - [ ] Upgrading instructions
+
+- [ ] **Create git tag**
+  ```bash
+  git tag -a v1.2.3 -m "Release 1.2.3"
+  git push origin v1.2.3
+  ```
+
+- [ ] **Create GitHub release**
+  - [ ] Go to GitHub → Releases → Draft new release
+  - [ ] Select tag: `v1.2.3`
+  - [ ] Title: `Release 1.2.3`
+  - [ ] Paste release notes
+  - [ ] Attach binaries (if applicable)
+
+## Changelog Generation
+
+### Changelog Format
+
+NorthstarDB follows [Keep a Changelog](https://keepachangelog.com/) format:
+
+```markdown
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Added
+- New feature under development
+
+## [1.2.3] - 2025-12-28
+
+### Added
+- B+tree prefix compression for internal nodes
+- Configurable page cache size
+
+### Changed
+- Improved MVCC snapshot performance by 30%
+
+### Fixed
+- Race condition in concurrent snapshot creation
+- WAL replay corruption detection
+
+### Performance
+- Point lookup throughput: +15% (9.3M → 10.7M ops/sec)
+- p99 latency: -20% (201ns → 161ns)
+
+## [1.2.2] - 2025-12-15
+
+### Fixed
+- Memory leak in pager page cache
+```
+
+### Automatic Generation
+
+Use git log to help generate changelog:
+
+```bash
+# Get commits since last release
+git log v1.2.2..v1.2.3 --pretty=format:"- %s"
+
+# Get commits by type
+git log v1.2.2..v1.2.3 --grep="feat" --pretty=format:"- %s"   # Features
+git log v1.2.2..v1.2.3 --grep="fix" --pretty=format:"- %s"    # Bug fixes
+git log v1.2.2..v1.2.3 --grep="perf" --pretty=format:"- %s"   # Performance
+```
+
+### Commit Message Guidelines
+
+Use conventional commits for better changelog generation:
+
+```
+feat(btree): add prefix compression
+fix(wal): validate payload checksum before replay
+perf(mvcc): optimize snapshot creation
+docs(api): update get() documentation
+```
+
+## Deployment Process
+
+### Binary Release
+
+For Zig libraries, binary releases aren't typically needed. Users simply:
+
+```bash
+# Add to build.zig.zon
+.dependencies = .{
+    .northstardb = .{
+        .url = "https://github.com/northstardb/plandb/archive/refs/tags/v1.2.3.tar.gz",
+        .hash = "1220...",  // sha-256 hash
+    },
+}
+```
+
+### Publishing to Package Registry (Future)
+
+When Zig package registry is available:
+
+```bash
+# Publish to zig.pm
+zig publish northstardb/plandb@1.2.3
+```
+
+### Documentation Deployment
+
+Documentation is automatically deployed to GitHub Pages:
+
+```bash
+# Triggered by pushing tag
+git push origin v1.2.3
+
+# Docs workflow builds and deploys:
+# https://northstardb.github.io/plandb/
+```
+
+### Update Documentation Links
+
+After release, update:
+
+- [ ] README.md version badge
+- [ ] Getting started guide (latest version)
+- [ ] API documentation version selector
+- [ ] Website download links
+
+## Post-Release
+
+### Announcements
+
+- [ ] **GitHub release** published
+- [ ] **Discord/Matrix** announcement
+- [ ] **Twitter/X** post
+- [ ] **Blog post** (for major releases)
+
+### Monitoring
+
+After release, monitor for:
+
+- [ ] Download counts
+- [ ] GitHub issues (regression reports)
+- [ ] Community feedback
+- [ ] Benchmark comparisons from users
+
+### Patch Releases
+
+If critical bug found:
+
+```bash
+# Create patch branch
+git checkout -b release-1.2.x
+git cherry-pick <commit-hash>
+
+# Bump patch version
+# 1.2.3 → 1.2.4
+
+# Tag and release
+git tag -a v1.2.4 -m "Hotfix: critical bug"
+git push origin v1.2.4
+```
+
+### Branch Maintenance
+
+- **Main branch**: Always reflects latest development
+- **Release branches**: `release-1.2.x` for patch releases
+- **Maintenance branches**: `maint-1.1.x` for LTS support
+
+## Release Automation Scripts
+
+### Version Bump Script
+
+```bash
+#!/bin/bash
+# scripts/bump_version.sh
+
+VERSION=$1
+
+if [ -z "$VERSION" ]; then
+    echo "Usage: bump_version.sh X.Y.Z"
+    exit 1
+fi
+
+# Update build.zig
+sed -i "s/version = \"[^\"]*\"/version = \"$VERSION\"/" build.zig
+
+# Create commit
+git add build.zig
+git commit -m "chore: bump version to $VERSION"
+```
+
+### Release Script
+
+```bash
+#!/bin/bash
+# scripts/release.sh
+
+VERSION=$1
+
+if [ -z "$VERSION" ]; then
+    echo "Usage: release.sh X.Y.Z"
+    exit 1
+fi
+
+# Run tests
+zig build test || exit 1
+
+# Run benchmarks
+zig-out/bin/bench run || exit 1
+
+# Create tag
+git tag -a "v$VERSION" -m "Release $VERSION"
+git push origin "v$VERSION"
+
+echo "Release $VERSION created!"
+echo "Don't forget to:"
+echo "1. Write release notes on GitHub"
+echo "2. Announce on community channels"
+```
+
+## Related Documentation
+
+- [Contributing Guide](/contributing)
+- [Testing Guide](/guides/testing)
+- [Benchmarking Guide](/guides/benchmarking)
+- [Changelog](/changelog)
