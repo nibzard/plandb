@@ -10,6 +10,95 @@ const std = @import("std");
 const events = @import("../events/index.zig");
 const autonomy = @import("../autonomy/regression_detection.zig");
 
+// ==================== Rate Limiting ====================
+
+/// Token bucket state for per-key rate limiting
+const TokenBucket = struct {
+    tokens: f64,
+    last_refill_ns: i64,
+
+    pub fn init(capacity: f64, now_ns: i64) TokenBucket {
+        return TokenBucket{
+            .tokens = capacity,
+            .last_refill_ns = now_ns,
+        };
+    }
+};
+
+/// Rate limit state tracking across metric keys
+const RateLimitState = struct {
+    buckets: std.StringHashMap(TokenBucket),
+    mutex: std.Thread.Mutex,
+    rate_per_sec: u32,
+    bucket_capacity: f64,
+
+    pub fn init(allocator: std.mem.Allocator, rate_per_sec: u32) RateLimitState {
+        return RateLimitState{
+            .buckets = std.StringHashMap(TokenBucket).init(allocator),
+            .mutex = .{},
+            .rate_per_sec = rate_per_sec,
+            .bucket_capacity = @as(f64, @floatFromInt(rate_per_sec)) * 2.0, // Allow bursts up to 2x rate
+        };
+    }
+
+    pub fn deinit(self: *RateLimitState) void {
+        self.buckets.deinit();
+    }
+
+    /// Try to consume a token from the bucket for the given key
+    pub fn tryAcquire(self: *RateLimitState, key: []const u8, now_ns: i64) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const bucket = self.getOrCreateBucket(key, now_ns);
+        return self.consumeToken(bucket, now_ns);
+    }
+
+    /// Clean up stale buckets (older than 5 minutes)
+    pub fn cleanup(self: *RateLimitState, allocator: std.mem.Allocator, now_ns: i64) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const stale_threshold_ns = 5 * 60 * 1_000_000_000; // 5 minutes
+        var it = self.buckets.iterator();
+        while (it.next()) |entry| {
+            const bucket = entry.value_ptr.*;
+            if (now_ns - bucket.last_refill_ns > stale_threshold_ns) {
+                allocator.free(entry.key_ptr.*);
+                _ = self.buckets.remove(entry.key_ptr.*);
+            }
+        }
+    }
+
+    fn getOrCreateBucket(self: *RateLimitState, key: []const u8, now_ns: i64) *TokenBucket {
+        const gop = self.buckets.getOrPut(key) catch unreachable;
+        if (!gop.found_existing) {
+            gop.key_ptr.* = key;
+            gop.value_ptr.* = TokenBucket.init(self.bucket_capacity, now_ns);
+        }
+        return gop.value_ptr;
+    }
+
+    fn consumeToken(self: *RateLimitState, bucket: *TokenBucket, now_ns: i64) bool {
+        // Refill tokens based on elapsed time
+        const elapsed_ns = now_ns - bucket.last_refill_ns;
+        const elapsed_sec = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000.0;
+
+        // Calculate tokens to add: rate * elapsed_time
+        const tokens_to_add = elapsed_sec * @as(f64, @floatFromInt(self.rate_per_sec));
+        bucket.tokens = @min(bucket.tokens + tokens_to_add, self.bucket_capacity);
+        bucket.last_refill_ns = now_ns;
+
+        // Try to consume one token
+        if (bucket.tokens >= 1.0) {
+            bucket.tokens -= 1.0;
+            return true;
+        }
+
+        return false;
+    }
+};
+
 /// Observability Cartridge
 ///
 /// Ingests, analyzes, and retrieves performance metrics with:
@@ -22,6 +111,7 @@ pub const ObservabilityCartridge = struct {
     event_manager: *events.EventManager,
     detector: autonomy.RegressionDetector,
     config: Config,
+    rate_limit_state: RateLimitState,
 
     const Self = @This();
 
@@ -45,11 +135,13 @@ pub const ObservabilityCartridge = struct {
             .event_manager = event_manager,
             .detector = autonomy.RegressionDetector.init(allocator, detector_config),
             .config = config,
+            .rate_limit_state = RateLimitState.init(allocator, config.rate_limit_per_sec),
         };
     }
 
     pub fn deinit(self: *Self) void {
         self.detector.deinit();
+        self.rate_limit_state.deinit();
     }
 
     /// Record a performance metric sample
@@ -364,11 +456,8 @@ pub const ObservabilityCartridge = struct {
     }
 
     fn tryAcquireRateLimit(self: *Self, key: []const u8, now: i64) bool {
-        _ = key;
-        _ = now;
-        _ = self;
-        // TODO: Implement rate limiting with token bucket or sliding window
-        return true;
+        // Use token bucket algorithm for per-key rate limiting
+        return self.rate_limit_state.tryAcquire(key, now);
     }
 
     fn convertAlert(self: *Self, raw_alert: autonomy.RegressionAlert) !RegressionAlert {
@@ -735,4 +824,218 @@ test "ObservabilityCartridge performance trend" {
         defer t.deinit(allocator);
         try std.testing.expectEqual(@as(f64, 10), t.baseline_latency);
     }
+}
+
+test "TokenBucket init" {
+    const bucket = TokenBucket.init(10.0, 0);
+    try std.testing.expectEqual(@as(f64, 10.0), bucket.tokens);
+    try std.testing.expectEqual(@as(i64, 0), bucket.last_refill_ns);
+}
+
+test "TokenBucket consume token" {
+    var bucket = TokenBucket.init(5.0, 0);
+
+    // Consume one token
+    try std.testing.expectEqual(@as(f64, 5.0), bucket.tokens);
+    bucket.tokens -= 1.0;
+    try std.testing.expectEqual(@as(f64, 4.0), bucket.tokens);
+}
+
+test "RateLimitState.tryAcquire within limit" {
+    const allocator = std.testing.allocator;
+    var state = RateLimitState.init(allocator, 100); // 100 tokens/sec
+    defer state.deinit();
+
+    // First acquisition should succeed
+    try std.testing.expect(state.tryAcquire("metric_key", 0));
+
+    // Immediate second acquisition should also succeed (burst capacity)
+    try std.testing.expect(state.tryAcquire("metric_key", 0));
+}
+
+test "RateLimitState.tryAcquire respects rate limit" {
+    const allocator = std.testing.allocator;
+    var state = RateLimitState.init(allocator, 10); // 10 tokens/sec, 20 burst capacity
+    defer state.deinit();
+
+    // Consume all burst tokens (20 = rate * 2)
+    var i: u32 = 0;
+    while (i < 20) : (i += 1) {
+        try std.testing.expect(state.tryAcquire("test_key", 0), "Should succeed within burst capacity");
+    }
+
+    // Next request should fail (no tokens left)
+    try std.testing.expect(!state.tryAcquire("test_key", 0), "Should fail when tokens exhausted");
+
+    // After 100ms (0.1s), should get 1 token back
+    const now_100ms = 100_000_000;
+    try std.testing.expect(state.tryAcquire("test_key", now_100ms), "Should succeed after refill");
+
+    // Should fail again immediately
+    try std.testing.expect(!state.tryAcquire("test_key", now_100ms), "Should fail again after consuming refill");
+
+    // After 1 second, should get 10 more tokens
+    const now_1s = 1_000_000_000;
+    i = 0;
+    while (i < 10) : (i += 1) {
+        try std.testing.expect(state.tryAcquire("test_key", now_1s), "Should succeed after 1 second refill");
+    }
+
+    // Should fail again
+    try std.testing.expect(!state.tryAcquire("test_key", now_1s), "Should fail after consuming 1 second refill");
+}
+
+test "RateLimitState separate buckets for separate keys" {
+    const allocator = std.testing.allocator;
+    var state = RateLimitState.init(allocator, 10); // 10 tokens/sec
+    defer state.deinit();
+
+    // Each key should have its own bucket
+    try std.testing.expect(state.tryAcquire("key1", 0));
+    try std.testing.expect(state.tryAcquire("key2", 0));
+    try std.testing.expect(state.tryAcquire("key3", 0));
+
+    // Can exhaust one bucket without affecting others
+    var i: u32 = 0;
+    while (i < 20) : (i += 1) {
+        _ = state.tryAcquire("key1", 0);
+    }
+
+    // key1 should be exhausted
+    try std.testing.expect(!state.tryAcquire("key1", 0));
+
+    // But key2 and key3 should still work
+    try std.testing.expect(state.tryAcquire("key2", 0));
+    try std.testing.expect(state.tryAcquire("key3", 0));
+}
+
+test "RateLimitState.token refill over time" {
+    const allocator = std.testing.allocator;
+    var state = RateLimitState.init(allocator, 5); // 5 tokens/sec
+    defer state.deinit();
+
+    // Exhaust initial burst capacity (10 tokens)
+    var i: u32 = 0;
+    while (i < 10) : (i += 1) {
+        try std.testing.expect(state.tryAcquire("metric", 0));
+    }
+
+    // Should be exhausted
+    try std.testing.expect(!state.tryAcquire("metric", 0));
+
+    // After 200ms (0.2s), should get 1 token (0.2 * 5 = 1)
+    try std.testing.expect(state.tryAcquire("metric", 200_000_000));
+    try std.testing.expect(!state.tryAcquire("metric", 200_000_000));
+
+    // After another 200ms (400ms total), should get another token
+    try std.testing.expect(state.tryAcquire("metric", 400_000_000));
+    try std.testing.expect(!state.tryAcquire("metric", 400_000_000));
+
+    // After 1 second total, should get 5 tokens
+    i = 0;
+    while (i < 5) : (i += 1) {
+        try std.testing.expect(state.tryAcquire("metric", 1_000_000_000));
+    }
+
+    // Should be exhausted again
+    try std.testing.expect(!state.tryAcquire("metric", 1_000_000_000));
+}
+
+test "ObservabilityCartridge rate limiting" {
+    const allocator = std.testing.allocator;
+
+    const config = events.storage.EventStore.Config{
+        .events_path = "test_obs_rate_limit_events.dat",
+        .index_path = "test_obs_rate_limit_events.idx",
+    };
+
+    defer {
+        std.fs.cwd().deleteFile(config.events_path) catch {};
+        std.fs.cwd().deleteFile(config.index_path) catch {};
+    }
+
+    var store = try events.storage.EventStore.open(allocator, config);
+    defer store.deinit();
+
+    var event_manager = events.EventManager.init(allocator, &store);
+
+    // Set rate limit to 10 per second with burst capacity of 20
+    var cartridge = try ObservabilityCartridge.init(allocator, &event_manager, .{
+        .rate_limit_per_sec = 10,
+    });
+    defer cartridge.deinit();
+
+    var dimensions = DimensionMap{ .map = std.StringHashMap([]const u8).init(allocator) };
+    defer dimensions.deinit();
+
+    // Should be able to record up to burst capacity (20)
+    var success_count: usize = 0;
+    var i: usize = 0;
+    while (i < 25) : (i += 1) {
+        const result = cartridge.recordMetric("latency", 10, "ms", dimensions, .{
+            .commit_range = null,
+            .session_ids = &[_]u64{},
+        });
+
+        if (result) |_| {
+            success_count += 1;
+        } else |err| {
+            // Should get RateLimited error after burst capacity
+            try std.testing.expectEqual(error.RateLimited, err);
+        }
+    }
+
+    // Should have succeeded exactly 20 times (burst capacity = rate * 2)
+    try std.testing.expectEqual(@as(usize, 20), success_count);
+}
+
+test "ObservabilityCartridge rate limiting per metric key" {
+    const allocator = std.testing.allocator;
+
+    const config = events.storage.EventStore.Config{
+        .events_path = "test_obs_rate_limit_perkey_events.dat",
+        .index_path = "test_obs_rate_limit_perkey_events.idx",
+    };
+
+    defer {
+        std.fs.cwd().deleteFile(config.events_path) catch {};
+        std.fs.cwd().deleteFile(config.index_path) catch {};
+    }
+
+    var store = try events.storage.EventStore.open(allocator, config);
+    defer store.deinit();
+
+    var event_manager = events.EventManager.init(allocator, &store);
+
+    // Set rate limit to 5 per second
+    var cartridge = try ObservabilityCartridge.init(allocator, &event_manager, .{
+        .rate_limit_per_sec = 5,
+    });
+    defer cartridge.deinit();
+
+    var dimensions1 = DimensionMap{ .map = std.StringHashMap([]const u8).init(allocator) };
+    defer dimensions1.deinit();
+    try dimensions1.map.put("op", try allocator.dupe(u8, "read"));
+
+    var dimensions2 = DimensionMap{ .map = std.StringHashMap([]const u8).init(allocator) };
+    defer dimensions2.deinit();
+    try dimensions2.map.put("op", try allocator.dupe(u8, "write"));
+
+    // Each metric should have its own rate limit bucket
+    // Should be able to record 10 for each (burst capacity = 5 * 2)
+    var i: usize = 0;
+    while (i < 10) : (i += 1) {
+        try cartridge.recordMetric("read_latency", 10, "ms", dimensions1, .{
+            .commit_range = null,
+            .session_ids = &[_]u64{},
+        });
+        try cartridge.recordMetric("write_latency", 10, "ms", dimensions2, .{
+            .commit_range = null,
+            .session_ids = &[_]u64{},
+        });
+    }
+
+    // Both should succeed since they have separate buckets
+    const stats = cartridge.getStats();
+    try std.testing.expectEqual(@as(usize, 2), stats.metrics_tracked);
 }
