@@ -154,7 +154,7 @@ pub const ReplayEngine = struct {
         const magic = std.mem.readInt(u32, header_bytes[0..4], .little);
         const record_type = std.mem.readInt(u16, header_bytes[6..8], .little);
         const payload_len = std.mem.readInt(u32, header_bytes[28..32], .little);
-        // const _payload_crc32c = std.mem.readInt(u32, header_bytes[36..40], .little);
+        const payload_crc32c = std.mem.readInt(u32, header_bytes[36..40], .little);
 
         // Debug header validation
         const expected_magic = 0x4C4F4752;
@@ -169,10 +169,27 @@ pub const ReplayEngine = struct {
             return ReadCommitResult{ .record = null, .next_pos = pos };
         }
 
-        // TODO: Validate header checksum - need to implement explicit calculation
-        // if (!validateHeaderChecksumExplicit(header_bytes)) {
-        //     return ReadCommitResult{ .record = null, .next_pos = pos };
-        // }
+        // Validate header checksum using the same method as WAL's calculateExplicitHeaderChecksum
+        const header_crc32c = std.mem.readInt(u32, header_bytes[32..36], .little);
+        var header_hasher = std.hash.Crc32.init();
+        // Hash each field explicitly to match WAL's calculation (order matters!)
+        header_hasher.update(header_bytes[0..4]);   // magic
+        header_hasher.update(header_bytes[4..6]);   // record_version
+        header_hasher.update(header_bytes[6..8]);   // record_type
+        header_hasher.update(header_bytes[8..10]);  // header_len
+        header_hasher.update(header_bytes[10..12]); // flags
+        header_hasher.update(header_bytes[12..20]); // txn_id
+        header_hasher.update(header_bytes[20..28]); // prev_lsn
+        header_hasher.update(header_bytes[28..32]); // payload_len
+        // header_crc32c field is treated as 0 during calculation
+        const zero_crc: u32 = 0;
+        header_hasher.update(std.mem.asBytes(&zero_crc));
+        header_hasher.update(header_bytes[36..40]); // payload_crc32c
+        const calculated_header_crc = header_hasher.final();
+        if (calculated_header_crc != header_crc32c) {
+            std.debug.print("Replay: Header CRC mismatch: calculated=0x{x}, expected=0x{x}\n", .{ calculated_header_crc, header_crc32c });
+            return ReadCommitResult{ .record = null, .next_pos = pos };
+        }
 
         // Check if this is a commit record
         std.debug.print("Replay: Validating record type\n", .{});
@@ -205,15 +222,15 @@ pub const ReplayEngine = struct {
 
         std.debug.print("Replay: Payload data (first 16 bytes): {any}\n", .{payload_data[0..@min(16, payload_data.len)]});
 
-        // TODO: Verify payload CRC - temporarily disabled for debugging
-        std.debug.print("Replay: Skipping payload CRC verification for debugging\n", .{});
-        // var hasher = std.hash.Crc32.init();
-        // hasher.update(payload_data);
-        // const calculated_payload_crc = hasher.final();
-        // if (calculated_payload_crc != payload_crc32c) {
-        //     std.debug.print("Replay: CRC mismatch: calculated={}, expected={}\n", .{ calculated_payload_crc, payload_crc32c });
-        //     return ReadCommitResult{ .record = null, .next_pos = pos + record_size };
-        // }
+        // Verify payload CRC using std.hash.Crc32 (matching WAL's payload calculation)
+        var payload_hasher = std.hash.Crc32.init();
+        payload_hasher.update(payload_data);
+        const calculated_payload_crc = payload_hasher.final();
+        if (calculated_payload_crc != payload_crc32c) {
+            std.debug.print("Replay: Payload CRC mismatch: calculated=0x{x}, expected=0x{x}\n", .{ calculated_payload_crc, payload_crc32c });
+            return ReadCommitResult{ .record = null, .next_pos = pos + record_size };
+        }
+        std.debug.print("Replay: Payload CRC verified: 0x{x}\n", .{calculated_payload_crc});
 
         // Read and verify trailer
         var trailer_bytes: [wal.WriteAheadLog.RecordTrailer.SIZE]u8 = undefined;

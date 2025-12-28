@@ -8,6 +8,7 @@ const ArrayListManaged = std.array_list.Managed;
 const format = @import("format.zig");
 const txn = @import("../txn.zig");
 const wal = @import("../wal.zig");
+const pager = @import("../pager.zig");
 
 /// Task offset reference
 pub const TaskOffset = struct {
@@ -587,8 +588,8 @@ pub const PendingTasksCartridge = struct {
         try self.metadata.serialize(metadata_fbs.writer());
         pos += metadata_size;
 
-        // Calculate and write checksum (TODO: use proper CRC32)
-        self.header.checksum = 0; // Placeholder for now
+        // Calculate and write checksum using CRC32C
+        self.header.checksum = pager.crc32c(buffer[0..pos]);
 
         // Rewrite header with final offsets and checksum
         var final_header_fbs = std.io.fixedBufferStream(buffer[0..header_size]);
