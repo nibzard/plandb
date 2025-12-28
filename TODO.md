@@ -1617,7 +1617,7 @@ Transform NorthstarDB's scattered markdown files into a modern, developer-friend
   - Batch operations
   - Error handling
   - Performance considerations
-- [ ] 🟠 Write snapshots and time travel guide
+- [x] 🟠 Write snapshots and time travel guide (Completed: added comprehensive snapshots and time travel guide covering understanding snapshots and MVCC, reading the latest state, time travel queries with beginReadAt, snapshot isolation guarantees, practical patterns, error handling, real-world use cases, and complete temporal version control example - docs/src/content/docs/guides/snapshots-time-travel.md)
   - Creating snapshots
   - Time-travel queries
   - Snapshot isolation guarantees
