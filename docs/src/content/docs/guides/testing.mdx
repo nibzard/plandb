@@ -1,0 +1,555 @@
+---
+title: Testing Guide
+description: Comprehensive guide to testing in NorthstarDB, including unit tests, property-based tests, hardening tests, and coverage expectations.
+---
+
+# Testing Guide
+
+NorthstarDB uses a comprehensive testing strategy combining unit tests, property-based tests, and hardening tests to ensure correctness and crash safety.
+
+## Table of Contents
+
+- [Test Philosophy](#test-philosophy)
+- [Test Organization](#test-organization)
+- [Unit Tests](#unit-tests)
+- [Property-Based Tests](#property-based-tests)
+- [Hardening Tests](#hardening-tests)
+- [Running Tests](#running-tests)
+- [Coverage Expectations](#coverage-expectations)
+- [Writing New Tests](#writing-new-tests)
+
+## Test Philosophy
+
+NorthstarDB follows these testing principles:
+
+1. **Tests are the source of truth** - The project's guiding principle states that "benchmarks and tests are the source of truth." All implementation must align with test specifications.
+
+2. **Spec-driven validation** - Every test cross-references specific requirements in the `spec/` directory, ensuring implementation matches specification.
+
+3. **Correctness first** - All new features must include tests that validate correctness before any performance optimization.
+
+4. **Property-based testing** - Use property-based tests to validate invariants over many random inputs, not just hand-picked examples.
+
+5. **Crash safety validation** - Hardening tests verify that the database recovers correctly from process crashes and I/O errors.
+
+## Test Organization
+
+### Directory Structure
+
+```
+src/
+├── db.zig              # Core API tests
+├── pager.zig           # Page allocation and checksum tests
+├── txn.zig             # Transaction semantics tests
+├── snapshot.zig        # Snapshot management tests
+├── wal.zig             # Write-ahead log tests
+├── replay.zig          # Replay engine tests
+├── recovery.zig        # Crash recovery tests
+├── hardening.zig       # Crash simulation and fault injection
+├── property_based.zig  # Property-based tests
+├── ref_model.zig       # Reference model for validation
+├── validator.zig       # Spec validation helpers
+└── fuzz.zig            # Fuzz testing infrastructure
+```
+
+### Test Categories
+
+| Category | Files | Purpose |
+|----------|-------|---------|
+| **Unit Tests** | `*.zig` (test blocks) | Test individual functions |
+| **Property-Based** | `property_based.zig` | Validate invariants over random inputs |
+| **Hardening** | `hardening.zig` | Crash recovery and fault injection |
+| **Fuzz Tests** | `fuzz.zig` | Random input fuzzing |
+| **Reference Model** | `ref_model.zig` | Deterministic correctness validation |
+
+## Unit Tests
+
+Unit tests are embedded directly in source files using Zig's `test` block syntax.
+
+### Basic Unit Test
+
+```zig
+test "page header calculates checksum correctly" {
+    const header = pager.PageHeader{
+        .magic = pager.PAGE_MAGIC,
+        .format_version = pager.FORMAT_VERSION,
+        .page_type = .btree_leaf,
+        .flags = 0,
+        .page_id = 42,
+        .txn_id = 1,
+        .payload_len = 100,
+        .header_crc32c = 0,  // Will be calculated
+        .page_crc32c = 0,
+    };
+
+    const calculated = header.calculateHeaderChecksum();
+    const expected = @as(u32, 0x12345678);  // Example expected value
+
+    try std.testing.expectEqual(expected, calculated);
+}
+```
+
+### Test Naming Convention
+
+```zig
+// Format: <module>_<what>_<expected_result>
+test "db_open_close_creates_new_database" { }
+test "txn_commit_publishes_changes" { }
+test "snapshot_isolation_readers_dont_block" { }
+test "btree_split_increases_height" { }
+```
+
+### Setup and Teardown
+
+```zig
+test "write transaction persists after commit" {
+    const allocator = std.testing.allocator;
+
+    // Setup: Create temporary database
+    const test_db_path = "/tmp/test-db";
+    defer std.fs.cwd().deleteFile(test_db_path) catch {};
+
+    var db = try Db.openFile(allocator, test_db_path);
+    defer db.close();
+
+    // Test: Write and commit
+    var w = try db.beginWrite();
+    try w.put("key", "value");
+    const txn_id = try w.commit();
+
+    // Verify: Reopen and read
+    var db2 = try Db.openFile(allocator, test_db_path);
+    defer db2.close();
+
+    var r = try db2.beginReadLatest();
+    defer r.close();
+
+    const result = try r.get("key");
+    try std.testing.expectEqualStrings("value", result);
+}
+```
+
+### Error Testing
+
+```zig
+test "begin_write_returns_error_when_writer_active" {
+    const allocator = std.testing.allocator;
+    const test_db_path = "/tmp/test-db-write-busy";
+    defer std.fs.cwd().deleteFile(test_db_path) catch {};
+
+    var db = try Db.openFile(allocator, test_db_path);
+    defer db.close();
+
+    // First writer
+    var w1 = try db.beginWrite();
+    defer w1.abort();
+
+    // Second writer should fail
+    const result = db.beginWrite();
+    try std.testing.expectError(error.WriteBusy, result);
+}
+```
+
+## Property-Based Tests
+
+Property-based tests validate invariants over many randomly generated inputs. They are more powerful than unit tests because they find edge cases you wouldn't think to test manually.
+
+### Property Test Framework
+
+NorthstarDB uses a custom property-based testing framework in `src/property_based.zig`.
+
+### Configuration
+
+```zig
+const config = property_based.PropertyTestConfig{
+    .max_concurrent_txns = 10,
+    .max_keys_per_txn = 50,
+    .max_total_keys = 200,
+    .random_seed = 42,
+    .num_iterations = 100,
+    .enable_crash_simulation = true,
+};
+```
+
+### Commutativity Property Test
+
+```zig
+test "commutativity property: independent transactions commute" {
+    const allocator = std.testing.allocator;
+    var result = property_based.PropertyTestResult.init("commutativity", allocator);
+    defer result.deinit();
+
+    var config = PropertyTestConfig{
+        .num_iterations = 100,
+        .random_seed = 42,
+        // ... other config
+    };
+
+    // Generate random independent transactions
+    for (0..config.num_iterations) |i| {
+        // Generate two transactions with disjoint key sets
+        const txn1_ops = try generateRandomOps(allocator, 10, .{.start = "a:", .end = "b:"});
+        defer allocator.free(txn1_ops);
+
+        const txn2_ops = try generateRandomOps(allocator, 10, .{.start = "c:", .end = "d:"});
+        defer allocator.free(txn2_ops);
+
+        // Apply in order A then B
+        const result_ab = try applyTransactionSequence(allocator, &.{txn1_ops, txn2_ops});
+        defer cleanupResult(result_ab);
+
+        // Apply in order B then A
+        const result_ba = try applyTransactionSequence(allocator, &.{txn2_ops, txn1_ops});
+        defer cleanupResult(result_ba);
+
+        // Results should be identical
+        if (!std.mem.eql(u8, result_ab, result_ba)) {
+            result.fail("Non-commutative result at iteration {}", .{i});
+            return result.fail();
+        }
+
+        result.passIteration();
+    }
+
+    result.complete(config.num_iterations);
+}
+```
+
+### Snapshot Immutability Property
+
+```zig
+test "snapshot immutability: reads never see concurrent writes" {
+    // Property: A snapshot taken at time T never reflects changes from T+1
+
+    for (0..100) |i| {
+        var db = try Db.open(allocator);
+        defer db.close();
+
+        // Take snapshot at time T
+        var snapshot = try db.createSnapshot();
+        defer snapshot.release();
+
+        // Perform writes
+        var w = try db.beginWrite();
+        try w.put("key", "new_value");
+        _ = try w.commit();
+
+        // Original snapshot should not see new value
+        const value = snapshot.get("key");
+        try std.testing.expect(value == null or !std.mem.eql(u8, value.?, "new_value"));
+    }
+}
+```
+
+## Hardening Tests
+
+Hardening tests verify crash safety and fault tolerance by simulating various failure scenarios.
+
+### Torn Write Detection
+
+```zig
+test "hardening: torn write header detected" {
+    const allocator = std.testing.allocator;
+    const log_path = "/tmp/test-wal-torn";
+
+    // Create valid WAL
+    {
+        var wal = try WriteAheadLog.create(log_path, allocator);
+        defer wal.deinit();
+        // ... write valid commit record
+    }
+
+    // Corrupt: Truncate in middle of header
+    {
+        const file = try std.fs.cwd().openFile(log_path, .{.mode = .read_write});
+        defer file.close();
+        try file.setEndPos(20);  // Truncate at byte 20
+    }
+
+    // Replay should handle corruption gracefully
+    var engine = try ReplayEngine.init(allocator, log_path);
+    defer engine.deinit();
+
+    const result = try engine.rebuildAll();
+    defer result.deinit();
+
+    // Should process 0 transactions (corruption detected)
+    try std.testing.expectEqual(@as(usize, 0), result.processed_txns);
+}
+```
+
+### Crash Recovery Test
+
+```zig
+test "hardening: crash during commit recovery" {
+    const allocator = std.testing.allocator;
+    const db_path = "/tmp/test-db-crash";
+
+    // Simulate commit sequence with crash at various points
+    const crash_points = [_]usize{0, 1, 2, 5, 10, 20, 50, 100};
+
+    for (crash_points) |crash_point| {
+        // ... setup database and workload
+
+        // Simulate crash during operation
+        const result = simulateCrashAt(db_path, crash_point);
+
+        // Recovery should succeed
+        const recovered = try RecoveryManager.recoverDatabase(allocator, db_path);
+        defer recovered.deinit();
+
+        try std.testing.expect(recovered.recovery_needed);
+        try std.testing.expect(recovered.recovered_txns > 0);
+    }
+}
+```
+
+### Concurrency Hardening
+
+```zig
+test "hardening: many readers while writer commits" {
+    const allocator = std.testing.allocator;
+    const db_path = "/tmp/test-db-concurrent";
+
+    var db = try Db.openFile(allocator, db_path);
+    defer db.close();
+
+    // Start many concurrent readers
+    const num_readers = 100;
+    var readers: [num_readers]std.Thread = undefined;
+
+    for (&readers, 0..) |*reader, i| {
+        reader.* = try std.Thread.spawn({}, readerThread, .{
+            .db_path = db_path,
+            .iteration = i,
+        });
+    }
+
+    // Writer commits while readers are active
+    var w = try db.beginWrite();
+    try w.put("key", "value");
+    _ = try w.commit();
+
+    // All readers should complete without blocking
+    for (readers) |reader| {
+        reader.join();
+    }
+}
+```
+
+## Running Tests
+
+### Run All Tests
+
+```bash
+zig build test
+```
+
+### Run Specific Test File
+
+```bash
+# Test pager module only
+zig test src/pager.zig
+
+# Test database module only
+zig test src/db.zig
+```
+
+### Run Specific Test by Name
+
+```bash
+# Filter tests by name pattern
+zig test src/db.zig --test-cmd "snapshot"
+```
+
+### Verbose Test Output
+
+```bash
+zig test src/db.zig --test-cmd -v
+```
+
+### Property-Based Test Execution
+
+```bash
+# Run property tests with custom config
+zig test src/property_based.zig \
+  --test-cmd iterations=1000 \
+  --test-cmd seed=12345
+```
+
+### Hardening Tests
+
+```bash
+# Run crash simulation tests
+zig test src/hardening.zig
+
+# Run specific hardening test
+zig test src/hardening.zig --test-cmd "torn_write"
+```
+
+## Coverage Expectations
+
+### Coverage Targets
+
+| Component | Target Coverage | Notes |
+|-----------|----------------|-------|
+| Core DB API | 95%+ | Critical path |
+| Pager (page allocation) | 90%+ | Storage layer |
+| B+tree operations | 90%+ | Data structure |
+| WAL/Replay | 85%+ | Recovery path |
+| Plugin system | 80%+ | Extensibility |
+| Error paths | 100% | All error codes tested |
+
+### Measuring Coverage
+
+```bash
+# Zig doesn't have built-in coverage, but you can:
+# 1. Use kcov (Linux)
+kcov --include-pattern=/src/ zig-out/bin/bench
+
+# 2. Use llvm-cov (requires LLVM backend)
+zig build -Dllvm -Dcoverage
+```
+
+### Test Quality Gates
+
+Before merging code:
+
+- [ ] All existing tests pass
+- [ ] New tests added for new functionality
+- [ ] Property tests pass (100 iterations)
+- [ ] Hardening tests pass (no crash corruption)
+- [ ] Benchmarks show no regression >5%
+
+## Writing New Tests
+
+### Test Template
+
+```zig
+test "module_feature_expected_result" {
+    const allocator = std.testing.allocator;
+
+    // Arrange: Set up test data
+    const input = try createTestInput(allocator);
+    defer cleanupTestInput(allocator, input);
+
+    // Act: Execute function under test
+    const result = try functionUnderTest(input);
+
+    // Assert: Verify expected outcome
+    try std.testing.expectEqual(expected, result);
+}
+```
+
+### Test Checklist
+
+When adding new tests:
+
+1. **Spec reference**: Add comment referencing relevant spec
+2. **Cross-reference**: Update spec file with test name
+3. **Error cases**: Test both success and failure paths
+4. **Edge cases**: Test boundaries (empty, single item, overflow)
+5. **Concurrency**: If applicable, test with multiple threads
+6. **Documentation**: Add doc comment explaining what's tested
+
+### Example: Complete Test
+
+```zig
+//! Test: B+tree maintains sorted order after insert
+//! Spec: spec/semantics_v0.md - B+tree invariants
+//! Contract: Maintains sorted order in leaf nodes
+
+test "btree_leaf_maintains_sorted_order_after_insert" {
+    const allocator = std.testing.allocator;
+
+    // Create empty B+tree
+    var tree = try Btree.init(allocator);
+    defer tree.deinit();
+
+    // Insert keys in random order
+    const keys = [_][]const u8{ "cherry", "apple", "banana", "date" };
+    for (keys) |key| {
+        try tree.insert(key, "value");
+    }
+
+    // Verify keys are sorted
+    const sorted_keys = try tree.getSortedKeys(allocator);
+    defer allocator.free(sorted_keys);
+
+    for (sorted_keys, 0..) |key, i| {
+        if (i > 0) {
+            // Each key should be >= previous key
+            try std.testing.expectGreaterThanOrEqual(
+                std.mem.order(u8, key, sorted_keys[i - 1]),
+                std.math.Order.eq
+            );
+        }
+    }
+}
+```
+
+## Test Utilities
+
+### Assertion Helpers
+
+```zig
+// Custom assertion for database state
+fn assertDbState(db: *const Db, expected_state: DbState) !void {
+    const actual = try db.getState();
+    if (!std.meta.eql(actual, expected_state)) {
+        std.debug.print("Expected: {}\nActual: {}\n", .{expected_state, actual});
+        return error.StateMismatch;
+    }
+}
+```
+
+### Test Data Generators
+
+```zig
+// Generate random key-value pairs
+fn generateRandomKvPairs(allocator: std.mem.Allocator, count: usize) ![]KV {
+    const pairs = try allocator.alloc(KV, count);
+    var rng = std.Random.DefaultPrng.init(42);
+
+    for (pairs) |*pair| {
+        const key = try randomString(allocator, &rng, 10);
+        const value = try randomString(allocator, &rng, 20);
+        pair.* = .{ .key = key, .value = value };
+    }
+
+    return pairs;
+}
+```
+
+### Fixture Management
+
+```zig
+const TestFixture = struct {
+    db: *Db,
+    temp_path: []const u8,
+    allocator: std.mem.Allocator,
+
+    fn init(allocator: std.mem.Allocator) !TestFixture {
+        const temp_path = try std.testing.allocator.dupe(u8, "/tmp/test-db");
+        const db = try Db.openFile(allocator, temp_path);
+        return TestFixture{
+            .db = db,
+            .temp_path = temp_path,
+            .allocator = allocator,
+        };
+    }
+
+    fn deinit(self: *TestFixture) void {
+        self.db.close();
+        std.fs.cwd().deleteFile(self.temp_path) catch {};
+        self.allocator.free(self.temp_path);
+    }
+};
+```
+
+## Related Documentation
+
+- [Development Setup Guide](/guides/development-setup)
+- [Contributing Guide](/contributing)
+- [Semantics V0 Spec](/specs/semantics_v0)
+- [Hardening V0 Spec](/specs/hardening_v0)
