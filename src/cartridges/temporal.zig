@@ -396,6 +396,15 @@ pub const SnapshotManager = struct {
             version,
         });
 
+        // Generate metadata about this snapshot
+        const metadata = try self.generateSnapshotMetadata(
+            entity_namespace,
+            entity_local_id,
+            version,
+            delta_info != null,
+        );
+        errdefer self.allocator.free(metadata);
+
         const snapshot = EntitySnapshot{
             .id = snapshot_id,
             .entity_namespace = entity_namespace,
@@ -407,12 +416,47 @@ pub const SnapshotManager = struct {
             .branch_id = null, // TODO: Support branching
             .state_data = state_data,
             .delta_info = delta_info,
-            .metadata = "{}", // TODO: Add actual metadata
+            .metadata = metadata,
         };
 
         try self.index.addSnapshot(snapshot);
 
         return snapshot_id;
+    }
+
+    /// Generate metadata JSON for a snapshot
+    fn generateSnapshotMetadata(
+        self: *SnapshotManager,
+        entity_namespace: []const u8,
+        entity_local_id: []const u8,
+        version: u64,
+        has_delta: bool,
+    ) ![]const u8 {
+        // Build a simple JSON metadata object
+        var json_buffer = std.ArrayList(u8).init(self.allocator);
+        errdefer json_buffer.deinit();
+
+        // Format numbers directly to avoid extra allocations
+        var version_buf: [32]u8 = undefined;
+        const version_str = try std.fmt.bufPrint(&version_buf, "{d}", .{version});
+
+        var timestamp_buf: [32]u8 = undefined;
+        const timestamp_str = try std.fmt.bufPrint(&timestamp_buf, "{d}", .{std.time.nanoTimestamp()});
+
+        try json_buffer.append('{');
+        try json_buffer.appendSlice("\"entity_namespace\":");
+        try std.json.encodeJsonString(entity_namespace, json_buffer.writer(), .{});
+        try json_buffer.appendSlice(",\"entity_id\":");
+        try std.json.encodeJsonString(entity_local_id, json_buffer.writer(), .{});
+        try json_buffer.appendSlice(",\"version\":");
+        try json_buffer.appendSlice(version_str);
+        try json_buffer.appendSlice(",\"has_delta\":");
+        try json_buffer.append(if (has_delta) "true" else "false");
+        try json_buffer.appendSlice(",\"created_at\":");
+        try json_buffer.appendSlice(timestamp_str);
+        try json_buffer.append('}');
+
+        return json_buffer.toOwnedSlice();
     }
 
     /// Compute delta between current state and previous snapshot
