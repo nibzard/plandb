@@ -1612,7 +1612,7 @@ Transform NorthstarDB's scattered markdown files into a modern, developer-friend
   - (Completed: added comprehensive LLM integration API documentation covering provider creation, function schemas, function calling, multi-model orchestration, health monitoring, task classification, and complete examples with error handling - docs/src/content/docs/reference/llm.md)
 
 ### Phase 4: Guides
-- [ ] 🟠 Write CRUD operations guide
+- [x] 🟠 Write CRUD operations guide (Completed: added comprehensive CRUD operations guide covering create, read, update, delete operations with patterns, batch operations, error handling, best practices, user management example, and performance considerations - docs/src/content/docs/guides/crud-operations.md)
   - Put, get, delete patterns
   - Batch operations
   - Error handling
