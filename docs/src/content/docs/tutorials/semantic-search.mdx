@@ -1,0 +1,452 @@
+---
+title: Add Semantic Search to Your App
+description: Build an AI-powered knowledge base with entity extraction and semantic search
+sidebar:
+  order: 2
+---
+
+import { Code } from '@astrojs/starlight/components';
+
+Add AI-powered semantic search to your application using NorthstarDB's structured memory cartridges. This tutorial teaches you to build a knowledge base that understands meaning, not just keywords.
+
+## What We're Building
+
+A semantic knowledge base that:
+- **Extracts entities** — Automatically identify people, places, concepts
+- **Organizes topics** — Cluster related information
+- **Tracks relationships** — Connect related entities
+- **Queries semantically** — Search by meaning, not just keywords
+
+<details>
+  <summary>Why semantic search?</summary>
+
+  Traditional keyword search has limitations:
+  - "database" doesn't match "data storage system"
+  - "Zig language" doesn't find "Zig programming"
+  - Synonyms and related concepts are missed
+
+  Semantic search using structured memory cartridges solves this by understanding entities and their relationships.
+</details>
+
+## Prerequisites
+
+No installation required! The code runs in your browser.
+
+For local development with full AI features:
+- [Zig 0.13.0+](https://ziglang.org/download/)
+- [OpenAI or Anthropic API key](https://platform.openai.com/) (optional, for live LLM calls)
+
+## Step 1: Store Knowledge
+
+Let's start by storing some knowledge about entities.
+
+export const KnowledgeExamples = [
+  {"name":"Store Entities","description":"Store structured entity data with attributes","code":"// Store an entity: Zig programming language\nput:entity:zig:name = Zig\nput:entity:zig:type = Technology\nput:entity:zig:paradigm = systems programming\nput:entity:zig:year_created = 2016\nput:entity:zig:creator = Andrew Kelley\n\n// Store related entity\nput:entity:northstardb:name = NorthstarDB\nput:entity:northstardb:type = Technology\nput:entity:northstardb:category = database\nput:entity:northstardb:language = Zig\n\n// Retrieve entities\nget:entity:zig:name\nget:entity:northstardb:language"},
+  {"name":"Entity with Attributes","description":"Rich entity data using JSON","code":"// Store person entity\nput:entity:andrew:name = Andrew Kelley\nput:entity:andrew:type = Person\nput:entity:andrew:role = Creator of Zig\nput:entity:andrew:projects = [\"Zig\", \"Zig standard library\"]\n\n// Store concept entity\nput:entity:mvcc:name = MVCC\nput:entity:mvcc:type = Concept\nput:entity:mvcc:full_name = Multi-Version Concurrency Control\nput:entity:mvcc:description = Allows concurrent reads without blocking\n\n// Query entities\nget:entity:andrew:name\nget:entity:mvcc:description"},
+  {"name":"Name Index","description":"Fast lookup by entity name","code":"// Create name index for search\nput:idx:entity:name:zig:entity:zig = \nput:idx:entity:name:northstardb:entity:northstardb = \nput:idx:entity:name:andrew:entity:andrew = \nput:idx:entity:name:mvcc:entity:mvcc = \n\n// Now find entities by name\nget:idx:entity:name:zig:entity:zig\nget:idx:entity:name:mvcc:entity:mvcc"}
+];
+
+<div class="code-runner" data-default-index="0" style="--editor-height: 280px;" data-examples={JSON.stringify(KnowledgeExamples)}>
+	<div class="code-runner-loading">
+		<div class="code-runner-spinner"></div>
+		<p>Loading WebAssembly module...</p>
+	</div>
+	<div class="code-runner-error" style="display: none;">
+		<p>Failed to load WebAssembly module</p>
+		<p class="code-runner-error-details"></p>
+		<button class="code-runner-btn code-runner-btn-retry">Retry</button>
+	</div>
+	<div class="code-runner-content" style="display: none;">
+		<div class="code-runner-selector">
+			<label>Examples:</label>
+			<select class="code-runner-select"></select>
+		</div>
+		<div class="code-runner-description"></div>
+		<div class="code-runner-editor">
+			<div class="code-runner-header">
+				<span>Code</span>
+				<div class="code-runner-actions">
+					<button class="code-runner-btn code-runner-btn-copy" title="Copy to clipboard">
+						<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+							<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>
+							<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>
+						</svg>
+						Copy
+					</button>
+					<button class="code-runner-btn code-runner-btn-run" title="Run code (Ctrl+Enter)">
+						<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+							<path d="M4 2v12l10-6Z"></path>
+						</svg>
+						Run
+					</button>
+				</div>
+			</div>
+			<textarea class="code-runner-textarea" spellcheck="false"></textarea>
+		</div>
+		<div class="code-runner-output">
+			<div class="code-runner-header">
+				<span>Output</span>
+				<button class="code-runner-btn code-runner-btn-clear" title="Clear output">
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+						<path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"></path>
+					</svg>
+				</button>
+			</div>
+			<pre class="code-runner-output-content"></pre>
+			<div class="code-runner-status">
+				<span>
+					<span class="code-runner-status-dot"></span>
+					<span class="code-runner-status-text">Ready</span>
+				</span>
+				<span class="code-runner-time"></span>
+			</div>
+		</div>
+	</div>
+</div>
+
+<link rel="stylesheet" href="/js/code-runner.css" /><script src="/js/code-runner.js"></script>
+
+**Key Pattern:** Each entity has:
+- A unique ID (`entity:zig`)
+- A name attribute
+- A type (Technology, Person, Concept, etc.)
+- Additional attributes for rich context
+
+## Step 2: Create Relationships
+
+Connect entities to build a knowledge graph.
+
+export const RelationshipExamples = [
+  {"name":"Entity Relationships","description":"Link entities with typed relationships","code":"// Setup: Create entities\nput:entity:zig:name = Zig\nput:entity:northstardb:name = NorthstarDB\nput:entity:andrew:name = Andrew Kelley\nput:entity:btree:name = B+Tree\n\n// Create relationships\nput:rel:northstardb:written_in:zig = \nput:rel:northstardb:created_by:andrew = \nput:rel:northstardb:uses:btree = \nput:rel:zig:created_by:andrew = \n\n// Query relationships\nget:rel:northstardb:written_in:zig\nget:rel:northstardb:uses:btree"},
+  {"name":"Bidirectional Index","description":"Index relationships for efficient traversal","code":"// Setup entities and relationships\nput:entity:zig:name = Zig\nput:entity:northstardb:name = NorthstarDB\n\n// Forward relationship\nput:rel:northstardb:written_in:zig = \n\n// Reverse index for traversal\nput:idx:rel:from:northstardb:to:zig = written_in\nput:idx:rel:to:zig:from:northstardb = written_in\n\n// Query forward: What does NorthstarDB use?\nget:idx:rel:from:northstardb:to:zig\n\n// Query reverse: What uses Zig?\nget:idx:rel:to:zig:from:northstardb"},
+  {"name":"Relationship Types","description":"Different relationship categories","code":"// Entity setup\nput:entity:zig:name = Zig\nput:entity:northstardb:name = NorthstarDB\nput:entity:rust:name = Rust\nput:entity:embedded:name = Embedded Systems\n\n// Various relationship types\nput:rel:northstardb:written_in:zig = language\nput:rel:northstardb:related_to:rust = competitor\nput:rel:northstardb:category_of:embedded = domain\nput:rel:zig:influenced_by:rust = inspiration\n\n// Query by type\nget:rel:northstardb:written_in:zig\nget:rel:zig:influenced_by:rust"}
+];
+
+<div class="code-runner" data-default-index="0" style="--editor-height: 280px;" data-examples={JSON.stringify(RelationshipExamples)}>
+	<div class="code-runner-loading">
+		<div class="code-runner-spinner"></div>
+		<p>Loading WebAssembly module...</p>
+	</div>
+	<div class="code-runner-error" style="display: none;">
+		<p>Failed to load WebAssembly module</p>
+		<p class="code-runner-error-details"></p>
+		<button class="code-runner-btn code-runner-btn-retry">Retry</button>
+	</div>
+	<div class="code-runner-content" style="display: none;">
+		<div class="code-runner-selector">
+			<label>Examples:</label>
+			<select class="code-runner-select"></select>
+		</div>
+		<div class="code-runner-description"></div>
+		<div class="code-runner-editor">
+			<div class="code-runner-header">
+				<span>Code</span>
+			<div class="code-runner-actions">
+				<button class="code-runner-btn code-runner-btn-copy" title="Copy to clipboard">
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+						<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>
+						<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>
+					</svg>
+					Copy
+				</button>
+				<button class="code-runner-btn code-runner-btn-run" title="Run code (Ctrl+Enter)">
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+						<path d="M4 2v12l10-6Z"></path>
+					</svg>
+					Run
+				</button>
+			</div>
+			</div>
+			<textarea class="code-runner-textarea" spellcheck="false"></textarea>
+		</div>
+		<div class="code-runner-output">
+			<div class="code-runner-header">
+				<span>Output</span>
+				<button class="code-runner-btn code-runner-btn-clear" title="Clear output">
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+						<path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"></path>
+					</svg>
+				</button>
+			</div>
+			<pre class="code-runner-output-content"></pre>
+			<div class="code-runner-status">
+				<span>
+					<span class="code-runner-status-dot"></span>
+					<span class="code-runner-status-text">Ready</span>
+				</span>
+				<span class="code-runner-time"></span>
+			</div>
+		</div>
+	</div>
+</div>
+
+<link rel="stylesheet" href="/js/code-runner.css" /><script src="/js/code-runner.js"></script>
+
+## Step 3: Organize Topics
+
+Group entities into hierarchical topics for better organization.
+
+export const TopicExamples = [
+  {"name":"Create Topics","description":"Hierarchical topic organization","code":"// Create topic hierarchy\nput:topic:programming_languages:name = Programming Languages\nput:topic:databases:name = Databases\nput:topic:concepts:name = Concepts\n\n// Subtopics\nput:topic:systems_lang:parent:programming_languages = Systems Languages\nput:topic:embedded_dbs:parent:databases = Embedded Databases\n\n// Add entities to topics\nput:topic:programming_languages:member:zig = \nput:topic:databases:member:northstardb = \nput:topic:concepts:member:mvcc = \n\n// Query topic members\nget:topic:programming_languages:name\nget:topic:programming_languages:member:zig"},
+  {"name":"Topic Metadata","description":"Rich topic information","code":"// Create topic with metadata\nput:topic:databases:name = Databases\nput:topic:databases:description = Data storage and management systems\nput:topic:databases:entity_count = 42\nput:topic:databases:created_at = 1704067200\n\n// Track members\nput:topic:databases:member:northstardb = \nput:topic:databases:member:sqlite = \nput:topic:databases:member:postgresql = \n\n// Increment count\nput:topic:databases:entity_count = 43\n\n// Query metadata\nget:topic:databases:description\nget:topic:databases:entity_count"},
+  {"name":"Topic Hierarchy","description":"Nested topic structure","code":"// Root topics\nput:topic:technology:name = Technology\n\n// Child topics\nput:topic:programming:parent:technology = Programming\nput:topic:databases:parent:technology = Databases\n\n// Grandchild topics\nput:topic:systems_lang:parent:programming = Systems Languages\nput:topic:embedded_dbs:parent:databases = Embedded DBs\n\n// Entity at multiple levels\nput:topic:programming:member:zig = \nput:topic:systems_lang:member:zig = \n\n// Query hierarchy\nget:topic:programming:parent:technology\nget:topic:systems_lang:parent:programming"}
+];
+
+<div class="code-runner" data-default-index="0" style="--editor-height: 280px;" data-examples={JSON.stringify(TopicExamples)}>
+	<div class="code-runner-loading">
+		<div class="code-runner-spinner"></div>
+		<p>Loading WebAssembly module...</p>
+	</div>
+	<div class="code-runner-error" style="display: none;">
+		<p>Failed to load WebAssembly module</p>
+		<p class="code-runner-error-details"></p>
+		<button class="code-runner-btn code-runner-btn-retry">Retry</button>
+	</div>
+	<div class="code-runner-content" style="display: none;">
+		<div class="code-runner-selector">
+			<label>Examples:</label>
+			<select class="code-runner-select"></select>
+		</div>
+		<div class="code-runner-description"></div>
+		<div class="code-runner-editor">
+			<div class="code-runner-header">
+				<span>Code</span>
+			<div class="code-runner-actions">
+				<button class="code-runner-btn code-runner-btn-copy" title="Copy to clipboard">
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+						<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>
+						<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>
+					</svg>
+					Copy
+				</button>
+				<button class="code-runner-btn code-runner-btn-run" title="Run code (Ctrl+Enter)">
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+						<path d="M4 2v12l10-6Z"></path>
+					</svg>
+					Run
+				</button>
+			</div>
+			</div>
+			<textarea class="code-runner-textarea" spellcheck="false"></textarea>
+		</div>
+		<div class="code-runner-output">
+			<div class="code-runner-header">
+				<span>Output</span>
+			<button class="code-runner-btn code-runner-btn-clear" title="Clear output">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+					<path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"></path>
+				</svg>
+			</button>
+			</div>
+			<pre class="code-runner-output-content"></pre>
+			<div class="code-runner-status">
+				<span>
+					<span class="code-runner-status-dot"></span>
+					<span class="code-runner-status-text">Ready</span>
+				</span>
+				<span class="code-runner-time"></span>
+			</div>
+		</div>
+	</div>
+</div>
+
+<link rel="stylesheet" href="/js/code-runner.css" /><script src="/js/code-runner.js"></script>
+
+## Step 4: Semantic Queries
+
+Query the knowledge graph using meaning, not just keywords.
+
+export const QueryExamples = [
+  {"name":"Find by Type","description":"Query entities by their type","code":"// Setup: Create entities\nput:entity:zig:name = Zig\nput:entity:zig:type = Technology\nput:entity:northstardb:name = NorthstarDB\nput:entity:northstardb:type = Technology\nput:entity:andrew:name = Andrew\nput:entity:andrew:type = Person\n\n// Type index\nput:idx:type:Technology:zig = \nput:idx:type:Technology:northstardb = \nput:idx:type:Person:andrew = \n\n// Query by type\nget:idx:type:Technology:zig\nget:idx:type:Person:andrew"},
+  {"name":"Relationship Traversal","description":"Find connected entities","code":"// Setup: entities and relationships\nput:entity:zig:name = Zig\nput:entity:northstardb:name = NorthstarDB\nput:entity:btree:name = B+Tree\n\nput:rel:northstardb:written_in:zig = \nput:rel:northstardb:uses:btree = \n\n// Index for traversal\nput:idx:rel:from:northstardb:to:zig = written_in\nput:idx:rel:from:northstardb:to:btree = uses\n\n// Find what NorthstarDB connects to\nget:idx:rel:from:northstardb:to:zig\nget:idx:rel:from:northstardb:to:btree"},
+  {"name":"Multi-hop Query","description":"Traverse multiple relationship levels","code":"// Complex graph\nput:entity:zig:name = Zig\nput:entity:northstardb:name = NorthstarDB\nput:entity:mvcc:name = MVCC\n\n// Relationships\nput:rel:northstardb:written_in:zig = \nput:rel:northstardb:implements:mvcc = \n\n// Reverse indexes\nput:idx:rel:to:zig:from:northstardb = written_in\nput:idx:rel:to:mvcc:from:northstardb = implements\n\n// Query: What uses Zig?\nget:idx:rel:to:zig:from:northstardb\n\n// Query: What implements MVCC?\nget:idx:rel:to:mvcc:from:northstardb"}
+];
+
+<div class="code-runner" data-default-index="0" style="--editor-height: 280px;" data-examples={JSON.stringify(QueryExamples)}>
+	<div class="code-runner-loading">
+		<div class="code-runner-spinner"></div>
+		<p>Loading WebAssembly module...</p>
+	</div>
+	<div class="code-runner-error" style="display: none;">
+		<p>Failed to load WebAssembly module</p>
+		<p class="code-runner-error-details"></p>
+		<button class="code-runner-btn code-runner-btn-retry">Retry</button>
+	</div>
+	<div class="code-runner-content" style="display: none;">
+		<div class="code-runner-selector">
+			<label>Examples:</label>
+			<select class="code-runner-select"></select>
+		</div>
+		<div class="code-runner-description"></div>
+		<div class="code-runner-editor">
+			<div class="code-runner-header">
+				<span>Code</span>
+			<div class="code-runner-actions">
+				<button class="code-runner-btn code-runner-btn-copy" title="Copy to clipboard">
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+						<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>
+						<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>
+					</svg>
+					Copy
+				</button>
+				<button class="code-runner-btn code-runner-btn-run" title="Run code (Ctrl+Enter)">
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+						<path d="M4 2v12l10-6Z"></path>
+					</svg>
+					Run
+				</button>
+			</div>
+			</div>
+			<textarea class="code-runner-textarea" spellcheck="false"></textarea>
+		</div>
+		<div class="code-runner-output">
+			<div class="code-runner-header">
+				<span>Output</span>
+			<button class="code-runner-btn code-runner-btn-clear" title="Clear output">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+					<path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"></path>
+				</svg>
+			</button>
+			</div>
+			<pre class="code-runner-output-content"></pre>
+			<div class="code-runner-status">
+				<span>
+					<span class="code-runner-status-dot"></span>
+					<span class="code-runner-status-text">Ready</span>
+				</span>
+				<span class="code-runner-time"></span>
+			</div>
+		</div>
+	</div>
+</div>
+
+<link rel="stylesheet" href="/js/code-runner.css" /><script src="/js/code-runner.js"></script>
+
+## Step 5: AI Entity Extraction
+
+With an LLM, automatically extract entities from text.
+
+<details>
+  <summary>LLM integration (requires API key)</summary>
+
+  With an LLM provider configured, you can extract entities automatically:
+
+  ```zig
+  // Input text
+  const text = "NorthstarDB is a database written in Zig that uses MVCC.";
+
+  // LLM extracts entities via function calling
+  const extracted = try llm.extract_entities(text);
+
+  // Results:
+  // - Entity: NorthstarDB (Technology)
+  // - Entity: Zig (Technology)
+  // - Entity: MVCC (Concept)
+  // - Relationship: NorthstarDB -> written_in -> Zig
+  // - Relationship: NorthstarDB -> uses -> MVCC
+  ```
+
+  This uses structured function calling rather than embeddings for deterministic results.
+</details>
+
+## Complete Knowledge Base
+
+Let's build a complete semantic knowledge base.
+
+export const CompleteKBExamples = [
+  {"name":"Complete Knowledge Graph","description":"Full knowledge base with entities, relationships, and topics","code":"// Create entities\nput:entity:zig:name = Zig\nput:entity:zig:type = Technology\nput:entity:northstardb:name = NorthstarDB\nput:entity:northstardb:type = Technology\nput:entity:mvcc:name = MVCC\nput:entity:mvcc:type = Concept\n\n// Create relationships\nput:rel:northstardb:written_in:zig = \nput:rel:northstardb:implements:mvcc = \n\n// Create topics\nput:topic:programming:name = Programming Languages\nput:topic:databases:name = Databases\n\n// Add to topics\nput:topic:programming:member:zig = \nput:topic:databases:member:northstardb = \n\n// Query the knowledge base\nget:entity:zig:name\nget:rel:northstardb:written_in:zig\nget:topic:databases:member:northstardb"},
+  {"name":"Semantic Search Simulation","description":"Find entities by semantic meaning","code":"// Knowledge base setup\nput:entity:zig:name = Zig\nput:entity:zig:description = Systems programming language\nput:entity:northstardb:name = NorthstarDB\nput:entity:northstardb:description = Embedded database\n\n// Create semantic tags\nput:tag:systems_programming:entity:zig = \nput:tag:embedded:entity:northstardb = \nput:tag:database:entity:northstardb = \n\n// Search by semantic tag\nget:tag:systems_programming:entity:zig\nget:tag:embedded:entity:northstardb\nget:tag:database:entity:northstardb"}
+];
+
+<div class="code-runner" data-default-index="0" style="--editor-height: 280px;" data-examples={JSON.stringify(CompleteKBExamples)}>
+	<div class="code-runner-loading">
+		<div class="code-runner-spinner"></div>
+		<p>Loading WebAssembly module...</p>
+	</div>
+	<div class="code-runner-error" style="display: none;">
+		<p>Failed to load WebAssembly module</p>
+		<p class="code-runner-error-details"></p>
+		<button class="code-runner-btn code-runner-btn-retry">Retry</button>
+	</div>
+	<div class="code-runner-content" style="display: none;">
+		<div class="code-runner-selector">
+			<label>Examples:</label>
+			<select class="code-runner-select"></select>
+		</div>
+		<div class="code-runner-description"></div>
+		<div class="code-runner-editor">
+			<div class="code-runner-header">
+				<span>Code</span>
+			<div class="code-runner-actions">
+				<button class="code-runner-btn code-runner-btn-copy" title="Copy to clipboard">
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+						<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>
+						<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>
+					</svg>
+					Copy
+				</button>
+				<button class="code-runner-btn code-runner-btn-run" title="Run code (Ctrl+Enter)">
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+						<path d="M4 2v12l10-6Z"></path>
+					</svg>
+					Run
+				</button>
+			</div>
+			</div>
+			<textarea class="code-runner-textarea" spellcheck="false"></textarea>
+		</div>
+		<div class="code-runner-output">
+			<div class="code-runner-header">
+				<span>Output</span>
+			<button class="code-runner-btn code-runner-btn-clear" title="Clear output">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+					<path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"></path>
+				</svg>
+			</button>
+			</div>
+			<pre class="code-runner-output-content"></pre>
+			<div class="code-runner-status">
+				<span>
+					<span class="code-runner-status-dot"></span>
+					<span class="code-runner-status-text">Ready</span>
+				</span>
+				<span class="code-runner-time"></span>
+			</div>
+		</div>
+	</div>
+</div>
+
+<link rel="stylesheet" href="/js/code-runner.css" /><script src="/js/code-runner.js"></script>
+
+## Key Takeaways
+
+You've learned:
+- **Structured Entities** — Store rich entity data with attributes
+- **Relationship Graph** — Connect entities with typed relationships
+- **Topic Organization** — Hierarchical knowledge categorization
+- **Semantic Queries** — Find by meaning, not just keywords
+- **Index Strategies** — Efficient traversal with reverse indexes
+
+## Running Locally
+
+For full AI features, run the knowledge base example:
+
+<Code code="cd examples/ai_knowledge_base && zig build run" />
+
+With an API key configured, the example demonstrates live LLM entity extraction.
+
+See [AI Knowledge Base Example](https://github.com/nikopol/northstardb/tree/main/examples/ai_knowledge_base) for the complete implementation.
+
+## Challenge Exercises
+
+1. **Confidence Scoring**: Add confidence scores to extracted entities
+2. **Entity Resolution**: Detect and merge duplicate entities
+3. **Relationship Inference**: Suggest missing relationships
+4. **Query Expansion**: Expand queries with related concepts
+
+## Next Steps
+
+- **[AI Plugin Development](/tutorials/ai-plugin)** — Build custom AI hooks
+- **[Structured Memory](/ai/structured-memory)** — Deep dive on cartridges
+- **[Plugin System](/ai/plugins)** — Extensible AI architecture
+- **[Time Travel Queries](/tutorials/time-travel)** — Query knowledge base history

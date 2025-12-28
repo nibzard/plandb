@@ -1,0 +1,489 @@
+---
+title: Implement Time Travel Queries
+description: Query historical snapshots of your data for audit trails and version history
+sidebar:
+  order: 3
+---
+
+import { Code } from '@astrojs/starlight/components';
+
+Learn to query historical data with NorthstarDB's MVCC snapshots. Build audit trails, version history, and time-travel debugging capabilities.
+
+## What We're Building
+
+A time-travel query system that:
+- **Queries historical state** — See data as it was at any point in time
+- **Tracks changes** — Audit log of all modifications
+- **Version history** — Restore previous document versions
+- **Debugging** — Replay state to find bugs
+
+<details>
+  <summary>Why time travel queries?</summary>
+
+  Time travel queries are essential for:
+  - **Audit compliance** — "What data did we have on date X?"
+  - **Debugging** — "When did this value change?"
+  - **Version control** — Restore previous document states
+  - **Analytics** — Track how metrics changed over time
+
+  NorthstarDB's MVCC architecture makes historical queries cheap and fast.
+</details>
+
+## Prerequisites
+
+No installation required! The code runs in your browser.
+
+For local development:
+- [Zig 0.13.0+](https://ziglang.org/download/)
+- [NorthstarDB cloned](https://github.com/nikopol/northstardb)
+
+## Step 1: Track Transaction IDs
+
+Every transaction gets a unique ID — use these to mark points in time.
+
+export const TimeTravelExamples = [
+  {"name":"Transaction Tracking","description":"Track transaction IDs for time travel","code":"// Transaction 1: Create initial data\nput:user:alice:name = Alice\nput:user:alice:email = alice@old.com\n// This is transaction ID 1\n\n// Transaction 2: Update email\nput:user:alice:email = alice@new.com\n// This is transaction ID 2\n\n// Transaction 3: Add more data\nput:user:alice:role = admin\n// This is transaction ID 3\n\n// Current state shows latest\nget:user:alice:name\nget:user:alice:email\nget:user:alice:role"},
+  {"name":"Snapshot Markers","description":"Create named snapshots for easy reference","code":"// Create snapshot markers\nput:snapshot:init:txn_id = 1\nput:snapshot:init:timestamp = 1704067200\nput:snapshot:init:description = Initial user creation\n\nput:snapshot:updated_email:txn_id = 2\nput:snapshot:updated_email:timestamp = 1704067260\nput:snapshot:updated_email:description = Email address updated\n\nput:snapshot:added_role:txn_id = 3\nput:snapshot:added_role:timestamp = 1704067320\nput:snapshot:added_role:description = Admin role granted\n\n// Query snapshot info\nget:snapshot:init:description\nget:snapshot:updated_email:txn_id"},
+  {"name":"Commit Log","description":"Track all changes in a commit log","code":"// Transaction 1\nput:commit:1:timestamp = 1704067200\nput:commit:1:mutations = [\"put:user:alice:name=Alice\"]\n\n// Transaction 2\nput:commit:2:timestamp = 1704067260\nput:commit:2:mutations = [\"put:user:alice:email=alice@new.com\"]\n\n// Transaction 3\nput:commit:3:timestamp = 1704067320\nput:commit:3:mutations = [\"put:user:alice:role=admin\"]\n\n// Query commit log\nget:commit:1:mutations\nget:commit:2:mutations\nget:commit:3:mutations"}
+];
+
+<div class="code-runner" data-default-index="0" style="--editor-height: 280px;" data-examples={JSON.stringify(TimeTravelExamples)}>
+	<div class="code-runner-loading">
+		<div class="code-runner-spinner"></div>
+		<p>Loading WebAssembly module...</p>
+	</div>
+	<div class="code-runner-error" style="display: none;">
+		<p>Failed to load WebAssembly module</p>
+		<p class="code-runner-error-details"></p>
+		<button class="code-runner-btn code-runner-btn-retry">Retry</button>
+	</div>
+	<div class="code-runner-content" style="display: none;">
+		<div class="code-runner-selector">
+			<label>Examples:</label>
+			<select class="code-runner-select"></select>
+		</div>
+		<div class="code-runner-description"></div>
+		<div class="code-runner-editor">
+			<div class="code-runner-header">
+				<span>Code</span>
+			<div class="code-runner-actions">
+				<button class="code-runner-btn code-runner-btn-copy" title="Copy to clipboard">
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+						<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>
+						<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>
+					</svg>
+					Copy
+				</button>
+				<button class="code-runner-btn code-runner-btn-run" title="Run code (Ctrl+Enter)">
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+						<path d="M4 2v12l10-6Z"></path>
+					</svg>
+					Run
+				</button>
+			</div>
+			</div>
+			<textarea class="code-runner-textarea" spellcheck="false"></textarea>
+		</div>
+		<div class="code-runner-output">
+			<div class="code-runner-header">
+				<span>Output</span>
+			<button class="code-runner-btn code-runner-btn-clear" title="Clear output">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+					<path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"></path>
+				</svg>
+			</button>
+			</div>
+			<pre class="code-runner-output-content"></pre>
+			<div class="code-runner-status">
+				<span>
+					<span class="code-runner-status-dot"></span>
+					<span class="code-runner-status-text">Ready</span>
+				</span>
+				<span class="code-runner-time"></span>
+			</div>
+		</div>
+	</div>
+</div>
+
+<link rel="stylesheet" href="/js/code-runner.css" /><script src="/js/code-runner.js"></script>
+
+**Key Concept:** In NorthstarDB, each write transaction produces a unique transaction ID (LSN - Log Sequence Number). Use these IDs to create consistent snapshots.
+
+## Step 2: Version History
+
+Store document versions for rollback capabilities.
+
+export const VersionExamples = [
+  {"name":"Document Versioning","description":"Track changes to a document over time","code":"// Version 1: Initial document\nput:doc:report:title = Q4 Report\nput:doc:report:content = Initial draft\nput:doc:report:version:1 = {\"title\":\"Q4 Report\",\"content\":\"Initial draft\"}\n\n// Version 2: Update content\nput:doc:report:content = Updated with new data\nput:doc:report:version:2 = {\"title\":\"Q4 Report\",\"content\":\"Updated with new data\"}\n\n// Version 3: Final version\nput:doc:report:title = Q4 2024 Report\nput:doc:report:content = Final approved version\nput:doc:report:version:3 = {\"title\":\"Q4 2024 Report\",\"content\":\"Final approved version\"}\n\n// Current state\nget:doc:report:title\nget:doc:report:content\n\n// Historical versions\nget:doc:report:version:1\nget:doc:report:version:2"},
+  {"name":"Version Metadata","description":"Track who changed what and when","code":"// Version with metadata\nput:doc:contract:version:1:data = Contract text v1\nput:doc:contract:version:1:author = alice@example.com\nput:doc:contract:version:1:timestamp = 1704067200\nput:doc:contract:version:1:comment = Initial draft\n\nput:doc:contract:version:2:data = Contract text v2\nput:doc:contract:version:2:author = bob@example.com\nput:doc:contract:version:2:timestamp = 1704067320\nput:doc:contract:version:2:comment = Added clause 3.2\n\n// Version history\nget:doc:contract:version:1:author\nget:doc:contract:version:2:comment"},
+  {"name":"Restore Previous Version","description":"Rollback to a specific version","code":"// Create versions\nput:doc:config:version:1 = {\"timeout\":30,\"retries\":3}\nput:doc:config:version:2 = {\"timeout\":60,\"retries\":5}\nput:doc:config:version:3 = {\"timeout\":45,\"retries\":4}\n\n// Current is version 3\nput:doc:config:timeout = 45\nput:doc:config:retries = 4\n\n// Restore to version 1\nput:doc:config:timeout = 30\nput:doc:config:retries = 3\nput:doc:config:restored_from = version:1\n\n// Verify rollback\nget:doc:config:timeout\nget:doc:config:restored_from"}
+];
+
+<div class="code-runner" data-default-index="0" style="--editor-height: 280px;" data-examples={JSON.stringify(VersionExamples)}>
+	<div class="code-runner-loading">
+		<div class="code-runner-spinner"></div>
+		<p>Loading WebAssembly module...</p>
+	</div>
+	<div class="code-runner-error" style="display: none;">
+		<p>Failed to load WebAssembly module</p>
+		<p class="code-runner-error-details"></p>
+		<button class="code-runner-btn code-runner-btn-retry">Retry</button>
+	</div>
+	<div class="code-runner-content" style="display: none;">
+		<div class="code-runner-selector">
+			<label>Examples:</label>
+			<select class="code-runner-select"></select>
+		</div>
+		<div class="code-runner-description"></div>
+		<div class="code-runner-editor">
+			<div class="code-runner-header">
+				<span>Code</span>
+			<div class="code-runner-actions">
+				<button class="code-runner-btn code-runner-btn-copy" title="Copy to clipboard">
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+						<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>
+						<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>
+					</svg>
+					Copy
+				</button>
+				<button class="code-runner-btn code-runner-btn-run" title="Run code (Ctrl+Enter)">
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+						<path d="M4 2v12l10-6Z"></path>
+					</svg>
+					Run
+				</button>
+			</div>
+			</div>
+			<textarea class="code-runner-textarea" spellcheck="false"></textarea>
+		</div>
+		<div class="code-runner-output">
+			<div class="code-runner-header">
+				<span>Output</span>
+			<button class="code-runner-btn code-runner-btn-clear" title="Clear output">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+					<path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"></path>
+				</svg>
+			</button>
+			</div>
+			<pre class="code-runner-output-content"></pre>
+			<div class="code-runner-status">
+				<span>
+					<span class="code-runner-status-dot"></span>
+					<span class="code-runner-status-text">Ready</span>
+				</span>
+				<span class="code-runner-time"></span>
+			</div>
+		</div>
+	</div>
+</div>
+
+<link rel="stylesheet" href="/js/code-runner.css" /><script src="/js/code-runner.js"></script>
+
+## Step 3: Point-in-Time Queries
+
+Query data as it existed at a specific transaction.
+
+export const PointInTimeExamples = [
+  {"name":"Historical State Query","description":"Simulate querying state at a specific point in time","code":"// Simulated time travel: Store state at different \"transactions\"\n\n// Transaction 1 state\nput:state_at_txn:1:user:alice:name = Alice\nput:state_at_txn:1:user:alice:email = alice@old.com\n\n// Transaction 2 state  \nput:state_at_txn:2:user:alice:name = Alice\nput:state_at_txn:2:user:alice:email = alice@new.com\n\n// Transaction 3 state\nput:state_at_txn:3:user:alice:name = Alice Smith\nput:state_at_txn:3:user:alice:email = alice@new.com\n\n// Query state at different points\nget:state_at_txn:1:user:alice:email\nget:state_at_txn:2:user:alice:email\nget:state_at_txn:3:user:alice:name"},
+  {"name":"Change Tracking","description":"Track what changed between transactions","code":"// Track deltas between versions\nput:delta:1_to_2:user:alice:email = alice@old.com -> alice@new.com\nput:delta:1_to_2:user:alice:changed_at = 1704067260\n\nput:delta:2_to_3:user:alice:name = Alice -> Alice Smith\nput:delta:2_to_3:user:alice:changed_at = 1704067320\n\n// Query what changed\nget:delta:1_to_2:user:alice:email\nget:delta:2_to_3:user:alice:name"},
+  {"name":"Multi-Entity Snapshot","description":"Consistent snapshot across multiple entities","code":"// Snapshot 1: Initial state\nput:snapshot:1:user:alice = active\nput:snapshot:1:user:bob = active\nput:snapshot:1:task:1 = pending\nput:snapshot:1:task:2 = pending\n\n// Snapshot 2: After changes\nput:snapshot:2:user:alice = active\nput:snapshot:2:user:bob = inactive\nput:snapshot:2:task:1 = completed\nput:snapshot:2:task:2 = pending\n\n// Snapshot 3: More changes\nput:snapshot:3:user:alice = inactive\nput:snapshot:3:user:bob = inactive\nput:snapshot:3:task:1 = completed\nput:snapshot:3:task:2 = completed\n\n// Compare snapshots\nget:snapshot:1:task:1\nget:snapshot:2:task:1\nget:snapshot:3:task:1"}
+];
+
+<div class="code-runner" data-default-index="0" style="--editor-height: 280px;" data-examples={JSON.stringify(PointInTimeExamples)}>
+	<div class="code-runner-loading">
+		<div class="code-runner-spinner"></div>
+		<p>Loading WebAssembly module...</p>
+	</div>
+	<div class="code-runner-error" style="display: none;">
+		<p>Failed to load WebAssembly module</p>
+		<p class="code-runner-error-details"></p>
+		<button class="code-runner-btn code-runner-btn-retry">Retry</button>
+	</div>
+	<div class="code-runner-content" style="display: none;">
+		<div class="code-runner-selector">
+			<label>Examples:</label>
+			<select class="code-runner-select"></select>
+		</div>
+		<div class="code-runner-description"></div>
+		<div class="code-runner-editor">
+			<div class="code-runner-header">
+				<span>Code</span>
+			<div class="code-runner-actions">
+				<button class="code-runner-btn code-runner-btn-copy" title="Copy to clipboard">
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+						<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>
+						<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>
+					</svg>
+					Copy
+				</button>
+				<button class="code-runner-btn code-runner-btn-run" title="Run code (Ctrl+Enter)">
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+						<path d="M4 2v12l10-6Z"></path>
+					</svg>
+					Run
+				</button>
+			</div>
+			</div>
+			<textarea class="code-runner-textarea" spellcheck="false"></textarea>
+		</div>
+		<div class="code-runner-output">
+			<div class="code-runner-header">
+				<span>Output</span>
+			<button class="code-runner-btn code-runner-btn-clear" title="Clear output">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+					<path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"></path>
+				</svg>
+			</button>
+			</div>
+			<pre class="code-runner-output-content"></pre>
+			<div class="code-runner-status">
+				<span>
+					<span class="code-runner-status-dot"></span>
+					<span class="code-runner-status-text">Ready</span>
+				</span>
+				<span class="code-runner-time"></span>
+			</div>
+		</div>
+	</div>
+</div>
+
+<link rel="stylesheet" href="/js/code-runner.css" /><script src="/js/code-runner.js"></script>
+
+## Step 4: Audit Trail
+
+Build a complete audit log for compliance.
+
+export const AuditExamples = [
+  {"name":"Audit Log","description":"Complete audit trail of all changes","code":"// Audit entry for user creation\nput:audit:1:timestamp = 1704067200\nput:audit:1:action = create\nput:audit:1:entity = user:alice\nput:audit:1:actor = system\nput:audit:1:details = {\"name\":\"Alice\",\"email\":\"alice@example.com\"}\n\n// Audit entry for update\nput:audit:2:timestamp = 1704067260\nput:audit:2:action = update\nput:audit:2:entity = user:alice\nput:audit:2:actor = admin@example.com\nput:audit:2:details = {\"field\":\"email\",\"old\":\"alice@example.com\",\"new\":\"alice@new.com\"}\n\n// Audit entry for delete\nput:audit:3:timestamp = 1704067320\nput:audit:3:action = delete\nput:audit:3:entity = user:bob\nput:audit:3:actor = admin@example.com\nput:audit:3:details = {\"reason\":\"account closed\"}\n\n// Query audit log\nget:audit:1:action\nget:audit:2:details\nget:audit:3:action"},
+  {"name":"Time Range Queries","description":"Query audit entries by time range","code":"// Create audit entries with timestamps\nput:audit:2024-01-01:001:event = user_login\nput:audit:2024-01-01:002:event = user_logout\nput:audit:2024-01-02:001:event = document_created\nput:audit:2024-01-02:002:event = document_updated\nput:audit:2024-01-03:001:event = user_deleted\n\n// Query by date prefix\nget:audit:2024-01-01:001:event\nget:audit:2024-01-02:001:event\nget:audit:2024-01-03:001:event"},
+  {"name":"Actor-based Audit","description":"Track actions by specific users","code":"// Audit by actor\nput:audit:by:alice:1:timestamp = 1704067200\nput:audit:by:alice:1:action = created_document\n\nput:audit:by:alice:2:timestamp = 1704067320\nput:audit:by:alice:2:action = updated_document\n\nput:audit:by:bob:1:timestamp = 1704067260\nput:audit:by:bob:1:action = deleted_document\n\n// Query Alice's actions\nget:audit:by:alice:1:action\nget:audit:by:alice:2:action\n\n// Query Bob's actions\nget:audit:by:bob:1:action"}
+];
+
+<div class="code-runner" data-default-index="0" style="--editor-height: 280px;" data-examples={JSON.stringify(AuditExamples)}>
+	<div class="code-runner-loading">
+		<div class="code-runner-spinner"></div>
+		<p>Loading WebAssembly module...</p>
+	</div>
+	<div class="code-runner-error" style="display: none;">
+		<p>Failed to load WebAssembly module</p>
+		<p class="code-runner-error-details"></p>
+		<button class="code-runner-btn code-runner-btn-retry">Retry</button>
+	</div>
+	<div class="code-runner-content" style="display: none;">
+		<div class="code-runner-selector">
+			<label>Examples:</label>
+			<select class="code-runner-select"></select>
+		</div>
+		<div class="code-runner-description"></div>
+		<div class="code-runner-editor">
+			<div class="code-runner-header">
+				<span>Code</span>
+			<div class="code-runner-actions">
+				<button class="code-runner-btn code-runner-btn-copy" title="Copy to clipboard">
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+						<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>
+						<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>
+					</svg>
+					Copy
+				</button>
+				<button class="code-runner-btn code-runner-btn-run" title="Run code (Ctrl+Enter)">
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+						<path d="M4 2v12l10-6Z"></path>
+					</svg>
+					Run
+				</button>
+			</div>
+			</div>
+			<textarea class="code-runner-textarea" spellcheck="false"></textarea>
+		</div>
+		<div class="code-runner-output">
+			<div class="code-runner-header">
+				<span>Output</span>
+			<button class="code-runner-btn code-runner-btn-clear" title="Clear output">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+					<path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"></path>
+				</svg>
+			</button>
+			</div>
+			<pre class="code-runner-output-content"></pre>
+			<div class="code-runner-status">
+				<span>
+					<span class="code-runner-status-dot"></span>
+					<span class="code-runner-status-text">Ready</span>
+				</span>
+				<span class="code-runner-time"></span>
+			</div>
+		</div>
+	</div>
+</div>
+
+<link rel="stylesheet" href="/js/code-runner.css" /><script src="/js/code-runner.js"></script>
+
+## Step 5: Temporal Joins
+
+Join data from different points in time.
+
+export const TemporalExamples = [
+  {"name":"As-Of Query","description":"Query state as of a specific time","code":"// Create time-based state\nput:as_of:1704067200:price:BTC = 45000\nput:as_of:1704067200:price:ETH = 3200\n\nput:as_of:1704067320:price:BTC = 45500\nput:as_of:1704067320:price:ETH = 3150\n\nput:as_of:1704067440:price:BTC = 45200\nput:as_of:1704067440:price:ETH = 3180\n\n// Query state at specific times\nget:as_of:1704067200:price:BTC\nget:as_of:1704067320:price:BTC\nget:as_of:1704067440:price:BTC"},
+  {"name":"Time Series Analysis","description":"Track changes over time","code":"// Time series data\nput:metrics:2024-01-01:users = 1000\nput:metrics:2024-01-02:users = 1050\nput:metrics:2024-01-03:users = 1120\nput:metrics:2024-01-04:users = 1180\nput:metrics:2024-01-05:users = 1250\n\n// Calculate growth\nput:metrics:growth:01_to_02 = +50\nput:metrics:growth:02_to_03 = +70\nput:metrics:growth:03_to_04 = +60\nput:metrics:growth:04_to_05 = +70\n\n// Query metrics\nget:metrics:2024-01-01:users\nget:metrics:2024-01-05:users\nget:metrics:growth:04_to_05"}
+];
+
+<div class="code-runner" data-default-index="0" style="--editor-height: 280px;" data-examples={JSON.stringify(TemporalExamples)}>
+	<div class="code-runner-loading">
+		<div class="code-runner-spinner"></div>
+		<p>Loading WebAssembly module...</p>
+	</div>
+	<div class="code-runner-error" style="display: none;">
+		<p>Failed to load WebAssembly module</p>
+		<p class="code-runner-error-details"></p>
+		<button class="code-runner-btn code-runner-btn-retry">Retry</button>
+	</div>
+	<div class="code-runner-content" style="display: none;">
+		<div class="code-runner-selector">
+			<label>Examples:</label>
+			<select class="code-runner-select"></select>
+		</div>
+		<div class="code-runner-description"></div>
+		<div class="code-runner-editor">
+			<div class="code-runner-header">
+				<span>Code</span>
+			<div class="code-runner-actions">
+				<button class="code-runner-btn code-runner-btn-copy" title="Copy to clipboard">
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+						<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>
+						<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>
+					</svg>
+					Copy
+				</button>
+				<button class="code-runner-btn code-runner-btn-run" title="Run code (Ctrl+Enter)">
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+						<path d="M4 2v12l10-6Z"></path>
+					</svg>
+					Run
+				</button>
+			</div>
+			</div>
+			<textarea class="code-runner-textarea" spellcheck="false"></textarea>
+		</div>
+		<div class="code-runner-output">
+			<div class="code-runner-header">
+				<span>Output</span>
+			<button class="code-runner-btn code-runner-btn-clear" title="Clear output">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+					<path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"></path>
+				</svg>
+			</button>
+			</div>
+			<pre class="code-runner-output-content"></pre>
+			<div class="code-runner-status">
+				<span>
+					<span class="code-runner-status-dot"></span>
+					<span class="code-runner-status-text">Ready</span>
+				</span>
+				<span class="code-runner-time"></span>
+			</div>
+		</div>
+	</div>
+</div>
+
+<link rel="stylesheet" href="/js/code-runner.css" /><script src="/js/code-runner.js"></script>
+
+## Complete Time Travel System
+
+Combine all patterns for a full solution.
+
+export const CompleteTimeTravelExamples = [
+  {"name":"Complete System","description":"Full time travel query implementation","code":"// 1. Create data with version tracking\nput:doc:contract:version:1:data = Initial contract\nput:doc:contract:version:1:txn_id = 1\nput:doc:contract:version:1:timestamp = 1704067200\n\nput:doc:contract:version:2:data = Updated contract\nput:doc:contract:version:2:txn_id = 2\nput:doc:contract:version:2:timestamp = 1704067320\n\n// 2. Track audit log\nput:audit:txn:1:user = alice@example.com\nput:audit:txn:1:action = created\nput:audit:txn:1:entity = doc:contract\n\nput:audit:txn:2:user = bob@example.com\nput:audit:txn:2:action = updated\nput:audit:txn:2:entity = doc:contract\n\n// 3. Create named snapshots\nput:snapshot:initial:txn_id = 1\nput:snapshot:updated:txn_id = 2\n\n// 4. Query different views\nget:doc:contract:version:1:data\nget:doc:contract:version:2:data\nget:audit:txn:1:user\nget:audit:txn:2:action"},
+  {"name":"Debugging with Time Travel","description":"Find when a bug was introduced","code":"// Track configuration changes\nput:config:v1:timeout = 30\nput:config:v1:retries = 3\nput:config:v1:timestamp = 1704067200\n\nput:config:v2:timeout = 60\nput:config:v2:retries = 3\nput:config:v2:timestamp = 1704067260\n\nput:config:v3:timeout = 60\nput:config:v3:retries = 5\nput:config:v3:timestamp = 1704067320\n\n// Bug report: Requests timing out\n// Check config history to find change\nget:config:v1:timeout\nget:config:v2:timeout  \nget:config:v3:retries\n\n// Found: timeout doubled in v2, retries increased in v3"}
+];
+
+<div class="code-runner" data-default-index="0" style="--editor-height: 280px;" data-examples={JSON.stringify(CompleteTimeTravelExamples)}>
+	<div class="code-runner-loading">
+		<div class="code-runner-spinner"></div>
+		<p>Loading WebAssembly module...</p>
+	</div>
+	<div class="code-runner-error" style="display: none;">
+		<p>Failed to load WebAssembly module</p>
+		<p class="code-runner-error-details"></p>
+		<button class="code-runner-btn code-runner-btn-retry">Retry</button>
+	</div>
+	<div class="code-runner-content" style="display: none;">
+		<div class="code-runner-selector">
+			<label>Examples:</label>
+			<select class="code-runner-select"></select>
+		</div>
+		<div class="code-runner-description"></div>
+		<div class="code-runner-editor">
+			<div class="code-runner-header">
+				<span>Code</span>
+			<div class="code-runner-actions">
+				<button class="code-runner-btn code-runner-btn-copy" title="Copy to clipboard">
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+						<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>
+						<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>
+					</svg>
+					Copy
+				</button>
+				<button class="code-runner-btn code-runner-btn-run" title="Run code (Ctrl+Enter)">
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+						<path d="M4 2v12l10-6Z"></path>
+					</svg>
+					Run
+				</button>
+			</div>
+			</div>
+			<textarea class="code-runner-textarea" spellcheck="false"></textarea>
+		</div>
+		<div class="code-runner-output">
+			<div class="code-runner-header">
+				<span>Output</span>
+			<button class="code-runner-btn code-runner-btn-clear" title="Clear output">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+					<path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"></path>
+				</svg>
+			</button>
+			</div>
+			<pre class="code-runner-output-content"></pre>
+			<div class="code-runner-status">
+				<span>
+					<span class="code-runner-status-dot"></span>
+					<span class="code-runner-status-text">Ready</span>
+				</span>
+				<span class="code-runner-time"></span>
+			</div>
+		</div>
+	</div>
+</div>
+
+<link rel="stylesheet" href="/js/code-runner.css" /><script src="/js/code-runner.js"></script>
+
+## Key Takeaways
+
+You've learned:
+- **Transaction Tracking** — Use transaction IDs as time markers
+- **Version History** — Store document versions for rollback
+- **Point-in-Time Queries** — Query state as of specific times
+- **Audit Trails** — Complete change logs for compliance
+- **Temporal Joins** — Join data from different time points
+
+## Running Locally
+
+For full MVCC time travel with real transactions:
+
+<Code code="zig build run" />
+
+In production, use `beginReadAt(txn_id)` to create consistent snapshots at any point in time.
+
+## Challenge Exercises
+
+1. **Snapshot Cleanup**: Implement automatic cleanup of old snapshots
+2. **Diff Generation**: Compute diff between any two versions
+3. **Branching**: Support multiple branches of document history
+4. **Temporal Indexes**: Indexes that only contain data from specific time ranges
+
+## Next Steps
+
+- **[Task Queue Tutorial](/tutorials/task-queue)** — Use time travel for task history
+- **[MVCC Concepts](/concepts/mvcc/)** — How snapshots work internally
+- **[Commit Stream](/concepts/commit-stream/)** — The log that makes it all possible
+- **[Semantics Spec](/specs/semantics-v0/)** — Formal transaction semantics

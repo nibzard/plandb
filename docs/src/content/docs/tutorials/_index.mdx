@@ -1,0 +1,144 @@
+---
+title: Interactive Tutorials
+description: Hands-on tutorials with live code execution to master NorthstarDB
+sidebar:
+  order: 4
+template: wrapper
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+Learn NorthstarDB through hands-on interactive tutorials. Each tutorial includes live code execution using WebAssembly — no installation required.
+
+## Get Started
+
+<details>
+  <summary>How to use these tutorials</summary>
+
+  Each tutorial features an interactive code runner that:
+  - Runs real NorthstarDB code in your browser
+  - Lets you modify and experiment with examples
+  - Shows output instantly without any setup
+
+  Just click **Run** (or press Ctrl+Enter) to execute the code.
+</details>
+
+## Core Tutorials
+
+<CardGrid stagger>
+	<Card title="Task Queue in 15 Minutes" icon="list">
+		<strong>Beginner</strong> · 15 min<br/>
+		Build a persistent task queue with atomic claims, concurrent workers, and crash safety.
+	</Card>
+	<Card title="Semantic Search" icon="search">
+		<strong>Intermediate</strong> · 20 min<br/>
+		Add AI-powered semantic search to your application using entity extraction and embeddings cartridges.
+	</Card>
+	<Card title="Time Travel Queries" icon="clock">
+		<strong>Intermediate</strong> · 15 min<br/>
+		Query historical data snapshots with AS OF semantics for audit trails and version history.
+	</Card>
+	<Card title="AI Plugin Development" icon="rocket">
+		<strong>Advanced</strong> · 25 min<br/>
+		Create custom AI plugins with hook system, function calling, and LLM integration.
+	</Card>
+</CardGrid>
+
+## By Difficulty
+
+### Beginner
+- **Task Queue in 15 Minutes** — Learn core database operations through a practical example
+- **Quick Start** — [Setup guide](/guides/quick-start/) with basic CRUD operations
+
+### Intermediate
+- **Semantic Search** — Entity extraction and topic indexing
+- **Time Travel Queries** — MVCC snapshots and historical querying
+- **Document Repository** — Full-text search and metadata indexing
+
+### Advanced
+- **AI Plugin Development** — Extensible intelligence architecture
+- **Performance Optimization** — Benchmarking and profiling techniques
+- **Cartridge Development** — Structured memory for AI workloads
+
+## Tutorial Features
+
+Each interactive tutorial includes:
+
+- **Live Code Execution** — Run code directly in your browser
+- **Step-by-Step Guidance** — Clear explanations at each step
+- **Real-World Examples** — Practical patterns you can use
+- **Challenge Exercises** — Test your understanding
+- **Extension Ideas** — Ways to build on what you learn
+
+## Prerequisites
+
+While some tutorials are beginner-friendly, having basic knowledge of the following will help:
+
+- **Programming fundamentals** — variables, functions, loops
+- **Basic database concepts** — keys, values, transactions (helpful but not required)
+- **Command line basics** — running commands from a terminal
+
+For local development with NorthstarDB:
+- **Zig 0.13.0+** — Download from [ziglang.org](https://ziglang.org/download/)
+- **Git** — For cloning the repository
+
+## Learning Path
+
+We recommend this progression:
+
+1. **Quick Start** — [Get up and running](/guides/quick-start/)
+2. **Task Queue Tutorial** — Build your first complete application
+3. **Time Travel Queries** — Understand MVCC and snapshots
+4. **Semantic Search** — Explore AI intelligence features
+5. **AI Plugin Development** — Extend the database with custom logic
+
+## What You'll Build
+
+Across these tutorials, you'll build:
+
+- **Task Queue System** — Concurrent job processing with atomic claims
+- **Knowledge Base** — Semantic search with entity relationships
+- **Audit Trail** — Historical data queries for compliance
+- **AI Plugin** — Custom intelligence using LLM function calling
+
+## Troubleshooting
+
+<details>
+  <summary>Code runner not loading</summary>
+
+  - Check your browser console for errors
+  - Ensure JavaScript is enabled
+  - Try refreshing the page
+  - Some corporate networks may block WASM modules
+</details>
+
+<details>
+  <summary>Code runs but produces errors</summary>
+
+  - Check syntax in the code editor
+  - Each line executes sequentially — ensure dependencies are met
+  - The tutorial examples are tested and should work as-is
+</details>
+
+<details>
+  <summary>Want to run locally?</summary>
+
+  Clone NorthstarDB and run the examples:
+
+  ```bash
+  git clone https://github.com/nikopol/northstardb.git
+  cd northstardb/examples/task_queue
+  zig build run
+  ```
+
+  See [Installation Guide](/guides/installation/) for details.
+</details>
+
+## Next Steps
+
+After completing the tutorials, dive deeper into:
+
+- [Core Concepts](/concepts/architecture/) — MVCC, B+tree, commit stream
+- [API Reference](/reference/db-api/) — Complete database API
+- [AI Intelligence](/ai/overview) — Structured memory and plugins
+- [Benchmarks](/guides/benchmarking/) — Performance testing

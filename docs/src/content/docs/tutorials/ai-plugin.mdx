@@ -1,0 +1,521 @@
+---
+title: Create an AI Plugin
+description: Build custom AI plugins with hooks, function calling, and LLM integration
+sidebar:
+  order: 4
+---
+
+import { Code } from '@astrojs/starlight/components';
+
+Create custom AI plugins that extend NorthstarDB with intelligent capabilities. Learn to use the plugin system, implement hooks, and integrate with LLM providers.
+
+## What We're Building
+
+An AI plugin system that:
+- **Hooks into commits** — Process data as it's written
+- **Provides functions** — LLM-callable operations via function schemas
+- **Integrates with LLMs** — Works with OpenAI, Anthropic, and local models
+- **Enhances queries** — Semantic understanding and optimization
+
+<details>
+  <summary>Why build AI plugins?</summary>
+
+  AI plugins enable:
+  - **Automatic entity extraction** — Identify entities from new data
+  - **Semantic indexing** — Build intelligent search indexes
+  - **Query optimization** — Understand query intent
+  - **Maintenance tasks** — Autonomous database optimization
+
+  The plugin system provides performance isolation and graceful degradation.
+</details>
+
+## Prerequisites
+
+No installation required for concepts! The code runs in your browser.
+
+For local development with full AI features:
+- [Zig 0.13.0+](https://ziglang.org/download/)
+- [LLM API key](https://platform.openai.com/) (OpenAI, Anthropic, or local)
+
+## Step 1: Plugin Structure
+
+Every plugin follows a standard structure with hooks and functions.
+
+```zig
+// Plugin definition structure
+const Plugin = struct {
+    name: []const u8,
+    version: []const u8,
+    on_commit: ?*const fn(CommitContext) anyerror!PluginResult,
+    on_query: ?*const fn(QueryContext) anyerror!?QueryPlan,
+    get_functions: ?*const fn() []FunctionSchema,
+};
+```
+
+<details>
+  <summary>Plugin lifecycle</summary>
+
+  1. **Registration** — Plugin registered with PluginManager
+  2. **Initialization** — Setup resources and validate config
+  3. **Hook Execution** — Hooks called on commits/queries
+  4. **Function Calling** — LLM calls registered functions
+  5. **Cleanup** — Free resources on shutdown
+</details>
+
+## Step 2: Commit Hooks
+
+Process data as it's written to the database.
+
+export const PluginExamples = [
+  {"name":"Hook Concept","description":"Simulate a commit hook processing mutations","code":"// Simulating commit stream mutations\nput:commit:1:mutation_1 = put:user:alice:name = Alice\nput:commit:1:mutation_2 = put:user:alice:email = alice@example.com\n\n// Hook output: extracted entities\nput:hook:entity_extractor:commit:1:entity_1 = {\"name\":\"Alice\",\"type\":\"Person\"}\nput:hook:entity_extractor:commit:1:entity_2 = {\"name\":\"alice@example.com\",\"type\":\"Email\"}\n\n// Store in entity cartridge\nput:entity:alice:name = Alice\nput:entity:alice:type = Person\nput:entity:alice@example.com:type = Email\n\n// Query hook output\nget:hook:entity_extractor:commit:1:entity_1\nget:entity:alice:name"},
+  {"name":"Batch Processing","description":"Hook buffers mutations for batch processing","code":"// Simulated buffered mutations\nput:buffer:1:mutation = put:doc:1:title = First doc\nput:buffer:2:mutation = put:doc:2:title = Second doc\nput:buffer:3:mutation = put:doc:3:title = Third doc\nput:buffer:4:mutation = put:doc:4:title = Fourth doc\nput:buffer:5:mutation = put:doc:5:title = Fifth doc\n\n// Batch size reached: process all\nput:batch:processed_at = 1704067320\nput:batch:entity_count = 5\n\n// Extracted entities from batch\nput:entity:doc_1:name = First doc\nput:entity:doc_2:name = Second doc\nput:entity:doc_3:name = Third doc\nput:entity:doc_4:name = Fourth doc\nput:entity:doc_5:name = Fifth doc\n\n// Query results\nget:batch:entity_count\nget:entity:doc_1:name\nget:entity:doc_5:name"},
+  {"name":"Error Handling","description":"Hooks handle errors gracefully","code":"// Successful processing\nput:hook:1:status = success\nput:hook:1:processed = 10\nput:hook:1:entities = 5\n\n// Hook with error (non-blocking)\nput:hook:2:status = error\nput:hook:2:error = LLM timeout\nput:hook:2:processed = 0\nput:hook:2:fallback_mode = true\n\n// Other hooks continue processing\nput:hook:3:status = success\nput:hook:3:processed = 8\nput:hook:3:entities = 3\n\n// Query status\nget:hook:1:status\nget:hook:2:fallback_mode\nget:hook:3:processed"}
+];
+
+<div class="code-runner" data-default-index="0" style="--editor-height: 280px;" data-examples={JSON.stringify(PluginExamples)}>
+	<div class="code-runner-loading">
+		<div class="code-runner-spinner"></div>
+		<p>Loading WebAssembly module...</p>
+	</div>
+	<div class="code-runner-error" style="display: none;">
+		<p>Failed to load WebAssembly module</p>
+		<p class="code-runner-error-details"></p>
+		<button class="code-runner-btn code-runner-btn-retry">Retry</button>
+	</div>
+	<div class="code-runner-content" style="display: none;">
+		<div class="code-runner-selector">
+			<label>Examples:</label>
+			<select class="code-runner-select"></select>
+		</div>
+		<div class="code-runner-description"></div>
+		<div class="code-runner-editor">
+			<div class="code-runner-header">
+				<span>Code</span>
+			<div class="code-runner-actions">
+				<button class="code-runner-btn code-runner-btn-copy" title="Copy to clipboard">
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+						<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>
+						<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>
+					</svg>
+					Copy
+				</button>
+				<button class="code-runner-btn code-runner-btn-run" title="Run code (Ctrl+Enter)">
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+						<path d="M4 2v12l10-6Z"></path>
+					</svg>
+					Run
+				</button>
+			</div>
+			</div>
+			<textarea class="code-runner-textarea" spellcheck="false"></textarea>
+		</div>
+		<div class="code-runner-output">
+			<div class="code-runner-header">
+				<span>Output</span>
+			<button class="code-runner-btn code-runner-btn-clear" title="Clear output">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+					<path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"></path>
+				</svg>
+			</button>
+			</div>
+			<pre class="code-runner-output-content"></pre>
+			<div class="code-runner-status">
+				<span>
+					<span class="code-runner-status-dot"></span>
+					<span class="code-runner-status-text">Ready</span>
+				</span>
+				<span class="code-runner-time"></span>
+			</div>
+		</div>
+	</div>
+</div>
+
+<link rel="stylesheet" href="/js/code-runner.css" /><script src="/js/code-runner.js"></script>
+
+**Key Concept:** Hooks execute asynchronously after commits. They can batch operations for efficiency and must handle errors gracefully.
+
+## Step 3: Function Schemas
+
+Define functions that LLMs can call via structured function calling.
+
+export const FunctionExamples = [
+  {"name":"Function Schema","description":"Define a callable function with JSON schema","code":"// Function: find_entity\nput:function:find_entity:name = find_entity\nput:function:find_entity:description = Find an entity by name\nput:function:find_entity:param:name:type = string\nput:function:find_entity:param:name:required = true\nput:function:find_entity:param:type:type = string\nput:function:find_entity:param:type:enum = [Person,Technology,Concept]\nput:function:find_entity:param:type:required = false\n\n// Function: search_relationships\nput:function:search_relationships:name = search_relationships\nput:function:search_relationships:description = Find entities related to a given entity\nput:function:search_relationships:param:entity:type = string\nput:function:search_relationships:param:entity:required = true\n\n// Query function definitions\nget:function:find_entity:name\nget:function:find_entity:param:name:type"},
+  {"name":"Function Call","description":"Simulated LLM function call","code":"// Setup: Create entities\nput:entity:zig:name = Zig\nput:entity:zig:type = Technology\nput:entity:andrew:name = Andrew\nput:entity:andrew:type = Person\n\n// LLM decides to call find_entity\nput:function_call:1:function = find_entity\nput:function_call:1:args:name = Zig\n\n// Function executes and returns result\nput:function_call:1:result = {\"name\":\"Zig\",\"type\":\"Technology\"}\nput:function_call:1:status = success\n\n// Query the function call\nget:function_call:1:function\nget:function_call:1:result"},
+  {"name":"Multi-Step Reasoning","description":"LLM chains multiple function calls","code":"// Step 1: Find entity\nput:call:1:function = find_entity\nput:call:1:args:name = NorthstarDB\nput:call:1:result = {\"name\":\"NorthstarDB\",\"type\":\"Technology\"}\n\n// Step 2: Find relationships\nput:call:2:function = find_relationships\nput:call:2:args:entity = NorthstarDB\nput:call:2:result = [{\"to\":\"Zig\",\"type\":\"written_in\"}]\n\n// Step 3: Get related entity details\nput:call:3:function = find_entity\nput:call:3:args:name = Zig\nput:call:3:result = {\"name\":\"Zig\",\"type\":\"Technology\"}\n\n// Final answer synthesized from all calls\nput:call:final:answer = NorthstarDB is written in Zig, a systems programming language\n\n// Query chain\nget:call:1:result\nget:call:2:result\nget:call:final:answer"}
+];
+
+<div class="code-runner" data-default-index="0" style="--editor-height: 280px;" data-examples={JSON.stringify(FunctionExamples)}>
+	<div class="code-runner-loading">
+		<div class="code-runner-spinner"></div>
+		<p>Loading WebAssembly module...</p>
+	</div>
+	<div class="code-runner-error" style="display: none;">
+		<p>Failed to load WebAssembly module</p>
+		<p class="code-runner-error-details"></p>
+		<button class="code-runner-btn code-runner-btn-retry">Retry</button>
+	</div>
+	<div class="code-runner-content" style="display: none;">
+		<div class="code-runner-selector">
+			<label>Examples:</label>
+			<select class="code-runner-select"></select>
+		</div>
+		<div class="code-runner-description"></div>
+		<div class="code-runner-editor">
+			<div class="code-runner-header">
+				<span>Code</span>
+		<div class="code-runner-actions">
+			<button class="code-runner-btn code-runner-btn-copy" title="Copy to clipboard">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+					<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>
+					<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>
+				</svg>
+				Copy
+			</button>
+			<button class="code-runner-btn code-runner-btn-run" title="Run code (Ctrl+Enter)">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+					<path d="M4 2v12l10-6Z"></path>
+				</svg>
+				Run
+			</button>
+		</div>
+		</div>
+			<textarea class="code-runner-textarea" spellcheck="false"></textarea>
+		</div>
+		<div class="code-runner-output">
+			<div class="code-runner-header">
+				<span>Output</span>
+			<button class="code-runner-btn code-runner-btn-clear" title="Clear output">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+					<path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"></path>
+				</svg>
+			</button>
+			</div>
+			<pre class="code-runner-output-content"></pre>
+			<div class="code-runner-status">
+				<span>
+					<span class="code-runner-status-dot"></span>
+					<span class="code-runner-status-text">Ready</span>
+				</span>
+				<span class="code-runner-time"></span>
+			</div>
+		</div>
+	</div>
+</div>
+
+<link rel="stylesheet" href="/js/code-runner.css" /><script src="/js/code-runner.js"></script>
+
+## Step 4: LLM Integration
+
+Connect your plugin to LLM providers.
+
+export const LLMExamples = [
+  {"name":"Provider Configuration","description":"Configure different LLM providers","code":"// OpenAI configuration\nput:llm:openai:provider = openai\nput:llm:openai:model = gpt-4-turbo\nput:llm:openai:endpoint = https://api.openai.com/v1\nput:llm:openai:timeout = 5000\n\n// Anthropic configuration\nput:llm:anthropic:provider = anthropic\nput:llm:anthropic:model = claude-3-opus-20240229\nput:llm:anthropic:endpoint = https://api.anthropic.com/v1\nput:llm:anthropic:timeout = 5000\n\n// Local model (Ollama)\nput:llm:local:provider = ollama\nput:llm:local:model = mistral:7b\nput:llm:local:endpoint = http://localhost:11434\nput:llm:local:timeout = 30000\n\n// Query configuration\nget:llm:openai:model\nget:llm:anthropic:provider"},
+  {"name":"Cost Management","description":"Track and limit LLM usage","code":"// Cost tracking per provider\nput:cost:openai:hourly = 5.50\nput:cost:openai:budget = 10.00\nput:cost:openai:remaining = 4.50\n\nput:cost:anthropic:hourly = 3.20\nput:cost:anthropic:budget = 10.00\nput:cost:anthropic:remaining = 6.80\n\n// Call cost tracking\nput:cost:call:1:tokens = 1500\nput:cost:call:1:cost = 0.03\nput:cost:call:1:provider = openai\n\nput:cost:call:2:tokens = 800\nput:cost:call:2:cost = 0.012\nput:cost:call:2:provider = anthropic\n\n// Budget exceeded check\nput:cost:openai:status = budget_exceeded\nput:cost:openai:fallback = anthropic\n\n// Query costs\nget:cost:openai:remaining\nget:cost:call:1:cost\nget:cost:openai:fallback"},
+  {"name":"Fallback Strategy","description":"Graceful degradation when LLM fails","code":"// Primary: OpenAI\nput:fallback:primary = openai\nput:fallback:primary:status = available\n\n// Fallback chain\nput:fallback:chain:1 = anthropic\nput:fallback:chain:2 = local\n\n// OpenAI fails, try Anthropic\nput:attempt:1:provider = openai\nput:attempt:1:status = timeout\nput:attempt:1:fallback_to = anthropic\n\n// Anthropic succeeds\nput:attempt:2:provider = anthropic\nput:attempt:2:status = success\nput:attempt:2:result = {\"entities\": [...]}\n\n// Cache result for future\nput:cache:entity_extraction:hash123 = {\"entities\": [...]}\nput:cache:entity_extraction:hash123:hit_count = 5\n\n// Query fallback\nget:attempt:1:fallback_to\nget:attempt:2:status\nget:cache:entity_extraction:hash123:hit_count"}
+];
+
+<div class="code-runner" data-default-index="0" style="--editor-height: 280px;" data-examples={JSON.stringify(LLMExamples)}>
+	<div class="code-runner-loading">
+		<div class="code-runner-spinner"></div>
+		<p>Loading WebAssembly module...</p>
+	</div>
+	<div class="code-runner-error" style="display: none;">
+		<p>Failed to load WebAssembly module</p>
+		<p class="code-runner-error-details"></p>
+		<button class="code-runner-btn code-runner-btn-retry">Retry</button>
+	</div>
+	<div class="code-runner-content" style="display: none;">
+		<div class="code-runner-selector">
+			<label>Examples:</label>
+			<select class="code-runner-select"></select>
+		</div>
+		<div class="code-runner-description"></div>
+		<div class="code-runner-editor">
+			<div class="code-runner-header">
+				<span>Code</span>
+		<div class="code-runner-actions">
+			<button class="code-runner-btn code-runner-btn-copy" title="Copy to clipboard">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+					<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>
+					<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>
+				</svg>
+				Copy
+			</button>
+			<button class="code-runner-btn code-runner-btn-run" title="Run code (Ctrl+Enter)">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+					<path d="M4 2v12l10-6Z"></path>
+				</svg>
+				Run
+			</button>
+		</div>
+		</div>
+			<textarea class="code-runner-textarea" spellcheck="false"></textarea>
+		</div>
+		<div class="code-runner-output">
+			<div class="code-runner-header">
+				<span>Output</span>
+			<button class="code-runner-btn code-runner-btn-clear" title="Clear output">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+					<path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"></path>
+				</svg>
+			</button>
+			</div>
+			<pre class="code-runner-output-content"></pre>
+			<div class="code-runner-status">
+				<span>
+					<span class="code-runner-status-dot"></span>
+					<span class="code-runner-status-text">Ready</span>
+				</span>
+				<span class="code-runner-time"></span>
+			</div>
+		</div>
+	</div>
+</div>
+
+<link rel="stylesheet" href="/js/code-runner.css" /><script src="/js/code-runner.js"></script>
+
+## Step 5: Query Hooks
+
+Optimize queries with AI-powered understanding.
+
+export const QueryExamples = [
+  {"name":"Query Analysis","description":"Analyze and optimize queries","code":"// User query\nput:query:input = What databases are written in Zig?\n\n// Query hook analyzes intent\nput:query:intent = semantic_search\nput:query:entities = [database, Zig]\nput:query:relation_path = [written_in]\n\n// Suggest using entity cartridge\nput:query:plan:use_cartridge = entity\nput:query:plan:query = entities where type=Technology AND related_to=Zig\n\n// Execute optimized query\nput:query:result:northstardb = {\"name\":\"NorthstarDB\",\"type\":\"Technology\"}\nput:query:result:other_db = {\"name\":\"BunDB\",\"type\":\"Technology\"}\n\n// Query the analysis\nget:query:intent\nget:query:plan:use_cartridge"},
+  {"name":"Natural Language Processing","description":"Convert NL to structured queries","code":"// NL query: users created after last Tuesday\nput:nl:1:input = users created after last Tuesday\n\n// Parse to structured query\nput:nl:1:parsed:entity = user\nput:nl:1:parsed:filter = created_after\nput:nl:1:parsed:value = 2024-01-15\n\n// Generate database query\nput:query:1:type = scan\nput:query:1:prefix = user:\nput:query:1:filter = created_at > 2024-01-15\n\n// Results\nput:query:1:result_count = 42\n\n// Query processing\nget:nl:1:parsed:entity\nget:query:1:result_count"},
+  {"name":"Hybrid Approach","description":"Combine structured and semantic search","code":"// Query: performance issues with zig code\nput:hybrid:1:input = performance issues with zig code\n\n// Hybrid plan: structured + semantic\nput:hybrid:1:plan:structured = scan:error:level=error\nput:hybrid:1:plan:semantic = entities related to performance AND Zig\n\n// Execute both\nput:hybrid:1:structured:results = 12 errors\nput:hybrid:1:semantic:results = [bottleneck, optimization]\n\n// Merge and rank results\nput:hybrid:1:final:1 = {\"type\":\"error\",\"file\":\"parser.zig\",\"score\":0.95}\nput:hybrid:1:final:2 = {\"type\":\"entity\",\"name\":\"memory_alloc\",\"score\":0.88}\n\n// Query plan\nget:hybrid:1:plan:structured\nget:hybrid:1:final:1"}
+];
+
+<div class="code-runner" data-default-index="0" style="--editor-height: 280px;" data-examples={JSON.stringify(QueryExamples)}>
+	<div class="code-runner-loading">
+		<div class="code-runner-spinner"></div>
+		<p>Loading WebAssembly module...</p>
+	</div>
+	<div class="code-runner-error" style="display: none;">
+		<p>Failed to load WebAssembly module</p>
+		<p class="code-runner-error-details"></p>
+		<button class="code-runner-btn code-runner-btn-retry">Retry</button>
+	</div>
+	<div class="code-runner-content" style="display: none;">
+		<div class="code-runner-selector">
+			<label>Examples:</label>
+			<select class="code-runner-select"></select>
+		</div>
+		<div class="code-runner-description"></div>
+		<div class="code-runner-editor">
+			<div class="code-runner-header">
+				<span>Code</span>
+		<div class="code-runner-actions">
+			<button class="code-runner-btn code-runner-btn-copy" title="Copy to clipboard">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+					<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>
+					<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>
+				</svg>
+				Copy
+			</button>
+			<button class="code-runner-btn code-runner-btn-run" title="Run code (Ctrl+Enter)">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+					<path d="M4 2v12l10-6Z"></path>
+				</svg>
+				Run
+			</button>
+		</div>
+		</div>
+			<textarea class="code-runner-textarea" spellcheck="false"></textarea>
+		</div>
+		<div class="code-runner-output">
+			<div class="code-runner-header">
+				<span>Output</span>
+			<button class="code-runner-btn code-runner-btn-clear" title="Clear output">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+					<path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"></path>
+				</svg>
+			</button>
+			</div>
+			<pre class="code-runner-output-content"></pre>
+			<div class="code-runner-status">
+				<span>
+					<span class="code-runner-status-dot"></span>
+					<span class="code-runner-status-text">Ready</span>
+				</span>
+				<span class="code-runner-time"></span>
+			</div>
+		</div>
+	</div>
+</div>
+
+<link rel="stylesheet" href="/js/code-runner.css" /><script src="/js/code-runner.js"></script>
+
+## Step 6: Maintenance Hooks
+
+Schedule background tasks for autonomous optimization.
+
+export const MaintenanceExamples = [
+  {"name":"Scheduled Tasks","description":"Background maintenance operations","code":"// Schedule: Rebuild entity index\nput:schedule:task:1:name = rebuild_entity_index\nput:schedule:task:1:priority = 5\nput:schedule:task:1:frequency = daily\nput:schedule:task:1:last_run = 1704067200\nput:schedule:task:1:next_run = 1704153600\n\n// Schedule: Cleanup old snapshots\nput:schedule:task:2:name = cleanup_old_snapshots\nput:schedule:task:2:priority = 3\nput:schedule:task:2:frequency = weekly\nput:schedule:task:2:last_run = 1704067200\nput:schedule:task:2:next_run = 1704672000\n\n// Query tasks\nget:schedule:task:1:name\nget:schedule:task:1:next_run"},
+  {"name":"Autonomous Optimization","description":"Plugin suggests and applies optimizations","code":"// Performance analysis\nput:analysis:1:timestamp = 1704067320\nput:analysis:1:issue = slow_query_detection\nput:analysis:1:affected = user:email lookup\nput:analysis:1:suggestion = create index on email field\n\n// Optimization applied\nput:optimization:1:action = create_index\nput:optimization:1:field = email\nput:optimization:1:status = applied\nput:optimization:1:improvement = 40% faster\n\n// Verify improvement\nput:metrics:query:email:before = 120ms\nput:metrics:query:email:after = 72ms\nput:metrics:query:email:improvement = 40%\n\n// Query optimization\nget:analysis:1:suggestion\nget:optimization:1:improvement"},
+  {"name":"Health Monitoring","description":"Monitor database health and auto-heal","code":"// Health check results\nput:health:snapshots:status = warning\nput:health:snapshots:issue = too many old snapshots\nput:health:snapshots:count = 1500\nput:health:snapshots:threshold = 1000\n\n// Auto-heal action\nput:autoheal:1:action = cleanup_snapshots\nput:autoheal:1:trigger = snapshot_count > threshold\nput:autoheal:1:deleted = 523\nput:autoheal:1:status = success\n\n// Verify health restored\nput:health:snapshots:after_count = 977\nput:health:snapshots:status = healthy\n\n// Query health\nget:health:snapshots:status\nget:autoheal:1:deleted"}
+];
+
+<div class="code-runner" data-default-index="0" style="--editor-height: 280px;" data-examples={JSON.stringify(MaintenanceExamples)}>
+	<div class="code-runner-loading">
+		<div class="code-runner-spinner"></div>
+		<p>Loading WebAssembly module...</p>
+	</div>
+	<div class="code-runner-error" style="display: none;">
+		<p>Failed to load WebAssembly module</p>
+		<p class="code-runner-error-details"></p>
+		<button class="code-runner-btn code-runner-btn-retry">Retry</button>
+	</div>
+	<div class="code-runner-content" style="display: none;">
+		<div class="code-runner-selector">
+			<label>Examples:</label>
+			<select class="code-runner-select"></select>
+		</div>
+		<div class="code-runner-description"></div>
+		<div class="code-runner-editor">
+			<div class="code-runner-header">
+				<span>Code</span>
+		<div class="code-runner-actions">
+			<button class="code-runner-btn code-runner-btn-copy" title="Copy to clipboard">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+					<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>
+					<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>
+				</svg>
+				Copy
+			</button>
+			<button class="code-runner-btn code-runner-btn-run" title="Run code (Ctrl+Enter)">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+					<path d="M4 2v12l10-6Z"></path>
+				</svg>
+				Run
+			</button>
+		</div>
+		</div>
+			<textarea class="code-runner-textarea" spellcheck="false"></textarea>
+		</div>
+		<div class="code-runner-output">
+			<div class="code-runner-header">
+				<span>Output</span>
+			<button class="code-runner-btn code-runner-btn-clear" title="Clear output">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+					<path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"></path>
+				</svg>
+			</button>
+			</div>
+			<pre class="code-runner-output-content"></pre>
+			<div class="code-runner-status">
+				<span>
+					<span class="code-runner-status-dot"></span>
+					<span class="code-runner-status-text">Ready</span>
+				</span>
+				<span class="code-runner-time"></span>
+			</div>
+		</div>
+	</div>
+</div>
+
+<link rel="stylesheet" href="/js/code-runner.css" /><script src="/js/code-runner.js"></script>
+
+## Complete Plugin System
+
+Combine all components for a full AI plugin.
+
+export const CompletePluginExamples = [
+  {"name":"Complete Plugin","description":"Full plugin with all components","code":"// Plugin registration\nput:plugin:entity_extractor:name = entity_extractor\nput:plugin:entity_extractor:version = 0.1.0\nput:plugin:entity_extractor:status = active\n\n// Commit hook output\nput:hook:entity_extractor:commit:1:processed = 10\nput:hook:entity_extractor:commit:1:entities = 5\nput:hook:entity_extractor:commit:1:status = success\n\n// Function registration\nput:function:find_entity:name = find_entity\nput:function:find_entity:param:name:type = string\n\n// LLM integration\nput:llm:provider = openai\nput:llm:model = gpt-4-turbo\nput:llm:cost:hourly = 2.50\n\n// Query optimization\nput:query:plan:1:intent = semantic_search\nput:query:plan:1:use_cartridge = entity\n\n// Maintenance task\nput:schedule:task:1:name = rebuild_index\nput:schedule:task:1:next_run = 1704153600\n\n// Query plugin state\nget:plugin:entity_extractor:status\nget:hook:entity_extractor:commit:1:entities\nget:schedule:task:1:name"},
+  {"name":"Plugin Lifecycle","description":"Full plugin lifecycle from init to cleanup","code":"// 1. Initialization\nput:plugin:lifecycle:state = initialized\nput:plugin:lifecycle:resources = [llm_client, batch_buffer]\n\n// 2. Active processing\nput:plugin:lifecycle:commits_processed = 150\nput:plugin:lifecycle:entities_extracted = 450\nput:plugin:lifecycle:functions_registered = 3\n\n// 3. Health check\nput:plugin:lifecycle:health = healthy\nput:plugin:lifecycle:last_error = none\nput:plugin:lifecycle:uptime = 86400\n\n// 4. Statistics\nput:plugin:lifecycle:avg_latency_ms = 150\nput:plugin:lifecycle:cache_hit_rate = 0.75\nput:plugin:lifecycle:cost_total = 12.50\n\n// Query lifecycle\nget:plugin:lifecycle:state\nget:plugin:lifecycle:entities_extracted\nget:plugin:lifecycle:cache_hit_rate"}
+];
+
+<div class="code-runner" data-default-index="0" style="--editor-height: 280px;" data-examples={JSON.stringify(CompletePluginExamples)}>
+	<div class="code-runner-loading">
+		<div class="code-runner-spinner"></div>
+		<p>Loading WebAssembly module...</p>
+	</div>
+	<div class="code-runner-error" style="display: none;">
+		<p>Failed to load WebAssembly module</p>
+		<p class="code-runner-error-details"></p>
+		<button class="code-runner-btn code-runner-btn-retry">Retry</button>
+	</div>
+	<div class="code-runner-content" style="display: none;">
+		<div class="code-runner-selector">
+			<label>Examples:</label>
+			<select class="code-runner-select"></select>
+		</div>
+		<div class="code-runner-description"></div>
+		<div class="code-runner-editor">
+			<div class="code-runner-header">
+				<span>Code</span>
+		<div class="code-runner-actions">
+			<button class="code-runner-btn code-runner-btn-copy" title="Copy to clipboard">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+					<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>
+					<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>
+				</svg>
+				Copy
+			</button>
+			<button class="code-runner-btn code-runner-btn-run" title="Run code (Ctrl+Enter)">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+					<path d="M4 2v12l10-6Z"></path>
+				</svg>
+				Run
+			</button>
+		</div>
+		</div>
+			<textarea class="code-runner-textarea" spellcheck="false"></textarea>
+		</div>
+		<div class="code-runner-output">
+			<div class="code-runner-header">
+				<span>Output</span>
+			<button class="code-runner-btn code-runner-btn-clear" title="Clear output">
+				<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+					<path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"></path>
+				</svg>
+			</button>
+			</div>
+			<pre class="code-runner-output-content"></pre>
+			<div class="code-runner-status">
+				<span>
+					<span class="code-runner-status-dot"></span>
+					<span class="code-runner-status-text">Ready</span>
+				</span>
+				<span class="code-runner-time"></span>
+			</div>
+		</div>
+	</div>
+</div>
+
+<link rel="stylesheet" href="/js/code-runner.css" /><script src="/js/code-runner.js"></script>
+
+## Key Takeaways
+
+You've learned:
+- **Plugin Structure** — Standard interface with hooks and functions
+- **Commit Hooks** — Process data as it's written
+- **Function Schemas** — LLM-callable operations
+- **LLM Integration** — Provider-agnostic with fallbacks
+- **Query Optimization** — AI-powered query analysis
+- **Maintenance Tasks** — Autonomous background operations
+
+## Running Locally
+
+For full AI plugin development with real LLM integration:
+
+<Code code="cd examples/ai_knowledge_base && zig build run" />
+
+Configure your API key in environment variables:
+```bash
+export OPENAI_API_KEY="sk-..."
+# or
+export ANTHROPIC_API_KEY="sk-ant-..."
+```
+
+## Challenge Exercises
+
+1. **Custom Plugin**: Build a plugin for sentiment analysis
+2. **Multi-Provider**: Implement round-robin LLM calling
+3. **Streaming**: Add streaming response support
+4. **Caching**: Implement smart cache warming strategies
+
+## Next Steps
+
+- **[Plugin System Docs](/ai/plugins)** — Complete plugin reference
+- **[Structured Memory](/ai/structured-memory)** — Entity cartridges
+- **[AI Overview](/ai/overview)** — High-level architecture
+- **[LLM Integration](/ai/llm)** — LLM client details
