@@ -1627,7 +1627,7 @@ Transform NorthstarDB's scattered markdown files into a modern, developer-friend
   - Built-in cartridges reference
   - Building custom cartridges
   - Cartridge invalidation and rebuilds
-- [ ] 🟡 Write AI queries guide
+- [x] 🟡 Write AI queries guide (Completed: added comprehensive AI queries guide covering setting up AI queries, natural language query patterns, query planning with automatic optimization, executing queries, error handling with fallbacks, complete AI-powered search system example, and best practices - docs/src/content/docs/guides/ai-queries.md)
   - Natural language query setup
   - Query planning and optimization
   - Topic-based searches
