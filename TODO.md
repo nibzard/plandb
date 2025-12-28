@@ -2005,6 +2005,13 @@ Transform NorthstarDB's scattered markdown files into a modern, developer-friend
   - **STATUS**: Delta computation operational with full test coverage
   - **COMMIT**: b06b165
 
+- [x] 🟢 Implement snapshot metadata generation in temporal cartridge
+  - **COMPLETED**: generateSnapshotMetadata() function for creating JSON metadata
+  - **COMPLETED**: Metadata includes entity_namespace, entity_id, version, has_delta, created_at
+  - **COMPLETED**: Updated createSnapshot() to generate and store metadata
+  - **STATUS**: Snapshot metadata generation operational
+  - **COMMIT**: 36b1833
+
 ## Documentation Success Criteria
 
 1. **Developer Experience**: Developers can find answers in <30 seconds
