@@ -2019,6 +2019,49 @@ Transform NorthstarDB's scattered markdown files into a modern, developer-friend
   - **STATUS**: Data integrity verification operational
   - **COMMIT**: 63e9af8
 
+## New Feature: Multi-Region Replication Macro Benchmark (December 2024)
+
+### Description
+Added a new macro benchmark simulating multi-region database replication with conflict detection and resolution.
+
+### Implementation Details
+- **Benchmark Name**: `bench/macro/multi_region_replication`
+- **File**: `src/bench/suite.zig`
+- **Function**: `benchMacroMultiRegionReplication`
+
+### Key Features
+- Simulates 3 regions with async replication via commit log replay
+- Tracks write propagation latency between regions (p50/p95/p99)
+- Measures conflict detection and resolution performance
+- Tests network partition tolerance with configurable latency jitter
+- Generates comprehensive metrics including:
+  - Local write latency (p50/p99)
+  - Cross-region replication lag (p50/p95/p99)
+  - Conflict detection latency (p50/p99)
+  - Successful replications count
+  - Conflicts detected and resolved count
+
+### Benchmark Configuration
+- **Regions**: 3 (simulated)
+- **Writes**: 50 operations
+- **Conflict Probability**: 15%
+- **Network Latency**: 1ms base + 0.5ms jitter
+
+### Results
+- **Throughput**: ~507 ops/sec
+- **Replication Lag p50**: ~3.3ms
+- **Replication Lag p95**: ~4.8ms
+- **Replication Lag p99**: ~5.0ms
+- **Conflicts Detected**: ~10 per run
+- **Stability**: CV < 2.2% (stable)
+
+### Commit
+- Commit: `78d3433` - "feat: add multi-region replication macro benchmark"
+- Baselines: 5 repeat files in `bench/baselines/ci/bench/macro/`
+
+### Notes
+This is a **non-critical** benchmark (`.critical = false`) that demonstrates advanced MVCC and commit stream replay capabilities. It's designed to show off the database's ability to handle distributed scenarios while maintaining consistency guarantees.
+
 ## Documentation Success Criteria
 
 1. **Developer Experience**: Developers can find answers in <30 seconds
