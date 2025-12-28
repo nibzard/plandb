@@ -1,0 +1,206 @@
+---
+title: Commit Stream
+description: The write-ahead log that makes state derived and time travel possible
+---
+
+## Commit Stream Overview
+
+The commit stream is NorthstarDB's source of truth — every transaction emits a canonical commit record that describes all changes. This is the foundational concept that enables:
+
+- **Crash recovery** — Replay to reconstruct state
+- **Time travel** — Query historical snapshots
+- **Replication** — Ship records to followers
+- **Audit** — Complete history of all changes
+
+## Design Philosophy
+
+### State is Derived; The Log is Truth
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    Commit Stream                        │
+│  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐   │
+│  │ TxnId=1 │  │ TxnId=2 │  │ TxnId=3 │  │ TxnId=4 │   │
+│  │ PUT a=1 │  │ PUT b=2 │  │ DEL a   │  │ PUT c=3 │   │
+│  └─────────┘  └─────────┘  └─────────┘  └─────────┘   │
+└─────────────────────────────────────────────────────────┘
+                         │
+                         │ Replay
+                         ▼
+┌─────────────────────────────────────────────────────────┐
+│              Current Database State                     │
+│  ┌─────────────────────────────────────────────────┐   │
+│  │ B+tree Root at TxnId=4                          │   │
+│  │   b=2, c=3                                     │   │
+│  └─────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────┘
+```
+
+The B+tree and all other data structures are **derived** from replaying the commit stream. If you have the commit stream, you can reconstruct the entire database state.
+
+## Commit Record Format
+
+Each successful transaction emits a commit record:
+
+```zig
+const CommitRecord = struct {
+    txn_id: u64,
+    timestamp: i64,
+    mutations: []Mutation,
+    checksum: u32,
+};
+
+const Mutation = struct {
+    type: enum { put, delete },
+    key: []const u8,
+    value: ?[]const u8,
+};
+```
+
+### Example Record
+
+```
+TxnId: 42
+Timestamp: 1704067200000
+Mutations:
+  - PUT "user:123" -> {"name": "Alice", "email": "alice@example.com"}
+  - PUT "order:456" -> {"user_id": 123, "total": 99.99}
+Checksum: 0xABCD1234
+```
+
+## Storage Options
+
+### Option A: Separate File
+
+```
+mydb.northstar    # Main database file
+mydb.log          # Commit log (append-only)
+```
+
+**Pros**: Simple append, easier fsync ordering
+**Cons**: Two-file management
+
+### Option B: Embedded Pages
+
+```
+mydb.northstar    # Everything in one file
+                  # - Pages 0-1: Meta
+                  # - Pages 2-N: Data
+                  # - Pages N-M: Log region
+```
+
+**Pros**: Single file
+**Cons**: More complex allocation
+
+## Commit Protocol
+
+When a transaction commits:
+
+```
+1. Write all new data pages
+                │
+2. Write commit record to log
+                │
+3. Fsync log and data
+                │
+4. Atomically update meta page (toggle A/B)
+                │
+5. Fsync database file
+                │
+                ▼
+   COMMIT SUCCESS
+```
+
+This ensures crash safety: after step 4 completes, the commit is durable even if the process crashes.
+
+## Crash Recovery
+
+On database open:
+
+```
+1. Read both meta pages (A and B)
+                │
+2. Validate checksums
+                │
+3. Choose meta with highest TxnId
+                │
+4. Read root_page_id from chosen meta
+                │
+                ▼
+   DATABASE OPEN
+```
+
+If the database crashed mid-commit, only the meta with the lower TxnId is valid — the partial commit is simply lost.
+
+## Time Travel Queries
+
+Because every commit is recorded, you can query historical state:
+
+```zig
+// Query state as of TxnId 100
+const old_txn = try db.beginRead(.{ .txn_id = 100 });
+const old_value = try old_txn.get("my-key");
+```
+
+Internally, this either:
+- **Direct lookup**: If we keep a TxnId → root mapping
+- **Replay**: Reapply commits 1-100 to reconstruct state
+
+## Deterministic Replay
+
+Given the same sequence of commit records, you always get the same final state:
+
+```
+Initial State: {}
+Apply: PUT a=1   → {a: 1}
+Apply: PUT b=2   → {a: 1, b: 2}
+Apply: DELETE a  → {b: 2}
+─────────────────────────────────────
+Final State: {b: 2}  (Always the same!)
+```
+
+This is critical for:
+- **Agent replay**: Reproduce AI agent decisions
+- **Debugging**: Understand what changed and when
+- **Testing**: Validate semantics with property tests
+
+## Replication Foundation
+
+The commit stream is the seam for future replication:
+
+```
+┌──────────────┐         ┌──────────────┐
+│    Primary   │────────▶│    Replica   │
+│              │  Ship   │              │
+│ Commit Stream│ Records │ Commit Stream│
+└──────────────┘         └──────────────┘
+```
+
+Replication is simply streaming commit records to followers and having them replay.
+
+## Performance Considerations
+
+### Write Amplification
+
+Every write generates:
+- New B+tree pages (COW)
+- Commit record (log)
+- Meta page update
+
+### Read Amplification
+
+Reads pay **no** coordination cost — they read from snapshots derived from committed state.
+
+### Batch Optimization
+
+Multiple small commits can be batched:
+- Reduce fsync overhead
+- Better compression
+- More efficient replication
+
+## See Also
+
+- [Architecture](/concepts/architecture) — System design overview
+- [MVCC](/concepts/mvcc) — Snapshot isolation
+- [Semantics v0](/specs/semantics-v0) — Transaction semantics specification
+- [File Format v0](/specs/file-format-v0) — On-disk format details
