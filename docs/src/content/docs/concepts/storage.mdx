@@ -1,0 +1,57 @@
+---
+title: Storage Engine
+description: The pager system and physical storage layer
+---
+
+## Pager System
+
+The pager is responsible for physical storage management in NorthstarDB.
+
+### Responsibilities
+
+- **Page Allocation**: Allocate and deallocate pages
+- **Buffered I/O**: Cache frequently accessed pages
+- **Read-Ahead**: Prefetch pages for sequential access
+- **Checksum Validation**: Detect data corruption
+- **Crash Recovery**: Recover from unclean shutdowns
+
+### Page Format
+
+```
++-------------------+
+|   Page Header     |
++-------------------+
+|   Checksum (8B)   |
++-------------------+
+|   PageId (8B)     |
++-------------------+
+|   Lsn (8B)        |
++-------------------+
+|   Page Type (1B)  |
++-------------------+
+|   Data            |
+|                   |
++-------------------+
+```
+
+### Page Types
+
+- **Meta Page**: Database metadata
+- **B+tree Node**: Internal and leaf nodes
+- **Free List**: Tracking free pages
+- **Overflow**: Large values
+
+## I/O Optimization
+
+The pager uses several strategies for optimal I/O:
+
+1. **Buffer Pool**: Keep hot pages in memory
+2. **Read-ahead**: Prefetch sequential pages
+3. **Write-back**: Batch writes
+4. **Mmap**: Optional memory-mapped I/O for small databases
+
+## See Also
+
+- [Architecture](/concepts/architecture)
+- [B+tree Index](/concepts/btree)
+- [File Format v0](/specs/file-format-v0)

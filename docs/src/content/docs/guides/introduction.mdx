@@ -1,0 +1,65 @@
+---
+title: Introduction
+description: Welcome to NorthstarDB - A Living Database built from scratch in Zig
+template: splash
+hero:
+  title: 'NorthstarDB'
+  subtitle: 'A Living Database built from scratch in Zig for massive read concurrency and deterministic replay'
+  tagline: 'Benchmarks and tests are the source of truth'
+  actions:
+    - text: Quick Start
+      link: /guides/quick-start
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/nikopol/northstardb
+      icon: right-arrow
+---
+
+## What is NorthstarDB?
+
+NorthstarDB is a database built from scratch in Zig, designed for:
+
+- **Massive read concurrency** - Many readers, single writer architecture
+- **Deterministic replay** - Crash safety through commit stream logging
+- **AI-driven intelligence** - Autonomous maintenance and optimization
+- **Explicit performance** - No hidden allocations, no hidden errors
+
+## Key Features
+
+### Core Architecture
+- **Single file format** with pager system for efficient storage
+- **B+tree** ordered key-value store
+- **MVCC snapshots** for concurrent reads
+- **Commit stream** for crash recovery and time-travel queries
+
+### AI Intelligence (Phase 7)
+- **Plugin system** for LLM function calling
+- **Structured memory cartridges** (entities, topics, relationships)
+- **Natural language query** planning and optimization
+- **Autonomous optimization** - the database understands itself
+
+## Design Philosophy
+
+> **Benchmarks and tests are the source of truth**
+
+NorthstarDB follows strict principles:
+
+1. **Explicit memory** - No hidden allocations
+2. **Explicit errors** - All error paths visible
+3. **Explicit performance** - Measured through reproducible benchmarks
+4. **State is derived** - The commit log is the source of truth
+5. **Pay coordination at commit** - Not on every read
+
+## Target Workload
+
+Designed for **orchestrated AI coding agents** with:
+- Massive concurrent access patterns
+- Semantic understanding of data
+- Natural language query interfaces
+- Autonomous optimization requirements
+
+## Project Status
+
+Currently in Phase 0: Core database implementation with comprehensive benchmarks and hardening tests.
+
+See [PLAN-LIVING-DB.md](https://github.com/nikopol/northstardb/blob/main/PLAN-LIVING-DB.md) for the complete roadmap.

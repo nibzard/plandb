@@ -1,0 +1,86 @@
+---
+title: MVCC
+description: Multi-Version Concurrency Control for consistent reads
+---
+
+## MVCC Overview
+
+NorthstarDB uses Multi-Version Concurrency Control (MVCC) for:
+
+- **Many concurrent readers** without blocking
+- **Consistent snapshots** for transactions
+- **Non-blocking reads** during writes
+
+## Snapshot Isolation
+
+Each read transaction sees a consistent snapshot:
+
+```zig
+// Begin read transaction
+var txn = try db.beginTxn(.{ .mode = .read });
+defer txn.commit() catch unreachable;
+
+// All reads see the same snapshot
+const val1 = try txn.get("key1");
+const val2 = try txn.get("key2");
+// No locks, no blocking!
+```
+
+## Version Chain
+
+Multiple versions of each value are maintained:
+
+```
+Key: "user:123"
+┌─────────────────────────────────────┐
+│ Version 3 (Lsn 100) - Active        │
+│ Value: "Alice"                      │
+└─────────────────────────────────────┘
+              ▲
+              │
+┌─────────────────────────────────────┐
+│ Version 2 (Lsn 50)  - Committed     │
+│ Value: "Bob"                        │
+└─────────────────────────────────────┘
+              ▲
+              │
+┌─────────────────────────────────────┐
+│ Version 1 (Lsn 25)  - Committed     │
+│ Value: "Charlie"                    │
+└─────────────────────────────────────┘
+```
+
+## Readers Scaling
+
+MVCC enables unlimited concurrent readers:
+
+- **No locks** for read transactions
+- **No blocking** between readers
+- **Consistent view** of data
+- **Zero coordination** overhead
+
+## Write Transactions
+
+Single writer with optimistic concurrency:
+
+```zig
+var write_txn = try db.beginTxn(.{ .mode = .write });
+defer write_txn.commit() catch unreachable;
+
+try write_txn.put("key", "value");
+// Changes visible to new snapshots only
+```
+
+## Conflict Detection
+
+Write transactions detect conflicts at commit:
+
+- **Write-write conflicts**: Detected and rejected
+- **Read-write conflicts**: No conflicts (MVCC)
+- **Retry**: Client can retry on conflict
+
+## See Also
+
+- [Architecture](/concepts/architecture)
+- [B+tree Index](/concepts/btree)
+- [Semantics v0](/specs/semantics-v0)

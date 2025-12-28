@@ -1,0 +1,119 @@
+---
+title: Semantics v0
+description: Transaction semantics and MVCC behavior specification
+---
+
+## Overview
+
+This specification defines the transaction semantics for NorthstarDB v0.
+
+**Version**: 0.1.0
+**Status**: Draft
+
+## ACID Properties
+
+### Atomicity
+
+All operations in a transaction succeed or none do:
+
+```zig
+var txn = try db.beginTxn(.{ .mode = .write });
+try txn.put("a", "1");
+try txn.put("b", "2");
+try txn.commit(); // Both or neither
+```
+
+### Consistency
+
+Transactions move database from one valid state to another:
+
+- **Constraints**: Future versions will support foreign keys, etc.
+- **Invariants**: B+tree always balanced
+- **Checksums**: All pages validated on read
+
+### Isolation
+
+NorthstarDB provides **snapshot isolation**:
+
+- Readers see consistent snapshot
+- No phantom reads
+- No non-repeatable reads
+- Write-write conflicts detected
+
+### Durability
+
+Committed transactions survive crashes:
+
+- Write-ahead log flushed before commit returns
+- Checkpoints periodically write dirty pages
+- Crash recovery replays from last checkpoint
+
+## Transaction Modes
+
+### Read Transaction
+
+```zig
+var txn = try db.beginTxn(.{ .mode = .read });
+defer txn.commit() catch unreachable;
+
+// Reads are consistent and non-blocking
+const value = try txn.get("key");
+```
+
+**Guarantees**:
+- No locks acquired
+- No blocking of other transactions
+- Consistent snapshot
+
+### Write Transaction
+
+```zig
+var txn = try db.beginTxn(.{ .mode = .write });
+defer txn.commit() catch unreachable;
+
+try txn.put("key", "value");
+try txn.commit(); // Durable after this returns
+```
+
+**Guarantees**:
+- Atomic commit
+- Durable after commit returns
+- Visible to new snapshots
+
+## Visibility Rules
+
+| Transaction | Reads Own | Reads Committed | Reads Uncommitted |
+|-------------|-----------|-----------------|-------------------|
+| Read | ✓ | ✓ | ✗ |
+| Write | ✓ | ✓ | ✗ |
+
+## Conflict Detection
+
+Write-write conflicts are detected at commit:
+
+```zig
+// Txn 1
+var t1 = try db.beginTxn(.{ .mode = .write });
+try t1.put("key", "value1");
+// t1.commit() happens later...
+
+// Txn 2 (concurrent)
+var t2 = try db.beginTxn(.{ .mode = .write });
+try t2.put("key", "value2");
+try t2.commit(); // Error: Conflict!
+```
+
+## Time Travel
+
+Query historical data using snapshots:
+
+```zig
+// Get snapshot as of specific transaction
+const snapshot = try db.getSnapshot(lsn);
+var txn = try db.beginTxn(.{ .snapshot = snapshot });
+```
+
+## See Also
+
+- [MVCC](/concepts/mvcc)
+- [File Format v0](/specs/file-format-v0)

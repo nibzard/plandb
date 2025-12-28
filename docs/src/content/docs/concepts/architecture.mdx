@@ -1,0 +1,111 @@
+---
+title: Architecture
+description: High-level architecture of NorthstarDB
+---
+
+## Overview
+
+NorthstarDB is built with explicit design principles:
+
+- **Explicit memory** - All allocations are visible
+- **Explicit errors** - All error paths are handled
+- **Explicit performance** - Measured through benchmarks
+
+## Component Diagram
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    NorthstarDB                          │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐             │
+│  │   B+     │  │   MVCC   │  │ Commit   │             │
+│  │  Tree    │◄─┤ Snapshots│  │  Stream  │             │
+│  │          │  │          │  │          │             │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘             │
+│       │             │             │                    │
+│       └─────────────┴─────────────┴────┐               │
+│                                      │                 │
+│                              ┌───────┴───────┐         │
+│                              │     Pager     │         │
+│                              │   (Storage)   │         │
+│                              └───────┬───────┘         │
+│                                      │                 │
+└──────────────────────────────────────┼─────────────────┘
+                                       │
+                                 ┌─────┴─────┐
+                                 │   File    │
+                                 │  .northstar│
+                                 └───────────┘
+```
+
+## Core Components
+
+### Pager
+Handles physical storage and page management:
+- Page allocation and deallocation
+- Buffered I/O with read-ahead
+- Checksum validation
+- Crash recovery
+
+### B+tree
+Ordered key-value storage:
+- Point queries (get/put)
+- Range scans
+- Delete operations
+- Split/merge for balance
+
+### MVCC
+Multi-version concurrency control:
+- Snapshot isolation
+- Many concurrent readers
+- Single writer
+- Conflict detection
+
+### Commit Stream
+Write-ahead log for:
+- Atomic commits
+- Crash recovery
+- Time-travel queries
+- Replication foundation
+
+## Design Principles
+
+### State is Derived
+The commit log is the source of truth. All database state is derived by replaying the commit stream.
+
+### Pay at Commit
+Coordination overhead is paid at commit time, not on every read. This enables fast reads.
+
+### Many Readers
+MVCC snapshots allow unlimited concurrent readers without blocking.
+
+## AI Intelligence Layer (Phase 7)
+
+```
+┌─────────────────────────────────────────────────────┐
+│              AI Intelligence Layer                  │
+├─────────────────────────────────────────────────────┤
+│  ┌─────────┐  ┌──────────────┐  ┌─────────────┐   │
+│  │  LLM    │  │ Structured   │  │   Query     │   │
+│  │Interface│  │   Memory     │  │  Planner    │   │
+│  └────┬────┘  │  Cartridges  │  └──────┬──────┘   │
+│       │       └──────────────┘         │          │
+│       │              ▲                 │          │
+│       └──────────────┴─────────────────┘          │
+│                      │                            │
+│              ┌───────┴───────┐                    │
+│              │  Plugin System│                    │
+│              └───────┬───────┘                    │
+└──────────────────────┼────────────────────────────┘
+                       │
+              ┌────────┴────────┐
+              │  Core Database  │
+              └─────────────────┘
+```
+
+The AI layer adds intelligent capabilities:
+- **Function calling** for deterministic AI operations
+- **Structured memory** for semantic understanding
+- **Natural language queries** with planning
+- **Autonomous optimization** and maintenance

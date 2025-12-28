@@ -1,0 +1,84 @@
+---
+title: Benchmarks v0
+description: Benchmark targets and performance thresholds for Month 1
+---
+
+## Overview
+
+This specification defines benchmark targets for NorthstarDB v0.
+
+**Version**: 0.1.0
+**Status**: Active
+
+## Benchmark Suites
+
+### Suite A: Pager/Storage Primitives
+
+| Benchmark | Target | CI Threshold |
+|-----------|--------|--------------|
+| Open/Close | < 1ms | - |
+| Sequential Read | > 500 MB/s | -5% |
+| Random Read | > 100 MB/s | -5% |
+| Write | > 200 MB/s | -5% |
+
+### Suite B: B+tree Core
+
+| Benchmark | Target | CI Threshold |
+|-----------|--------|--------------|
+| Point Get | < 10µs p99 | +10% |
+| Point Put | < 50µs p99 | +10% |
+| Range Scan | > 1M items/s | -5% |
+| Delete | < 50µs p99 | +10% |
+
+### Suite C: MVCC Snapshots
+
+| Benchmark | Target | CI Threshold |
+|-----------|--------|--------------|
+| Read Throughput | > 1M ops/s | -5% |
+| Write Throughput | > 100K ops/s | -5% |
+| Readers Scaling | Linear | -5% |
+| Snapshot Create | < 1µs | +10% |
+
+### Suite D: Commit Stream
+
+| Benchmark | Target | CI Threshold |
+|-----------|--------|--------------|
+| Append Throughput | > 500K records/s | -5% |
+| Replay Speed | > 100M records/s | -5% |
+| Snapshot by Txn | < 100µs p99 | +10% |
+
+## Running Benchmarks
+
+```bash
+# Run all benchmarks
+zig build run -- run --repeats 5
+
+# Run specific suite
+zig build run -- run --suite micro
+
+# Filter benchmarks
+zig build run -- run --filter "point_get"
+
+# Compare baselines
+zig build run -- compare baseline candidate
+```
+
+## CI Gates
+
+Pull requests must pass:
+
+- **Throughput**: No regression > 5%
+- **Latency**: No regression > 10% (p99)
+- **Hardening**: All tests pass
+
+## Baseline Storage
+
+Baselines stored in `bench/baselines/`:
+
+- `ci/` - CI gate baselines
+- `dev_nvme/` - Development baselines
+
+## See Also
+
+- [benchmark-plan.md](https://github.com/nikopol/northstardb/blob/main/benchmark-plan.md)
+- [Hardening v0](/specs/hardening-v0)

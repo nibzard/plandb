@@ -1,0 +1,73 @@
+---
+title: Quick Start
+description: Get up and running with NorthstarDB in minutes
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## Prerequisites
+
+- **Zig** 0.13.0 or later
+- Git
+
+## Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/nikopol/northstardb.git
+cd northstardb
+
+# Build the project
+zig build
+
+# Run benchmarks
+zig build run -- run
+
+# Run tests
+zig build test
+```
+
+## Basic Usage
+
+```zig
+const std = @import("std");
+const db = @import("northstardb");
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    // Open or create database
+    var database = try db.Db.open(allocator, "mydb.northstar");
+    defer database.deinit();
+
+    // Start a write transaction
+    var write_txn = try database.beginTxn(.{ .mode = .write });
+    defer write_txn.commit() catch unreachable;
+
+    // Write some data
+    try write_txn.put("hello", "world");
+
+    // Read data in a read transaction
+    var read_txn = try database.beginTxn(.{ .mode = .read });
+    defer read_txn.commit() catch unreachable;
+
+    const value = try read_txn.get("hello");
+    std.debug.print("Got: {s}\n", .{value});
+}
+```
+
+## Next Steps
+
+<CardGrid stagger>
+	<Card title="Core Concepts" icon="book">
+		Learn about NorthstarDB architecture and design principles.
+	</Card>
+	<Card title="API Reference" icon="code">
+		Explore the complete API documentation.
+	</Card>
+	<Card title="Specifications" icon="file-code">
+		Read the formal specifications for file format and semantics.
+	</Card>
+</CardGrid>

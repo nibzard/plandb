@@ -1,0 +1,112 @@
+---
+title: Plugin System
+description: Extensible AI plugin architecture for custom intelligence
+---
+
+## Overview
+
+The NorthstarDB plugin system allows extending the database with custom AI capabilities.
+
+## Plugin Architecture
+
+```zig
+// Plugin interface
+const Plugin = struct {
+    name: []const u8,
+    version: []const u8,
+    init: *const fn(*Allocator) !void,
+    deinit: *const fn() void,
+    functions: []const Function,
+};
+```
+
+## Function Registry
+
+AI functions can be called by LLMs:
+
+```zig
+// Register a function
+try plugins.registerFunction(.{
+    .name = "get_user",
+    .description = "Get user by ID",
+    .schema = .{
+        .type = "object",
+        .properties = .{
+            .id = .{ .type = "integer" },
+        },
+    },
+    .handler = getUserHandler,
+});
+```
+
+## Built-in Functions
+
+### Data Access
+- `get_table(table)` - Read table schema
+- `query(sql)` - Execute SQL query
+- `get_index(table)` - List indexes
+
+### Metadata
+- `describe_entity(id)` - Get entity metadata
+- `find_entities(type)` - Find entities by type
+- `get_relationships(id)` - Get entity relationships
+
+### Optimization
+- `suggest_indexes()` - Suggest indexes based on queries
+- `analyze_table(table)` - Analyze table statistics
+- `estimate_cost(query)` - Estimate query cost
+
+## Lifecycle Hooks
+
+```zig
+// Before query execution
+hooks.onQueryStart = fn(Query) void;
+
+// After query completion
+hooks.onQueryEnd = fn(Query, Result) void;
+
+// On error
+hooks.onError = fn(Error) void;
+
+// Periodic (for optimization)
+hooks.onSchedule = "@hourly", "@daily", etc.;
+```
+
+## Example Plugin
+
+```zig
+const MyPlugin = struct {
+    fn init(alloc: std.mem.Allocator) !void {
+        // Initialize plugin
+    }
+
+    fn deinit() void {
+        // Cleanup
+    }
+
+    fn getUser(args: Value) !Value {
+        const id = args.objectGet("id").?.integer;
+        return db.getUserById(id);
+    }
+};
+```
+
+## Plugin Discovery
+
+Plugins are loaded from:
+
+1. **Configuration file**: `plugins.json`
+2. **Dynamic loading**: `.so` files (future)
+3. **Embedded plugins**: Compiled into binary
+
+## Security
+
+- **Sandboxing**: Plugins run in isolated context
+- **Resource limits**: CPU, memory, API quotas
+- **Permission model**: Read/write/execute grants
+- **Audit logging**: All function calls logged
+
+## See Also
+
+- [AI Overview](/ai/overview)
+- [Structured Memory](/ai/structured-memory)

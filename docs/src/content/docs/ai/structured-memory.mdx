@@ -1,0 +1,161 @@
+---
+title: Structured Memory
+description: Entity-topic-relationship cartridges for semantic understanding
+---
+
+## Overview
+
+NorthstarDB uses **structured memory cartridges** instead of opaque vector embeddings for AI-driven semantic understanding.
+
+## Why Structured Memory?
+
+### Problem with Embeddings
+
+- **Opaque**: Can't inspect meaning
+- **Large**: Each vector is 1KB+
+- **Non-deterministic**: Same content → different vectors
+- **Expensive**: Storage + compute for similarity
+
+### Solution: Structured Cartridges
+
+```
+┌─────────────────────────────────────┐
+│         Entity Cartridge             │
+├─────────────────────────────────────┤
+│ Entity: User(id=123)                │
+│  - Name: "Alice"                    │
+│  - Email: "alice@example.com"       │
+│  - Type: "Customer"                 │
+│  - Created: 2024-01-01              │
+└─────────────────────────────────────┘
+              ▲
+              │
+┌─────────────────────────────────────┐
+│       Relationship Cartridge         │
+├─────────────────────────────────────┤
+│ User(123) --[purchased]--> Order(456)│
+│  - Date: 2024-01-15                 │
+│  - Amount: $99.99                   │
+└─────────────────────────────────────┘
+              ▲
+              │
+┌─────────────────────────────────────┐
+│         Topic Cartridge              │
+├─────────────────────────────────────┤
+│ Topic: "High-value Customers"       │
+│  - Entities: [123, 456, ...]        │
+│  - Criteria: total_orders > 10      │
+│  - Updated: 2024-01-20              │
+└─────────────────────────────────────┘
+```
+
+## Cartridge Types
+
+### Entity Cartridge
+
+Represents a real-world object:
+
+```zig
+const Entity = struct {
+    id: u64,
+    type: EntityType,
+    attributes: std.StringMap(Value),
+    relationships: std.ArrayList(Relationship),
+    created_at: i64,
+    updated_at: i64,
+};
+```
+
+### Relationship Cartridge
+
+Typed connection between entities:
+
+```zig
+const Relationship = struct {
+    from: EntityId,
+    to: EntityId,
+    type: RelationType,
+    attributes: std.StringMap(Value),
+    created_at: i64,
+};
+```
+
+### Topic Cartridge
+
+Semantic grouping of entities:
+
+```zig
+const Topic = struct {
+    id: u64,
+    name: []const u8,
+    entities: std.ArrayList(EntityId),
+    criteria: Criteria,  // How entities are grouped
+    embedding: ?[512]f32 = null,  // Optional for similarity
+};
+```
+
+## Extraction
+
+LLMs extract structured data:
+
+```
+Input: "Alice Smith (alice@example.com) purchased
+       a Widget for $99.99 on January 15th"
+
+Output:
+  Entity: User(123)
+    - Name: "Alice Smith"
+    - Email: "alice@example.com"
+
+  Entity: Order(456)
+    - Product: "Widget"
+    - Amount: 99.99
+    - Date: 2024-01-15
+
+  Relationship: User(123) --[purchased]--> Order(456)
+```
+
+## Querying
+
+### Find Entities by Type
+
+```zig
+const customers = try memory.findEntities(.{ .type = "Customer" });
+```
+
+### Traverse Relationships
+
+```zig
+const orders = try memory.traverse(user, "purchased", .{ .max_depth = 2 });
+```
+
+### Topic Queries
+
+```zig
+const high_value = try memory.getTopic("High-value Customers");
+```
+
+## Storage
+
+Cartridges stored efficiently:
+
+- **Compression**: Delta encoding for similar entities
+- **Indexing**: B+tree on type, attributes
+- **Caching**: Hot topics in memory
+- **Persistence**: Append-only, versioned
+
+## Comparison to Embeddings
+
+| Metric | Structured | Embeddings |
+|--------|-----------|------------|
+| Storage per entity | ~100B | ~1KB |
+| Query precision | Exact | Approximate |
+| Explainability | ✅ Full | ❌ None |
+| Updates | O(1) | O(n) re-embed |
+| Interoperability | ✅ Schema | ❌ Proprietary |
+
+## See Also
+
+- [AI Overview](/ai/overview)
+- [Plugin System](/ai/plugins)
+- [Living Database Plan](/ai/living-db-plan)

@@ -1,0 +1,75 @@
+---
+title: B+tree Index
+description: Ordered key-value storage using B+tree data structure
+---
+
+## B+tree Overview
+
+NorthstarDB uses a B+tree for ordered key-value storage.
+
+### Properties
+
+- **Ordered**: Keys are stored in sorted order
+- **Balanced**: All leaf nodes at same depth
+- **Efficient**: O(log n) lookups, inserts, deletes
+- **Range scans**: Efficient range queries
+
+### Node Structure
+
+```
+Internal Node:
++-------+-------+-------+-------+
+| Key1  | Key2  | Key3  | ...   |
++-------+-------+-------+-------+
+| Ptr1  | Ptr2  | Ptr3  | Ptr4  |
++-------+-------+-------+-------+
+
+Leaf Node:
++-------+-------+-------+-------+
+| Key1  | Key2  | Key3  | ...   |
++-------+-------+-------+-------+
+| Val1  | Val2  | Val3  | ...   |
++-------+-------+-------+-------+
+| Next  ------------------------>
++-------+
+```
+
+## Operations
+
+### Point Queries
+
+```zig
+// Get value by key
+const value = try txn.get("my-key");
+```
+
+### Range Scans
+
+```zig
+// Scan range of keys
+var iter = try txn.scan(.{ .start = "a", .end = "z" });
+while (try iter.next()) |entry| {
+    std.debug.print("{s} = {s}\n", .{entry.key, entry.value});
+}
+```
+
+### Delete
+
+```zig
+// Delete a key
+try txn.delete("my-key");
+```
+
+## Split and Merge
+
+When nodes become too full or empty:
+
+- **Split**: Divide node into two when full
+- **Merge**: Combine nodes when too empty
+- **Redistribute**: Balance between siblings
+
+## See Also
+
+- [Architecture](/concepts/architecture)
+- [Storage Engine](/concepts/storage)
+- [MVCC](/concepts/mvcc)

@@ -1,0 +1,112 @@
+---
+title: Hardening v0
+description: Crash consistency and fuzz testing specifications
+---
+
+## Overview
+
+This specification defines hardening tests for NorthstarDB v0.
+
+**Version**: 0.1.0
+**Status**: Active
+
+## Test Categories
+
+### Crash Consistency
+
+Test database survives crashes at any point:
+
+```bash
+# Kill process at random points
+zig build test --test-filter "crash_*"
+
+# Verify data integrity after crash
+zig build test --test-filter "replay_*"
+```
+
+### Property-Based Testing
+
+Use fuzzing to find edge cases:
+
+```bash
+# Run fuzzer (requires libfuzzer)
+zig build test -fuzz
+```
+
+### Invariant Checking
+
+Verify database invariants:
+
+- B+tree properties (order, balance)
+- Page checksums
+- MVCC version chains
+- Commit log consistency
+
+## Hardening Tests
+
+### Crash Scenarios
+
+1. **Crash during commit**
+   - Partial page write
+   - Log write incomplete
+   - Checkpoint incomplete
+
+2. **Crash during recovery**
+   - Power failure during replay
+   - Corrupted log tail
+
+3. **Crash during normal operation**
+   - Mid-transaction
+   - During compaction
+   - During split/merge
+
+### Corruption Detection
+
+```zig
+// Checksum validation
+const page = try pager.read(page_id);
+if (page.checksum() != expected) {
+    return Error.Corruption;
+}
+```
+
+### Recovery Validation
+
+After each crash, verify:
+
+- All committed transactions visible
+- No uncommitted data visible
+- Database structure consistent
+- No orphaned pages
+
+## Running Hardening Tests
+
+```bash
+# Run all hardening tests
+zig build test --test-filter "hardening"
+
+# Run overnight
+zig build test --test-filter "hardening" --repeat 1000
+```
+
+## Nightly Schedule
+
+Hardening tests run nightly:
+
+- 8 hours: Crash injection tests
+- 8 hours: Fuzzing
+- 8 hours: Stress tests
+
+## Failure Handling
+
+If hardening tests fail:
+
+1. Capture reproduction case
+2. Minimize test case
+3. Fix root cause
+4. Add regression test
+
+## See Also
+
+- [Benchmarks v0](/specs/benchmarks-v0)
+- [Semantics v0](/specs/semantics-v0)

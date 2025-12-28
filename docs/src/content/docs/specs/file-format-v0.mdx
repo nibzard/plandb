@@ -1,0 +1,141 @@
+---
+title: File Format v0
+description: On-disk format specification for NorthstarDB v0
+---
+
+import { Code } from '@astrojs/starlight/components';
+
+## Overview
+
+This specification describes the on-disk format for NorthstarDB v0.
+
+**Version**: 0.1.0
+**Status**: Draft
+**Last Updated**: 2024
+
+## File Structure
+
+```
++-------------------+
+|   Header (4KB)    |
++-------------------+
+|   Page 1          |
++-------------------+
+|   Page 2          |
++-------------------+
+|   ...             |
++-------------------+
+|   Page N          |
++-------------------+
+```
+
+## Header Format
+
+The first 4KB of the file contains database metadata:
+
+<Code code={`// Header structure (4096 bytes)
+struct Header {
+    magic: [u8; 16],           // "NorthstarDB\x00"
+    version: u32,              // File format version
+    page_size: u32,            // Page size (bytes)
+    total_pages: u64,          // Total pages in file
+    root_page: u64,            // B+tree root page
+    meta_lsn: Lsn,             // Last checkpoint LSN
+    checksum: u64,             // Header checksum
+    // ... reserved for future use
+}`} />
+
+## Page Format
+
+Every page follows this structure:
+
+```
++------------------+ 0
+| Checksum (8B)    |
++------------------+ 8
+| PageId (8B)      |
++------------------+ 16
+| Lsn (8B)         |
++------------------+ 24
+| PageType (1B)    |
++------------------+ 25
+| Flags (1B)       |
++------------------+ 26
+| Reserved (6B)    |
++------------------+ 32
+| Data             |
+|                  |
+|                  |
++------------------+ PageSize
+```
+
+## Page Types
+
+| Type | Value | Description |
+|------|-------|-------------|
+| Meta | 0x01 | Database metadata |
+| BTreeNode | 0x02 | B+tree internal/leaf node |
+| Free | 0x03 | Free page |
+| Overflow | 0x04 | Large value overflow |
+
+## B+tree Node Format
+
+### Internal Node
+
+```
++------------------+
+| Key 0            |
++------------------+
+| ChildPtr 0       |
++------------------+
+| Key 1            |
++------------------+
+| ChildPtr 1       |
++------------------+
+| ...              |
++------------------+
+```
+
+### Leaf Node
+
+```
++------------------+
+| Key 0            |
++------------------+
+| Value 0          |
++------------------+
+| Key 1            |
++------------------+
+| Value 1          |
++------------------+
+| ...              |
++------------------+
+```
+
+## Commit Log
+
+The commit log is stored in the same file, starting after page N:
+
+```
++-------------------+
+| Log Header        |
++-------------------+
+| Log Record 1      |
++-------------------+
+| Log Record 2      |
++-------------------+
+| ...               |
++-------------------+
+```
+
+## Stability Guarantees
+
+- **Atomic page writes**: Full page checksums
+- **Crash recovery**: Log replay from last checkpoint
+- **Consistency**: All-or-nothing updates
+
+## See Also
+
+- [Storage Engine](/concepts/storage)
+- [Semantics v0](/specs/semantics-v0)
+- [Source code](https://github.com/nikopol/northstardb)

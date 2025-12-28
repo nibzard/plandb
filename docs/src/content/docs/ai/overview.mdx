@@ -1,0 +1,111 @@
+---
+title: AI Intelligence Overview
+description: Introduction to NorthstarDB's AI-driven intelligence layer
+---
+
+## What is AI Intelligence?
+
+NorthstarDB is evolving into a **"Living Database"** with AI-driven capabilities that enable it to:
+
+- **Understand** its own data through semantic analysis
+- **Optimize** itself autonomously
+- **Communicate** through natural language interfaces
+- **Learn** from access patterns
+
+## Key Capabilities
+
+### 1. Structured Memory
+
+Instead of opaque vector embeddings, NorthstarDB uses **structured memory cartridges**:
+
+- **Entities**: Real-world objects (users, products, transactions)
+- **Topics**: Semantic groupings and concepts
+- **Relationships**: Typed connections between entities
+
+### 2. Function Calling
+
+Deterministic AI operations through function calling:
+
+```zig
+// AI can call database functions directly
+const result = try ai.callFunction("get_user", .{.id = 123});
+```
+
+Benefits over embeddings:
+- **Deterministic**: Same input → same output
+- **Explainable**: Can trace decisions
+- **Efficient**: No vector storage needed
+
+### 3. Natural Language Queries
+
+Query data using natural language:
+
+```
+"Show me the top 10 users by revenue who signed up last month"
+```
+
+Parsed and optimized to:
+
+```sql
+SELECT * FROM users
+WHERE signup_date > :last_month
+ORDER BY revenue DESC
+LIMIT 10
+```
+
+### 4. Autonomous Optimization
+
+The database optimizes itself:
+
+- **Index suggestions**: Based on query patterns
+- **Data layout**: Automatically organize hot/cold data
+- **Cache sizing**: Dynamic based on workload
+- **Partitioning**: Automatic based on access patterns
+
+## Architecture
+
+```
+┌─────────────────────────────────────┐
+│         AI Intelligence Layer       │
+├─────────────────────────────────────┤
+│  LLM Interface (Provider Agnostic)  │
+│  - OpenAI, Anthropic, Local Models  │
+├─────────────────────────────────────┤
+│  Structured Memory Cartridges       │
+│  - Entities, Topics, Relationships  │
+├─────────────────────────────────────┤
+│  Query Planner & Optimizer          │
+│  - NL → Structured Query            │
+├─────────────────────────────────────┤
+│  Plugin System                      │
+│  - Custom AI Functions              │
+└─────────────────────────────────────┘
+              ▲
+              │
+┌─────────────────────────────────────┐
+│         Core Database               │
+│  - B+tree, MVCC, Commit Stream      │
+└─────────────────────────────────────┘
+```
+
+## Roadmap
+
+| Phase | Timeline | Features |
+|-------|----------|----------|
+| Phase 7 | Months 4-6 | AI Intelligence Layer |
+| Phase 7.1 | Month 4 | LLM Interface, Plugin System |
+| Phase 7.2 | Month 5 | Structured Memory Cartridges |
+| Phase 7.3 | Month 6 | NL Query Planning, Autonomous Opt |
+
+## Design Principles
+
+1. **Provider Agnostic**: Support any LLM provider
+2. **Deterministic**: Function calling > embeddings
+3. **Performance Isolation**: AI never degrades core DB
+4. **Graceful Degradation**: DB works without AI services
+
+## See Also
+
+- [Living Database Plan](/ai/living-db-plan)
+- [Plugin System](/ai/plugins)
+- [Structured Memory](/ai/structured-memory)
