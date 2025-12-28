@@ -173,6 +173,28 @@ The database should eventually make “agent state + knowledge + coordination”
 
 ---
 
+## Examples
+
+Complete, working example projects demonstrating NorthstarDB features:
+
+| Example | Description | Use Case |
+|---------|-------------|----------|
+| [Basic KV Store](examples/basic_kv/) | Core CRUD operations | Learning basics, config storage |
+| [Task Queue System](examples/task_queue/) | Persistent job queue with workers | Background processing, async workflows |
+| [Document Repository](examples/document_repo/) | Full-text searchable storage | Content management, knowledge bases |
+| [Time-Series Telemetry](examples/time_series/) | Metrics database with aggregation | Monitoring, IoT, analytics |
+| [AI-Powered Knowledge Base](examples/ai_knowledge_base/) | Semantic graph with LLM integration | Knowledge graphs, semantic search |
+
+**Quick start:**
+```bash
+cd examples/basic_kv
+zig build run
+```
+
+**Interactive examples:** See the [Examples Guide](https://northstardb.dev/guides/examples) in the documentation.
+
+---
+
 ## The North Star: benchmarks & hardening
 
 We do not “claim performance.” We **prove it** with reproducible runs.

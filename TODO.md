@@ -1656,51 +1656,59 @@ Transform NorthstarDB's scattered markdown files into a modern, developer-friend
   - Establish ADR process for future decisions
   - *Completed: Full ADR system with template and 6 architectural decision records*
   - *Completed 2025-12-28: Created docs/adr/ with ADR template and 6 architectural decision records*
-- [ ] 🟠 Document file format internals
+- [x] ✅ Document file format internals
   - Page structure
   - Meta pages
   - B+tree node format
   - Checksums and corruption handling
-- [ ] 🟠 Document B+tree implementation
+  - *Completed 2025-12-28: Added docs/src/content/docs/architecture/file-format.mdx with comprehensive page structure, meta pages, B+tree format, and checksums documentation*
+- [x] ✅ Document B+tree implementation
   - Node structure
   - Split/merge algorithms
   - Cursor and scanning
   - Performance characteristics
-- [ ] 🟠 Document commit stream and recovery
+  - *Completed 2025-12-28: Added docs/src/content/docs/architecture/btree-implementation.mdx with comprehensive node structure, split/merge algorithms, cursor operations, and performance characteristics*
+- [x] ✅ Document commit stream and recovery
   - WAL format
   - Recovery process
   - Replay semantics
   - Time-travel implementation
+  - *Completed 2025-12-28: Added docs/src/content/docs/architecture/commit-stream-recovery.mdx with WAL format, recovery process, replay semantics, and time-travel implementation*
 
 ### Phase 6: Developer Experience
-- [ ] 🔴 Enhance contributing guide
+- [x] 🔴 Enhance contributing guide
   - Expand existing contributing.md
   - Add development workflow diagrams
   - Code style guide
   - Pull request checklist
   - Review process
-- [ ] 🟠 Create development setup guide
+  - *Completed 2025-12-28: Created comprehensive contributing guide with workflow diagrams, code style guide, PR checklist, and review process*
+- [x] 🟠 Create development setup guide
   - Environment requirements
   - Building from source
   - Running tests
   - Debugging setup
   - IDE recommendations
-- [ ] 🟠 Write testing guide
+  - *Completed 2025-12-28: Created comprehensive development setup guide with environment requirements, build instructions, debugging setup, and IDE recommendations*
+- [x] 🟠 Write testing guide
   - Test organization
   - Writing unit tests
   - Property-based tests
   - Hardening tests
   - Coverage expectations
-- [ ] 🟠 Enhance benchmarking guide
+  - *Completed 2025-12-28: Created comprehensive testing guide with test organization, unit test patterns, property-based tests, hardening tests, and coverage expectations*
+- [x] 🟠 Enhance benchmarking guide
   - Running benchmarks
   - Interpreting results
   - Adding new benchmarks
   - CI baseline management
-- [ ] 🟡 Create release process documentation
+  - *Completed 2025-12-28: Created comprehensive benchmarking guide with CLI usage, results interpretation, adding benchmarks, and CI baseline management*
+- [x] 🟡 Create release process documentation
   - Versioning strategy
   - Release checklist
   - Changelog generation
   - Deployment process
+  - *Completed 2025-12-28: Created comprehensive release process guide with versioning strategy, release checklist, changelog generation, and deployment process*
 
 ### Phase 7: Examples and Interactive Content
 - [ ] 🟠 Complete 5 example projects with full docs
@@ -1752,15 +1760,17 @@ Transform NorthstarDB's scattered markdown files into a modern, developer-friend
   - Community-contributed Q&A
 
 ### Phase 9: CI/CD
-- [ ] 🔴 Set up documentation build pipeline
+- [x] 🔴 Set up documentation build pipeline
   - GitHub Actions workflow
   - Build Astro site on push
   - Deploy to GitHub Pages
   - Preview deployments for PRs
-- [ ] 🔴 Add automated link checking
+  - Completed 2025-12-28: Created .github/workflows/docs.yml with Astro build, GitHub Pages deployment, and PR preview support
+- [x] 🔴 Add automated link checking
   - Markdown link validator
   - Detect broken links
   - Block merge on broken docs links
+  - Completed 2025-12-28: Created .github/workflows/link-check.yml with markdown-link-check for documentation and ADR files
 - [ ] 🟠 Add documentation linting
   - Markdown linting rules
   - Consistency checks
