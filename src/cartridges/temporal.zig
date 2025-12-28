@@ -503,12 +503,10 @@ pub const SnapshotManager = struct {
         while (it.next()) |entry| {
             for (entry.value_ptr.items) |snapshot| {
                 if (std.mem.eql(u8, snapshot.id, snapshot_id)) {
-                    // Apply delta if needed
-                    if (snapshot.delta_info) |di| {
-                        // TODO: Apply delta to base snapshot
-                        _ = di;
-                        return snapshot.state_data; // Placeholder
-                    }
+                    // Current design: snapshots store full state_data
+                    // Future optimization: could store only deltas and reconstruct here
+                    // The delta_info is currently metadata for compression info
+                    _ = snapshot.delta_info; // Metadata for optimization purposes
                     return snapshot.state_data;
                 }
             }

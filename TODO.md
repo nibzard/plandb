@@ -1988,6 +1988,23 @@ Transform NorthstarDB's scattered markdown files into a modern, developer-friend
 
 **All Phase 3 deliverables complete.**
 
+- [x] 🟢 Implement token bucket rate limiting in observability cartridge
+  - **COMPLETED**: Token bucket algorithm with refill rate configuration
+  - **COMPLETED**: TokenBucket and RateLimitState structs in ObservabilityCartridge
+  - **COMPLETED**: Per-metric rate limiting with configurable thresholds
+  - **COMPLETED**: Rate limit checking before metric ingestion
+  - **COMPLETED**: 9 comprehensive tests covering all rate limiting scenarios
+  - **STATUS**: Rate limiting operational with full test coverage
+  - **COMMIT**: 4c1d645
+
+- [x] 🟢 Implement JSON field-level delta computation in temporal cartridge
+  - **COMPLETED**: jsonValuesEqual() function for comparing JSON values
+  - **COMPLETED**: computeFieldDelta() function for computing field-level deltas
+  - **COMPLETED**: FieldDeltaResult struct for tracking delta operations
+  - **COMPLETED**: 10 comprehensive tests covering all delta scenarios
+  - **STATUS**: Delta computation operational with full test coverage
+  - **COMMIT**: b06b165
+
 ## Documentation Success Criteria
 
 1. **Developer Experience**: Developers can find answers in <30 seconds
