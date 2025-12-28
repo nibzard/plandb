@@ -6,6 +6,7 @@ const std = @import("std");
 const llm = @import("../llm/types.zig");
 const client = @import("../llm/client.zig");
 const txn = @import("../txn.zig");
+const events = @import("../events/index.zig");
 
 pub const PluginManager = struct {
     allocator: std.mem.Allocator,
@@ -13,6 +14,7 @@ pub const PluginManager = struct {
     llm_provider: *client.LLMProvider,
     function_registry: std.StringHashMap(FunctionSchema),
     config: PluginConfig,
+    event_manager: ?*events.EventManager, // Phase 1: Event manager for observability
 
     const Self = @This();
 
@@ -26,7 +28,13 @@ pub const PluginManager = struct {
             .llm_provider = llm_provider,
             .function_registry = std.StringHashMap(FunctionSchema).init(allocator),
             .config = config,
+            .event_manager = null, // Optional, set via attachEventManager
         };
+    }
+
+    /// Attach event manager for observability hooks
+    pub fn attachEventManager(self: *Self, event_manager: *events.EventManager) void {
+        self.event_manager = event_manager;
     }
 
     pub fn deinit(self: *Self) void {
@@ -327,6 +335,11 @@ pub const Plugin = struct {
     on_query: ?*const fn(allocator: std.mem.Allocator, ctx: QueryContext) anyerror!?QueryPlan,
     on_schedule: ?*const fn(allocator: std.mem.Allocator, ctx: ScheduleContext) anyerror!MaintenanceTask,
     get_functions: ?*const fn(allocator: std.mem.Allocator) []FunctionSchema,
+    // Phase 1: Agent and observability hooks
+    on_agent_session_start: ?*const fn(allocator: std.mem.Allocator, ctx: AgentSessionContext) anyerror!void,
+    on_agent_operation: ?*const fn(allocator: std.mem.Allocator, ctx: AgentOperationContext) anyerror!void,
+    on_review_request: ?*const fn(allocator: std.mem.Allocator, ctx: ReviewContext) anyerror!PluginResult,
+    on_perf_sample: ?*const fn(allocator: std.mem.Allocator, ctx: PerfSampleContext) anyerror!void,
 
     pub fn init(self: *Plugin, allocator: std.mem.Allocator, config: PluginConfig) !void {
         _ = allocator;
@@ -567,6 +580,106 @@ pub const QueryPlan = union(enum) {
     },
 };
 
+/// Phase 1: Agent session context for on_agent_session_start hook
+pub const AgentSessionContext = struct {
+    agent_id: u64,
+    agent_version: []const u8,
+    session_purpose: []const u8,
+    metadata: std.StringHashMap([]const u8),
+    event_manager: ?*events.EventManager,
+
+    pub fn deinit(self: *AgentSessionContext, allocator: std.mem.Allocator) void {
+        allocator.free(self.agent_version);
+        allocator.free(self.session_purpose);
+
+        var it = self.metadata.iterator();
+        while (it.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            allocator.free(entry.value_ptr.*);
+        }
+        self.metadata.deinit();
+    }
+};
+
+/// Phase 1: Agent operation context for on_agent_operation hook
+pub const AgentOperationContext = struct {
+    agent_id: u64,
+    session_id: u64,
+    operation_type: []const u8,
+    operation_id: u64,
+    target_type: []const u8,
+    target_id: []const u8,
+    status: []const u8,
+    duration_ns: ?i64,
+    metadata: std.StringHashMap([]const u8),
+    event_manager: ?*events.EventManager,
+
+    pub fn deinit(self: *AgentOperationContext, allocator: std.mem.Allocator) void {
+        allocator.free(self.operation_type);
+        allocator.free(self.target_type);
+        allocator.free(self.target_id);
+        allocator.free(self.status);
+
+        var it = self.metadata.iterator();
+        while (it.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            allocator.free(entry.value_ptr.*);
+        }
+        self.metadata.deinit();
+    }
+};
+
+/// Phase 1: Review context for on_review_request hook
+pub const ReviewContext = struct {
+    target_type: []const u8, // "commit", "file", "symbol", "pr"
+    target_id: []const u8,
+    author: u64,
+    visibility: events.types.EventVisibility,
+    references: [][]const u8,
+    event_manager: ?*events.EventManager,
+
+    pub fn deinit(self: *ReviewContext, allocator: std.mem.Allocator) void {
+        allocator.free(self.target_type);
+        allocator.free(self.target_id);
+
+        for (self.references) |ref| {
+            allocator.free(ref);
+        }
+        allocator.free(self.references);
+    }
+};
+
+/// Phase 1: Performance sample context for on_perf_sample hook
+pub const PerfSampleContext = struct {
+    agent_id: u64,
+    metric_name: []const u8,
+    dimensions: std.StringHashMap([]const u8),
+    value: f64,
+    unit: []const u8,
+    window_start: i64,
+    window_end: i64,
+    correlation_commit_range: ?[]const u8,
+    correlation_session_ids: []u64,
+    event_manager: ?*events.EventManager,
+
+    pub fn deinit(self: *PerfSampleContext, allocator: std.mem.Allocator) void {
+        allocator.free(self.metric_name);
+        allocator.free(self.unit);
+
+        var it = self.dimensions.iterator();
+        while (it.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            allocator.free(entry.value_ptr.*);
+        }
+        self.dimensions.deinit();
+
+        if (self.correlation_commit_range) |r| {
+            allocator.free(r);
+        }
+        allocator.free(self.correlation_session_ids);
+    }
+};
+
 /// Maintenance task returned by on_schedule hooks
 pub const MaintenanceTask = struct {
     task_name: []const u8,
@@ -615,6 +728,10 @@ test "plugin_registration" {
         .on_query = null,
         .on_schedule = null,
         .get_functions = null,
+        .on_agent_session_start = null,
+        .on_agent_operation = null,
+        .on_review_request = null,
+        .on_perf_sample = null,
     };
 
     try manager.register_plugin(test_plugin);
@@ -676,6 +793,10 @@ test "execute_on_commit_hooks_with_plugin" {
         .on_query = null,
         .on_schedule = null,
         .get_functions = null,
+        .on_agent_session_start = null,
+        .on_agent_operation = null,
+        .on_review_request = null,
+        .on_perf_sample = null,
     };
 
     try manager.register_plugin(test_plugin);
@@ -721,6 +842,10 @@ test "execute_on_commit_hooks_with_error" {
         .on_query = null,
         .on_schedule = null,
         .get_functions = null,
+        .on_agent_session_start = null,
+        .on_agent_operation = null,
+        .on_review_request = null,
+        .on_perf_sample = null,
     };
 
     try manager.register_plugin(failing_plugin);
@@ -819,6 +944,10 @@ test "async_execution_multiple_plugins" {
         .on_query = null,
         .on_schedule = null,
         .get_functions = null,
+        .on_agent_session_start = null,
+        .on_agent_operation = null,
+        .on_review_request = null,
+        .on_perf_sample = null,
     };
 
     const plugin2 = Plugin{
@@ -838,6 +967,10 @@ test "async_execution_multiple_plugins" {
         .on_query = null,
         .on_schedule = null,
         .get_functions = null,
+        .on_agent_session_start = null,
+        .on_agent_operation = null,
+        .on_review_request = null,
+        .on_perf_sample = null,
     };
 
     try manager.register_plugin(plugin1);
@@ -889,6 +1022,10 @@ test "async_execution_with_performance_isolation_disabled" {
         .on_query = null,
         .on_schedule = null,
         .get_functions = null,
+        .on_agent_session_start = null,
+        .on_agent_operation = null,
+        .on_review_request = null,
+        .on_perf_sample = null,
     };
 
     try manager.register_plugin(test_plugin);

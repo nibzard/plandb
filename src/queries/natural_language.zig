@@ -2,16 +2,29 @@
 //!
 //! Converts natural language queries to topic-based structured queries with scope expressions.
 //! Uses LLM function calling for deterministic, structured extraction.
+//! Phase 1: Extended to support review and observability queries.
 
 const std = @import("std");
 const mem = std.mem;
 
 const TopicQuery = @import("topic_based.zig").TopicQuery;
 const ScopeFilter = @import("topic_based.zig").ScopeFilter;
+const events = @import("../events/index.zig");
 
 const llm_client = @import("../llm/client.zig");
 const llm_function = @import("../llm/function.zig");
 const llm_types = @import("../llm/types.zig");
+
+/// Phase 1: Extended query intent types
+pub const QueryIntent = enum {
+    topic_search,     // Search entities/topics by keywords
+    review_explain,   // Explain code changes/review notes
+    review_notes,     // Get review notes for a target
+    agent_activity,   // Query agent operations/sessions
+    observability,    // Performance/telemetry queries
+    regression_hunt,  // Find performance regressions
+    unknown,
+};
 
 /// Natural language to structured query converter
 pub const NLToQueryConverter = struct {
@@ -115,7 +128,56 @@ pub const NLToQueryConverter = struct {
             lower[i] = std.ascii.toLower(c);
         }
 
-        // Detect common patterns
+        // Phase 1: Review and observability query patterns
+
+        // Review explanation patterns
+        if (mem.indexOf(u8, lower, "why did") != null and
+            (mem.indexOf(u8, lower, "change") != null or mem.indexOf(u8, lower, "modify") != null))
+        {
+            // "Why did agent X change Y?"
+            return self.buildReviewExplainQuery(input);
+        }
+
+        if (mem.indexOf(u8, lower, "explain") != null and
+            (mem.indexOf(u8, lower, "commit") != null or mem.indexOf(u8, lower, "change") != null))
+        {
+            return self.buildReviewExplainQuery(input);
+        }
+
+        // Review notes patterns
+        if (mem.indexOf(u8, lower, "show review") != null or
+            mem.indexOf(u8, lower, "review notes for") != null or
+            mem.indexOf(u8, lower, "get reviews for") != null)
+        {
+            // "Show review notes for commit ABC"
+            return self.buildReviewNotesQuery(input);
+        }
+
+        // Agent activity patterns
+        if (mem.indexOf(u8, lower, "what did") != null and mem.indexOf(u8, lower, "agent") != null) {
+            return self.buildAgentActivityQuery(input);
+        }
+
+        if (mem.indexOf(u8, lower, "agent") != null and mem.indexOf(u8, lower, "activity") != null) {
+            return self.buildAgentActivityQuery(input);
+        }
+
+        // Regression hunting patterns
+        if (mem.indexOf(u8, lower, "regression") != null or
+            (mem.indexOf(u8, lower, "performance") != null and mem.indexOf(u8, lower, "since") != null))
+        {
+            return self.buildRegressionHuntQuery(input);
+        }
+
+        // Observability/performance patterns
+        if (mem.indexOf(u8, lower, "performance") != null or
+            mem.indexOf(u8, lower, "latency") != null or
+            mem.indexOf(u8, lower, "throughput") != null)
+        {
+            return self.buildObservabilityQuery(input);
+        }
+
+        // Existing patterns for topic search
         if (mem.indexOf(u8, lower, "files about") != null or
             mem.indexOf(u8, lower, "find files about") != null)
         {
@@ -149,6 +211,66 @@ pub const NLToQueryConverter = struct {
 
         // Default: treat entire input as topic search
         return self.buildSimpleQuery(input, null);
+    }
+
+    /// Phase 1: Build review explanation query
+    fn buildReviewExplainQuery(self: *Self, input: []const u8) !ConversionResult {
+        return ConversionResult{
+            .success = true,
+            .error_message = null,
+            .query = null,
+            .clarifications = &.{},
+            .intent = .review_explain,
+            .raw_query = try self.allocator.dupe(u8, input),
+        };
+    }
+
+    /// Phase 1: Build review notes query
+    fn buildReviewNotesQuery(self: *Self, input: []const u8) !ConversionResult {
+        return ConversionResult{
+            .success = true,
+            .error_message = null,
+            .query = null,
+            .clarifications = &.{},
+            .intent = .review_notes,
+            .raw_query = try self.allocator.dupe(u8, input),
+        };
+    }
+
+    /// Phase 1: Build agent activity query
+    fn buildAgentActivityQuery(self: *Self, input: []const u8) !ConversionResult {
+        return ConversionResult{
+            .success = true,
+            .error_message = null,
+            .query = null,
+            .clarifications = &.{},
+            .intent = .agent_activity,
+            .raw_query = try self.allocator.dupe(u8, input),
+        };
+    }
+
+    /// Phase 1: Build regression hunt query
+    fn buildRegressionHuntQuery(self: *Self, input: []const u8) !ConversionResult {
+        return ConversionResult{
+            .success = true,
+            .error_message = null,
+            .query = null,
+            .clarifications = &.{},
+            .intent = .regression_hunt,
+            .raw_query = try self.allocator.dupe(u8, input),
+        };
+    }
+
+    /// Phase 1: Build observability query
+    fn buildObservabilityQuery(self: *Self, input: []const u8) !ConversionResult {
+        return ConversionResult{
+            .success = true,
+            .error_message = null,
+            .query = null,
+            .clarifications = &.{},
+            .intent = .observability,
+            .raw_query = try self.allocator.dupe(u8, input),
+        };
     }
 
     fn buildSimpleQuery(self: *Self, topic: []const u8, entity_type: ?[]const u8) !ConversionResult {
@@ -324,11 +446,15 @@ pub const ConversionResult = struct {
     error_message: ?[]const u8,
     query: ?TopicQuery,
     clarifications: []const []const u8,
+    // Phase 1: Extended fields for review/observability queries
+    intent: QueryIntent = .unknown,
+    raw_query: ?[]const u8 = null, // Original query text
 
     pub fn deinit(self: *ConversionResult, allocator: std.mem.Allocator) void {
         if (self.query) |*q| q.deinit(allocator);
         if (self.error_message) |msg| allocator.free(msg);
         for (self.clarifications) |c| allocator.free(c);
+        if (self.raw_query) |q| allocator.free(q);
     }
 };
 

@@ -271,6 +271,10 @@ pub const PluginFixtures = struct {
             .on_query = null,
             .on_schedule = null,
             .get_functions = null,
+            .on_agent_session_start = null,
+            .on_agent_operation = null,
+            .on_review_request = null,
+            .on_perf_sample = null,
         };
     }
 
@@ -294,6 +298,10 @@ pub const PluginFixtures = struct {
             .on_query = null,
             .on_schedule = null,
             .get_functions = null,
+            .on_agent_session_start = null,
+            .on_agent_operation = null,
+            .on_review_request = null,
+            .on_perf_sample = null,
         };
     }
 
@@ -313,6 +321,10 @@ pub const PluginFixtures = struct {
                     return &[_]manager.FunctionSchema{};
                 }
             }.get,
+            .on_agent_session_start = null,
+            .on_agent_operation = null,
+            .on_review_request = null,
+            .on_perf_sample = null,
         };
     }
 
@@ -333,6 +345,10 @@ pub const PluginFixtures = struct {
             .on_query = null,
             .on_schedule = null,
             .get_functions = null,
+            .on_agent_session_start = null,
+            .on_agent_operation = null,
+            .on_review_request = null,
+            .on_perf_sample = null,
         };
     }
 
