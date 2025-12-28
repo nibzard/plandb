@@ -1,0 +1,400 @@
+---
+title: Commit Stream and Recovery
+description: Technical documentation of NorthstarDB's commit stream format, recovery process, replay semantics, and time-travel query implementation.
+---
+
+# Commit Stream and Recovery
+
+NorthstarDB's **commit stream** is the source of truth for all database mutations. Every transaction writes a canonical commit record that enables deterministic replay, crash recovery, and time-travel queries.
+
+## Overview
+
+The commit stream provides:
+- **Durability**: All mutations logged before commit acknowledgment
+- **Replayability**: Database can be rebuilt from commit stream
+- **Crash recovery**: Recover from incomplete commits
+- **Time travel**: Query historical state at any transaction
+
+## WAL Format
+
+NorthstarDB uses a **separate WAL file** (`<db>.log`) for commit records.
+
+### Record Structure
+
+Each record in the WAL has three parts:
+
+```
+┌────────────────────────────────────────────────┐
+│  Record Header (40 bytes)                      │
+├────────────────────────────────────────────────┤
+│  Payload (variable length)                     │
+├────────────────────────────────────────────────┤
+│  Record Trailer (12 bytes)                     │
+└────────────────────────────────────────────────┘
+```
+
+### Record Header (40 bytes)
+
+```zig
+pub const RecordHeader = struct {
+    magic: u32 = 0x4C4F4752,         // "LOGR"
+    record_version: u16 = 0,
+    record_type: u16,                 // 0=commit, 1=checkpoint, 2=cartridge
+    header_len: u16 = 40,
+    flags: u16,
+    txn_id: u64,                     // Transaction ID
+    prev_lsn: u64,                   // Previous record's LSN
+    payload_len: u32,                // Payload size in bytes
+    header_crc32c: u32,              // Header checksum
+    payload_crc32c: u32,             // Payload checksum
+};
+```
+
+### Record Trailer (12 bytes)
+
+```zig
+pub const RecordTrailer = struct {
+    magic2: u32 = 0x52474F4C,        // "RGOL" (LOGR reversed)
+    total_len: u32,                  // Total record size
+    trailer_crc32c: u32,             // Trailer checksum
+};
+```
+
+### Record Types
+
+| Type | Value | Description |
+|------|-------|-------------|
+| COMMIT | 0 | Standard commit record |
+| CHECKPOINT | 1 | Checkpoint marker for truncation |
+| CARTRIDGE_META | 2 | Cartridge metadata update |
+
+### Commit Record Payload
+
+```zig
+pub const CommitRecord = struct {
+    txn_id: u64,                     // Transaction ID
+    mutation_count: u32,             // Number of mutations
+    mutations: []Mutation,           // Mutation list
+    checksum: u32,                   // Record checksum
+
+    const Mutation = union(enum) {
+        put: struct {
+            key: []u8,
+            value: []u8,
+        },
+        delete: struct {
+            key: []u8,
+        },
+    };
+};
+```
+
+**Encoding**:
+```
+[txn_id:8][mutation_count:4][checksum:4]
+  [mutation_1_type:1][key_len:2][val_len:4][key...][value...]
+  [mutation_2_type:1][key_len:2][val_len:4][key...][value...]
+  ...
+```
+
+## Recovery Process
+
+Crash recovery reconciles the WAL with the database state to ensure consistency.
+
+### Recovery Scenarios
+
+1. **Clean shutdown**: DB meta.txn_id == WAL last LSN
+2. **Crash before commit**: WAL has record, DB doesn't (replay needed)
+3. **Crash during commit**: Partial meta page write (choose valid meta)
+4. **Corrupted WAL**: Scan to last valid record
+
+### Recovery Algorithm
+
+```zig
+pub fn recoverDatabase(db_path: []u8, wal_path: []u8) !RecoveryResult {
+    // Step 1: Read WAL to find highest transaction
+    const wal_data = try replayWAL(wal_path);
+    const wal_last_txn = wal_data.last_txn_id;
+
+    // Step 2: Read database meta page
+    const db_txn_id = readMetaPage().committed_txn_id;
+
+    // Step 3: Determine if recovery needed
+    if (wal_last_txn <= db_txn_id) {
+        return RecoveryResult{ .recovery_needed = false };
+    }
+
+    // Step 4: Replay missing transactions
+    for (wal_data.commit_records) |record| {
+        if (record.txn_id > db_txn_id) {
+            // Validate checksum
+            if (!record.validateChecksum()) continue;
+
+            // Update meta page with this transaction
+            writeMetaPage(record.txn_id);
+        }
+    }
+
+    // Step 5: Sync to make recovery durable
+    fsync(db_file);
+
+    return RecoveryResult{ .recovery_needed = true };
+}
+```
+
+### Meta Page Selection
+
+After recovery, the meta page selection algorithm:
+
+```
+1. Read Meta A (page 0)
+2. Read Meta B (page 1)
+3. Validate checksums
+4. If both valid: Choose highest committed_txn_id
+5. If one valid: Use valid meta
+6. If neither valid: Database corrupted (cannot recover)
+```
+
+## Replay Semantics
+
+The commit stream enables **deterministic replay** to any transaction ID.
+
+### Replay Engine
+
+```zig
+pub const ReplayEngine = struct {
+    memtable: std.StringHashMap([]const u8),
+
+    // Rebuild to specific transaction
+    pub fn rebuildToTxnId(target_txn_id: u64) !ReplayResult {
+        var current_txn: u64 = 0;
+
+        // Scan commit stream sequentially
+        while (readNextCommitRecord()) |record| {
+            if (record.txn_id > target_txn_id) break;
+
+            // Apply mutations in order
+            for (record.mutations) |mutation| {
+                switch (mutation) {
+                    .put => |kv| memtable.put(kv.key, kv.value),
+                    .delete => |key| memtable.remove(key),
+                }
+            }
+
+            current_txn = record.txn_id;
+        }
+
+        return ReplayResult{ .last_txn_id = current_txn };
+    }
+};
+```
+
+### Replay Invariants
+
+1. **Sequential application**: Mutations applied in TxnId order
+2. **Idempotent**: Replaying same record twice = same result
+3. **Deterministic**: Same commit stream = same final state
+4. **Lossless**: All committed mutations preserved
+
+### Replay Example
+
+```
+Commit stream:
+  Txn 1: put("a", "1"), put("b", "2")
+  Txn 2: put("c", "3"), delete("a")
+  Txn 3: put("d", "4")
+
+Rebuild to Txn 2:
+  Apply Txn 1: {a: "1", b: "2"}
+  Apply Txn 2: {a: deleted, b: "2", c: "3"}
+  Stop (Txn 3 not applied)
+  Result: {b: "2", c: "3"}
+```
+
+## Time Travel Implementation
+
+Time travel queries use **MVCC snapshots** combined with commit stream replay.
+
+### Time Travel Algorithm
+
+```zig
+pub fn beginReadAt(txn_id: u64) !ReadTxn {
+    // Case 1: Snapshot exists in memory
+    if (snapshot_cache.get(txn_id)) |snapshot| {
+        return ReadTxn{ .snapshot = snapshot };
+    }
+
+    // Case 2: Rebuild from commit stream
+    var engine = try ReplayEngine.init();
+    try engine.rebuildToTxnId(txn_id);
+
+    // Create snapshot from rebuilt state
+    const snapshot = try createSnapshot(engine.memtable);
+    try snapshot_cache.put(txn_id, snapshot);
+
+    return ReadTxn{ .snapshot = snapshot };
+}
+```
+
+### Snapshot Cache
+
+To avoid expensive rebuilds, snapshots are cached:
+
+```zig
+const SnapshotCache = struct {
+    // Map: txn_id -> snapshot
+    snapshots: std.AutoHashMap(u64, Snapshot),
+
+    // LRU eviction when cache full
+    fn getOrCreate(cache: *SnapshotCache, txn_id: u64) !Snapshot {
+        if (cache.snapshots.get(txn_id)) |snapshot| {
+            return snapshot;
+        }
+
+        // Rebuild and cache
+        const snapshot = try rebuildToTxnId(txn_id);
+        try cache.snapshots.put(txn_id, snapshot);
+        return snapshot;
+    }
+};
+```
+
+### Performance Optimization
+
+**Checkpointing**: Periodically snapshot entire database to limit replay distance
+
+```
+Without checkpoint:
+  Replay from Txn 1 to Txn 1000000 = 1M records
+
+With checkpoint at Txn 500000:
+  Load checkpoint + replay 500000 records = 2x faster
+```
+
+## Checkpointing
+
+Checkpointing truncates the WAL and stores a consistent database snapshot.
+
+### Checkpoint Algorithm
+
+```zig
+pub fn checkpoint() !CheckpointResult {
+    // Step 1: Get current committed transaction
+    const checkpoint_txn = readMetaPage().committed_txn_id;
+
+    // Step 2: Write checkpoint record to WAL
+    const checkpoint_lsn = try appendCheckpoint(checkpoint_txn);
+
+    // Step 3: Sync WAL
+    try syncWAL();
+
+    // Step 4: Truncate WAL before checkpoint
+    try truncateWAL(checkpoint_lsn);
+
+    return CheckpointResult{ .checkpoint_txn_id = checkpoint_txn };
+}
+```
+
+### Checkpoint Record
+
+```zig
+pub const CheckpointRecord = struct {
+    txn_id: u64,    // Highest transaction ID in checkpoint
+};
+```
+
+**Purpose**: Marks that all transactions ≤ `txn_id` are reflected in database pages, allowing WAL truncation.
+
+## Consistency Checking
+
+NorthstarDB provides tools to verify database consistency.
+
+### Consistency Check
+
+```zig
+pub fn checkConsistency(db_path: []u8, wal_path: []u8) !ConsistencyResult {
+    // Read WAL last transaction
+    const wal_last_txn = getWALLastTxnId(wal_path);
+
+    // Read database committed transaction
+    const db_txn = readMetaPage().committed_txn_id;
+
+    // Check for missing transactions
+    var missing_txns = []u64{};
+    if (wal_last_txn > db_txn) {
+        // WAL has transactions not reflected in DB
+        missing_txns = scanMissingTxns(wal_path, db_txn);
+    }
+
+    return ConsistencyResult{
+        .is_consistent = missing_txns.len == 0,
+        .missing_txns = missing_txns,
+    };
+}
+```
+
+### Validation Checks
+
+1. **Meta page consistency**: Verify meta A/B agree on committed state
+2. **WAL completeness**: All WAL records have valid checksums
+3. **Referential integrity**: All B+tree pages referenced
+4. **TxnId monotonic**: No gaps in transaction sequence
+
+## Error Handling
+
+### Corruption Detection
+
+```zig
+pub fn validateCommitRecord(record: CommitRecord) !void {
+    // Validate magic number
+    if (record.magic != 0x4C4F4752)
+        return error.InvalidMagic;
+
+    // Validate header checksum
+    if (!record.header.validateHeaderChecksum())
+        return error.HeaderChecksumMismatch;
+
+    // Validate payload checksum
+    if (record.payload_crc32c != calculatePayloadCRC(record.payload))
+        return error.PayloadChecksumMismatch;
+
+    // Validate trailer checksum
+    if (!record.trailer.validateTrailerChecksum())
+        return error.TrailerChecksumMismatch;
+}
+```
+
+### Recovery Error Policy
+
+| Error Type | Action |
+|------------|--------|
+| Invalid magic | Stop replay, return error |
+| Checksum mismatch | Skip record, continue replay |
+| Incomplete record | Stop replay, return partial result |
+| Missing mutation | Log warning, continue |
+
+## Performance Characteristics
+
+### Replay Performance
+
+| Metric | Value |
+|--------|-------|
+| Replay throughput | ~100K txns/sec (SSD) |
+| Checkpoint time | ~1s per 1M txns |
+| Recovery time | O(N) where N = uncommitted txns |
+
+### Space Overhead
+
+| Component | Size |
+|-----------|------|
+| Per-record header | 40 bytes |
+| Per-record trailer | 12 bytes |
+| Per-mutation overhead | 7 bytes |
+| Total overhead | ~60 bytes per commit |
+
+## Related Documentation
+
+- [ADR-003: Commit Stream Format](/adr/003-commit-stream-format)
+- [Semantics V0: Commit Records](/specs/semantics_v0)
+- [File Format Internals](/architecture/file-format)
+- [Core Concepts: Commit Stream](/concepts/commit-stream)
