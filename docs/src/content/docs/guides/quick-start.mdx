@@ -1,73 +1,205 @@
 ---
 title: Quick Start
-description: Get up and running with NorthstarDB in minutes
+description: Get up and running with NorthstarDB in 5 minutes
+sidebar:
+  order: 2
 ---
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
-## Prerequisites
+Get up and running with NorthstarDB in under 5 minutes. This guide will walk you through installation, a "Hello World" example, and verification.
 
-- **Zig** 0.13.0 or later
-- Git
+## Prerequisites Checklist
+
+Before you begin, ensure you have:
+
+- [x] **Zig 0.13.0 or later** — [Install Zig](https://ziglang.org/download/)
+- [x] **Git** — For cloning the repository
+- [x] **Terminal access** — Linux, macOS, or Windows (WSL recommended)
+- [x] ~100MB free disk space — For build artifacts and database files
+
+<details>
+  <summary>Verify Zig installation</summary>
+
+  Run `zig version` in your terminal. You should see version 0.13.0 or higher:
+
+  ```bash
+  $ zig version
+  0.13.0
+  ```
+
+  If Zig is not installed or the version is too old, download it from [ziglang.org](https://ziglang.org/download/).
+</details>
 
 ## Installation
+
+### Clone and Build
 
 ```bash
 # Clone the repository
 git clone https://github.com/nikopol/northstardb.git
 cd northstardb
 
-# Build the project
+# Build the project (one command)
 zig build
 
-# Run benchmarks
-zig build run -- run
-
-# Run tests
+# Run tests to verify everything works
 zig build test
 ```
 
-## Basic Usage
+The build creates a `zig-out` directory with the benchmark harness and test executables.
+
+<details>
+  <summary>Build output explanation</summary>
+
+  After running `zig build`, you'll find:
+  - `zig-out/bin/bench` — The benchmark runner
+  - `zig-out/cache` — Build cache for faster rebuilds
+
+  The build process compiles all core modules: pager, B+tree, MVCC, commit stream, and AI intelligence layer.
+</details>
+
+## Hello World: Your First Database
+
+Create a file named `hello.zig` with the following code:
 
 ```zig
 const std = @import("std");
-const db = @import("northstardb");
+const db = @import("src/db.zig");
 
 pub fn main() !void {
+    // Set up memory allocator
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Open or create database
-    var database = try db.Db.open(allocator, "mydb.northstar");
-    defer database.deinit();
+    // Open an in-memory database
+    var database = try db.Db.open(allocator);
+    defer database.close();
 
     // Start a write transaction
     var write_txn = try database.beginTxn(.{ .mode = .write });
-    defer write_txn.commit() catch unreachable;
 
-    // Write some data
-    try write_txn.put("hello", "world");
+    // Write some key-value pairs
+    try write_txn.put("greeting", "Hello, World!");
+    try write_txn.put("count", "42");
 
-    // Read data in a read transaction
+    // Commit the transaction
+    try write_txn.commit();
+
+    // Start a read transaction to verify data
     var read_txn = try database.beginTxn(.{ .mode = .read });
     defer read_txn.commit() catch unreachable;
 
-    const value = try read_txn.get("hello");
-    std.debug.print("Got: {s}\n", .{value});
+    // Read back the values
+    const greeting = (try read_txn.get("greeting")) orelse "not found";
+    const count = (try read_txn.get("count")) orelse "not found";
+
+    // Print the results
+    std.debug.print("=== NorthstarDB Hello World ===\n", .{});
+    std.debug.print("greeting: {s}\n", .{greeting});
+    std.debug.print("count: {s}\n", .{count});
 }
 ```
 
+### Run Your Hello World
+
+```bash
+zig run hello.zig
+```
+
+Expected output:
+```
+=== NorthstarDB Hello World ===
+greeting: Hello, World!
+count: 42
+```
+
+## Verify Installation
+
+Run the built-in benchmark suite to verify your installation is working correctly:
+
+```bash
+# Run a quick benchmark smoke test
+zig build run -- run --filter "open_close_empty" --repeats 1
+```
+
+Expected output (numbers will vary by system):
+```
+[PASS] bench/pager/open_close_empty
+  ops/sec: 1,234
+  p50: 812µs  p95: 945µs  p99: 1.2ms
+  fsyncs/op: 0  allocations/op: 12
+```
+
+<details>
+  <summary>Run all core benchmarks (takes longer)</summary>
+
+  ```bash
+  # Run the full microbenchmark suite
+  zig build run -- run --suite micro --repeats 3
+  ```
+
+  This runs all core benchmarks and verifies that performance is within expected ranges.
+</details>
+
 ## Next Steps
 
+Congratulations! You now have a working NorthstarDB installation. Here's what to explore next:
+
 <CardGrid stagger>
-	<Card title="Core Concepts" icon="book">
-		Learn about NorthstarDB architecture and design principles.
+	<Card title="Core Concepts" icon="open-book">
+		Learn about MVCC snapshots, B+tree storage, and the commit stream in the <a href="/concepts/architecture/">Architecture</a> guide.
 	</Card>
 	<Card title="API Reference" icon="code">
-		Explore the complete API documentation.
+		Explore the complete <a href="/reference/db-api/">Db API</a> for transactions, queries, and configuration.
 	</Card>
-	<Card title="Specifications" icon="file-code">
-		Read the formal specifications for file format and semantics.
+	<Card title="File-Based Database" icon="folder">
+		Continue to <a href="/guides/installation/">Installation</a> for persistent, file-based database usage.
+	</Card>
+	<Card title="AI Intelligence" icon="star">
+		Discover <a href="/ai/overview">AI-powered features</a>: natural language queries, entity extraction, and autonomous optimization.
 	</Card>
 </CardGrid>
+
+## Troubleshooting
+
+<details>
+  <summary>`zig: command not found`</summary>
+
+  **Problem:** Zig is not installed or not in your PATH.
+
+  **Solution:**
+  1. Download Zig from [ziglang.org/download](https://ziglang.org/download/)
+  2. Extract and add the `zig` binary to your system PATH
+  3. Restart your terminal and verify with `zig version`
+</details>
+
+<details>
+  <summary>Build errors or `error: Importing 'foo' failed`</summary>
+
+  **Problem:** Missing dependencies or Zig version mismatch.
+
+  **Solution:**
+  1. Verify Zig version: `zig version` (must be 0.13.0+)
+  2. Clean build cache: `rm -rf zig-cache zig-out`
+  3. Rebuild: `zig build`
+</details>
+
+<details>
+  <summary>Test failures</summary>
+
+  **Problem:** Tests fail with assertion errors or panics.
+
+  **Solution:**
+  1. Ensure you're running tests from the project root directory
+  2. Check for sufficient disk space and permissions
+  3. Open an issue on [GitHub](https://github.com/nikopol/northstardb/issues) with the full error output
+</details>
+
+## What's Next?
+
+- **Build a file-based database** — Learn to persist data to disk in the [Installation Guide](/guides/installation/)
+- **Explore transactions** — Understand MVCC and snapshot isolation in [Core Concepts](/concepts/mvcc/)
+- **Run benchmarks** — See performance characteristics in the [Benchmarking Guide](/guides/benchmarking/)
+- **Try AI features** — Enable natural language queries in [AI Intelligence](/ai/overview/)
