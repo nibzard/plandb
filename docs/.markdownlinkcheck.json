@@ -1,0 +1,49 @@
+{
+  "ignorePatterns": [
+    {
+      "pattern": "^http://localhost",
+      "description": "Ignore localhost links"
+    },
+    {
+      "pattern": "^http://127.0.0.1",
+      "description": "Ignore 127.0.0.1 links"
+    },
+    {
+      "pattern": "^https://northstardb.github.io/plandb/",
+      "description": "Ignore internal preview links (site not yet deployed)"
+    },
+    {
+      "pattern": "^https://github.com/northstardb/plandb/pull/",
+      "description": "Ignore unmerged PR links"
+    },
+    {
+      "pattern": "^https://github.com/northstardb/plandb/issues/",
+      "description": "Ignore issue links that may not exist yet"
+    }
+  ],
+  "replacementPatterns": [
+    {
+      "pattern": "^/",
+      "replacement": "https://northstardb.github.io/plandb/"
+    }
+  ],
+  "timeout": "20s",
+  "retryOn429": true,
+  "retryCount": 2,
+  "fallbackRetryDelay": "30s",
+  "aliveStatusCodes": [200, 206, 301, 302, 303, 307, 308],
+  "httpHeaders": [
+    {
+      "urls": ["https://github.com/"],
+      "headers": {
+        "Accept": "text/html"
+      }
+    },
+    {
+      "urls": ["https://docs.astro.build/", "https://starlight.astro.build/"],
+      "headers": {
+        "Accept": "text/html"
+      }
+    }
+  ]
+}

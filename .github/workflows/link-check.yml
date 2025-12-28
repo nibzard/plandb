@@ -1,0 +1,72 @@
+name: Link Check
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'docs/**'
+      - '.github/workflows/link-check.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'docs/**'
+      - '.github/workflows/link-check.yml'
+
+jobs:
+  markdown-link-check:
+    name: Check Documentation Links
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Link Checker
+        uses: gaurav-nelson/github-action-markdown-link-check@v1
+        with:
+          # Path to documentation directory
+          check-path: 'docs/src/content/docs'
+          # Configuration file
+          config-file: 'docs/.markdownlinkcheck.json'
+          # Check only modified files in PR
+          base-branch: main
+          # Folder to check
+          folder-path: 'docs/src/content/docs'
+          # File extension
+          file-extension: '.md'
+          # Check modified files only in PR
+          check-modified-files-only: 'yes'
+          # verbosity
+          verbose: yes
+
+  # Additional check for internal links and anchors
+  internal-link-check:
+    name: Check Internal Links and Anchors
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install markdown-link-check
+        run: npm install -g markdown-link-check
+
+      - name: Check all markdown files
+        run: |
+          # Find all .md and .mdx files and check links
+          find docs/src/content/docs -name "*.md" -o -name "*.mdx" | while read file; do
+            echo "Checking $file..."
+            markdown-link-check "$file" || echo "::warning file=$file::Broken links found"
+          done
+
+      - name: Check ADR files
+        run: |
+          for file in docs/adr/*.md; do
+            if [ -f "$file" ]; then
+              echo "Checking $file..."
+              markdown-link-check "$file" || echo "::warning file=$file::Broken links found"
+            fi
+          done
