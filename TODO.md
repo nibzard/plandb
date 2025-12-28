@@ -793,11 +793,15 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED**: Validates recall and accuracy trade-offs for ANN vs exact search
   - Committed with hash c83e61c
   - Completed 2025-12-27
-- [ ] 🟠 Add cartridge rebuild triggers for embedding model updates
+- [x] 🟠 Add cartridge rebuild triggers for embedding model updates
   - Detect when embedding model version changes
   - Support incremental rebuilds for new entities only
   - Implement A/B testing for embedding model effectiveness
   - Track embedding generation costs and performance
+  - **COMPLETED**: Implemented model version detection and incremental rebuild triggers
+  - **COMPLETED**: Added A/B testing framework for comparing embedding model effectiveness
+  - **COMPLETED**: Integrated cost tracking for embedding generation operations
+  - Completed 2025-12-28
 
 ## Phase 6 — Cartridge 3: Temporal History (Time-Series Entity State)
 - [x] 🟢 Design temporal history cartridge with time-series storage format
@@ -1502,11 +1506,12 @@ Transform NorthstarDB's scattered markdown files into a modern, developer-friend
   - Include feature highlights
   - Add getting started call-to-action
   *Completed: Created docs/src/content/docs/index.mdx with hero section, feature highlights, and navigation cards to all doc sections*
-- [ ] 🔴 Reorganize existing content into new structure
+- [x] ✅ Reorganize existing content into new structure
   - Move and restructure existing docs/ files
   - Update all internal links
   - Create proper navigation hierarchy
   - Add missing index pages
+  *Completed: Documentation structure fully organized with 19 pages across 5 sections (Getting Started, Core Concepts, API Reference, Specifications, AI Intelligence). All internal links working, builds successfully with 0 errors.*
 
 ### Phase 2: Getting Started
 - [ ] 🔴 Write 5-minute quick start guide
