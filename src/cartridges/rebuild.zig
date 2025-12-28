@@ -35,6 +35,8 @@ pub const TriggerType = enum {
     manual,
     /// Database schema changed
     schema_change,
+    /// Embedding model version changed
+    model_version_changed,
 };
 
 /// Rebuild reason details
@@ -241,6 +243,237 @@ pub const TriggerEvaluator = struct {
     /// Mark evaluation as run
     pub fn markEvaluationRun(self: *TriggerEvaluator) void {
         self.last_check_time = std.time.nanoTimestamp();
+    }
+
+    /// Check if embedding model version change requires rebuild
+    pub fn evaluateModelVersionChange(
+        self: *TriggerEvaluator,
+        cartridge_path: []const u8,
+        current_model_name: []const u8,
+        current_model_version: []const u8,
+        cartridge_model_name: ?[]const u8,
+        cartridge_model_version: ?[]const u8
+    ) !?RebuildReason {
+        _ = self;
+        _ = cartridge_path;
+
+        // If cartridge has no model info, always rebuild
+        if (cartridge_model_name == null or cartridge_model_version == null) {
+            return RebuildReason{
+                .trigger_type = .model_version_changed,
+                .description = "Cartridge missing model version info",
+                .current_value = 0,
+                .threshold_value = 1,
+            };
+        }
+
+        // Check if model name changed
+        if (!std.mem.eql(u8, current_model_name, cartridge_model_name.?)) {
+            return RebuildReason{
+                .trigger_type = .model_version_changed,
+                .description = "Embedding model name changed",
+                .current_value = 0,
+                .threshold_value = 1,
+            };
+        }
+
+        // Check if model version changed
+        if (!std.mem.eql(u8, current_model_version, cartridge_model_version.?)) {
+            return RebuildReason{
+                .trigger_type = .model_version_changed,
+                .description = "Embedding model version changed",
+                .current_value = 0,
+                .threshold_value = 1,
+            };
+        }
+
+        return null;
+    }
+};
+
+/// Embedding model version tracking
+pub const ModelVersion = struct {
+    name: []const u8,
+    version: []const u8,
+    dimensions: u16,
+    created_at: i128,
+
+    pub fn init(allocator: std.mem.Allocator, name: []const u8, version: []const u8, dimensions: u16) !ModelVersion {
+        return ModelVersion{
+            .name = try allocator.dupe(u8, name),
+            .version = try allocator.dupe(u8, version),
+            .dimensions = dimensions,
+            .created_at = std.time.nanoTimestamp(),
+        };
+    }
+
+    pub fn deinit(self: *ModelVersion, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        allocator.free(self.version);
+    }
+
+    pub fn eql(self: *const ModelVersion, other: *const ModelVersion) bool {
+        return std.mem.eql(u8, self.name, other.name) and
+               std.mem.eql(u8, self.version, other.version) and
+               self.dimensions == other.dimensions;
+    }
+};
+
+/// A/B testing configuration for embedding models
+pub const ABTestConfig = struct {
+    /// Enable A/B testing mode
+    enabled: bool = false,
+    /// Percentage of traffic to use new model (0-100)
+    new_model_traffic_pct: u8 = 10,
+    /// Minimum sample size before declaring winner
+    min_sample_size: u32 = 1000,
+    /// Metric to optimize (latency, recall, throughput)
+    optimize_metric: Metric = .recall,
+
+    pub const Metric = enum {
+        latency,
+        recall,
+        throughput,
+    };
+
+    pub fn init() ABTestConfig {
+        return ABTestConfig{};
+    }
+};
+
+/// A/B test state tracking
+pub const ABTestState = struct {
+    control_model: ModelVersion,
+    treatment_model: ModelVersion,
+    config: ABTestConfig,
+    control_samples: u32 = 0,
+    treatment_samples: u32 = 0,
+    control_latency_ns: u64 = 0,
+    treatment_latency_ns: u64 = 0,
+    control_recall: f32 = 0.0,
+    treatment_recall: f32 = 0.0,
+    started_at: i128,
+    completed_at: ?i128 = null,
+    winner: ?ModelVersion = null,
+
+    pub fn init(
+        allocator: std.mem.Allocator,
+        control: ModelVersion,
+        treatment: ModelVersion,
+        config: ABTestConfig
+    ) !ABTestState {
+        _ = allocator;
+        return ABTestState{
+            .control_model = control,
+            .treatment_model = treatment,
+            .config = config,
+            .started_at = std.time.nanoTimestamp(),
+        };
+    }
+
+    pub fn deinit(self: *ABTestState, allocator: std.mem.Allocator) void {
+        self.control_model.deinit(allocator);
+        self.treatment_model.deinit(allocator);
+        if (self.winner) |*w| w.deinit(allocator);
+    }
+
+    /// Record a query result for either control or treatment
+    pub fn recordResult(self: *ABTestState, is_treatment: bool, latency_ns: u64, recall: f32) void {
+        if (is_treatment) {
+            self.treatment_samples += 1;
+            self.treatment_latency_ns += latency_ns;
+            self.treatment_recall = (self.treatment_recall * @as(f32, @floatFromInt(self.treatment_samples - 1)) +
+                                    recall) / @as(f32, @floatFromInt(self.treatment_samples));
+        } else {
+            self.control_samples += 1;
+            self.control_latency_ns += latency_ns;
+            self.control_recall = (self.control_recall * @as(f32, @floatFromInt(self.control_samples - 1)) +
+                                   recall) / @as(f32, @floatFromInt(self.control_samples));
+        }
+    }
+
+    /// Check if test has sufficient samples
+    pub fn hasSufficientSamples(self: *const ABTestState) bool {
+        return self.control_samples >= self.config.min_sample_size and
+               self.treatment_samples >= self.config.min_sample_size;
+    }
+
+    /// Determine winner based on configured metric
+    pub fn evaluateWinner(self: *ABTestState, allocator: std.mem.Allocator) !?ModelVersion {
+        if (!self.hasSufficientSamples()) return null;
+
+        const winner = switch (self.config.optimize_metric) {
+            .latency => blk: {
+                const control_avg = @as(f64, @floatFromInt(self.control_latency_ns)) / @as(f64, @floatFromInt(self.control_samples));
+                const treatment_avg = @as(f64, @floatFromInt(self.treatment_latency_ns)) / @as(f64, @floatFromInt(self.treatment_samples));
+                if (treatment_avg < control_avg) {
+                    break :blk &self.treatment_model;
+                } else {
+                    break :blk &self.control_model;
+                }
+            },
+            .recall => blk: {
+                if (self.treatment_recall > self.control_recall) {
+                    break :blk &self.treatment_model;
+                } else {
+                    break :blk &self.control_model;
+                }
+            },
+            .throughput => blk: {
+                const control_tps = 1_000_000_000.0 / (@as(f64, @floatFromInt(self.control_latency_ns)) / @as(f64, @floatFromInt(self.control_samples)));
+                const treatment_tps = 1_000_000_000.0 / (@as(f64, @floatFromInt(self.treatment_latency_ns)) / @as(f64, @floatFromInt(self.treatment_samples)));
+                if (treatment_tps > control_tps) {
+                    break :blk &self.treatment_model;
+                } else {
+                    break :blk &self.control_model;
+                }
+            },
+        };
+
+        self.completed_at = std.time.nanoTimestamp();
+        self.winner = try ModelVersion.init(allocator, winner.name, winner.version, winner.dimensions);
+        return self.winner;
+    }
+
+    /// Get percentage of test completion
+    pub fn completionPercentage(self: *const ABTestState) f32 {
+        const control_pct = @as(f32, @floatFromInt(self.control_samples)) / @as(f32, @floatFromInt(self.config.min_sample_size)) * 100.0;
+        const treatment_pct = @as(f32, @floatFromInt(self.treatment_samples)) / @as(f32, @floatFromInt(self.config.min_sample_size)) * 100.0;
+        return @min(control_pct, treatment_pct);
+    }
+};
+
+/// Incremental rebuild context for embeddings
+pub const IncrementalRebuildContext = struct {
+    /// Only rebuild entities added/modified since this txn_id
+    since_txn_id: u64,
+    /// Model version to use for rebuild
+    target_model: ModelVersion,
+    /// Number of entities to rebuild
+    entity_count: usize,
+    /// Track embedding generation cost
+    cost_tracking: bool = true,
+
+    pub fn init(
+        since_txn_id: u64,
+        model: ModelVersion,
+        entity_count: usize
+    ) IncrementalRebuildContext {
+        return IncrementalRebuildContext{
+            .since_txn_id = since_txn_id,
+            .target_model = model,
+            .entity_count = entity_count,
+        };
+    }
+
+    pub fn estimateCostNs(self: *const IncrementalRebuildContext, ns_per_embedding: u64) u64 {
+        return self.entity_count * ns_per_embedding;
+    }
+
+    pub fn estimateCostUsd(self: *const IncrementalRebuildContext, usd_per_1m_tokens: f32) f32 {
+        // Rough estimate: 1 embedding ~ 100 tokens on average
+        const estimated_tokens = @as(f32, @floatFromInt(self.entity_count)) * 100.0;
+        return (estimated_tokens / 1_000_000.0) * usd_per_1m_tokens;
     }
 };
 
@@ -691,4 +924,110 @@ test "RebuildExecutor init" {
     defer executor.deinit();
 
     try std.testing.expectEqual(@as(usize, 0), executor.active_executions.items.len);
+}
+
+test "ModelVersion init and eql" {
+    var model1 = try ModelVersion.init(std.testing.allocator, "all-MiniLM-L6-v2", "1.0.0", 384);
+    defer model1.deinit(std.testing.allocator);
+
+    var model2 = try ModelVersion.init(std.testing.allocator, "all-MiniLM-L6-v2", "1.0.0", 384);
+    defer model2.deinit(std.testing.allocator);
+
+    var model3 = try ModelVersion.init(std.testing.allocator, "all-MiniLM-L6-v2", "1.1.0", 384);
+    defer model3.deinit(std.testing.allocator);
+
+    try std.testing.expect(model1.eql(&model2));
+    try std.testing.expect(!model1.eql(&model3));
+}
+
+test "TriggerEvaluator evaluateModelVersionChange" {
+    var evaluator = TriggerEvaluator.init(std.testing.allocator, .{});
+    defer evaluator.deinit();
+
+    // Same version - no rebuild needed
+    const reason1 = try evaluator.evaluateModelVersionChange(
+        "test.cartridge",
+        "all-MiniLM-L6-v2",
+        "1.0.0",
+        "all-MiniLM-L6-v2",
+        "1.0.0"
+    );
+    try std.testing.expect(reason1 == null);
+
+    // Version changed - rebuild needed
+    const reason2 = try evaluator.evaluateModelVersionChange(
+        "test.cartridge",
+        "all-MiniLM-L6-v2",
+        "1.1.0",
+        "all-MiniLM-L6-v2",
+        "1.0.0"
+    );
+    try std.testing.expect(reason2 != null);
+    try std.testing.expectEqual(TriggerType.model_version_changed, reason2.?.trigger_type);
+
+    // Model name changed - rebuild needed
+    const reason3 = try evaluator.evaluateModelVersionChange(
+        "test.cartridge",
+        "text-embedding-3-small",
+        "1.0.0",
+        "all-MiniLM-L6-v2",
+        "1.0.0"
+    );
+    try std.testing.expect(reason3 != null);
+    try std.testing.expectEqual(TriggerType.model_version_changed, reason3.?.trigger_type);
+
+    // Cartridge has no model info - rebuild needed
+    const reason4 = try evaluator.evaluateModelVersionChange(
+        "test.cartridge",
+        "all-MiniLM-L6-v2",
+        "1.0.0",
+        null,
+        null
+    );
+    try std.testing.expect(reason4 != null);
+    try std.testing.expectEqual(TriggerType.model_version_changed, reason4.?.trigger_type);
+}
+
+test "ABTestState recordResult and evaluateWinner" {
+    const control = try ModelVersion.init(std.testing.allocator, "model-v1", "1.0", 384);
+    const treatment = try ModelVersion.init(std.testing.allocator, "model-v2", "1.0", 384);
+
+    var state = try ABTestState.init(std.testing.allocator, control, treatment, .{
+        .min_sample_size = 10,
+        .optimize_metric = .recall,
+    });
+    defer state.deinit(std.testing.allocator);
+
+    // Not enough samples
+    try std.testing.expect(!state.hasSufficientSamples());
+    try std.testing.expect(try state.evaluateWinner(std.testing.allocator) == null);
+
+    // Add some results
+    var i: u32 = 0;
+    while (i < 10) : (i += 1) {
+        state.recordResult(false, 1000 + i * 10, 0.85);
+        state.recordResult(true, 900 + i * 10, 0.90);
+    }
+
+    // Now we have enough samples, treatment has better recall
+    try std.testing.expect(state.hasSufficientSamples());
+    const winner = try state.evaluateWinner(std.testing.allocator);
+    try std.testing.expect(winner != null);
+    try std.testing.expectEqualStrings("model-v2", winner.?.name);
+}
+
+test "IncrementalRebuildContext cost estimation" {
+    var model = try ModelVersion.init(std.testing.allocator, "test", "1.0", 384);
+    defer model.deinit(std.testing.allocator);
+
+    const ctx = IncrementalRebuildContext.init(1000, model, 100);
+
+    // Estimate time cost at 10ms per embedding
+    const estimated_ns = ctx.estimateCostNs(10_000_000);
+    try std.testing.expectEqual(@as(u64, 1_000_000_000), estimated_ns); // 100 * 10ms = 1s
+
+    // Estimate USD cost at $2 per 1M tokens
+    const estimated_usd = ctx.estimateCostUsd(2.0);
+    try std.testing.expect(estimated_usd > 0.0);
+    try std.testing.expect(estimated_usd < 1.0); // Should be very small for 100 entities
 }

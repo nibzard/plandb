@@ -693,7 +693,8 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - Metrics: write throughput, query latency (p50/p95/p99), storage efficiency (bytes per million points)
   - Targets: >10K writes/sec, <100ms for 24h range, <50ms for percentile, <10MB per million points
   - Registered as "bench/macro/timeseries_telemetry" in suite.zig
-- [ ] 🟠 Add baselines for varying metric counts and retention
+- [ ] 🚫 BLOCKED Add baselines for varying metric counts and retention
+  - **BLOCKER**: Pre-existing bug in temporal.zig Rollup deinit causes double-free. Need to fix Rollup to not free borrowed string pointers (entity_namespace, attribute_key).
   - Small: 100 metrics, 1 day (scale down test)
   - Medium: 1000 metrics, 7 days (baseline)
   - Large: 10K metrics, 30 days (stress test)
