@@ -1,56 +1,626 @@
 ---
-title: Installation
-description: How to install and build NorthstarDB
+title: Installation Guide
+description: Comprehensive installation instructions for NorthstarDB on all platforms
+sidebar:
+  order: 1
 ---
+
+import { Card, CardGrid, Tabs, TabItem } from '@astrojs/starlight/components';
+
+This guide covers installing NorthstarDB on Linux, macOS, and Windows using various methods.
+
+## Quick Install
+
+<Tabs>
+  <TabItem label="macOS">
+    ```bash
+    # Install Zig via Homebrew
+    brew install zig
+
+    # Clone and build
+    git clone https://github.com/nikopol/northstardb.git
+    cd northstardb
+    zig build
+    ```
+  </TabItem>
+  <TabItem label="Linux (Debian/Ubuntu)">
+    ```bash
+    # Download Zig 0.13.0
+    wget https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz
+    tar -xf zig-linux-x86_64-0.13.0.tar.xz
+
+    # Add to PATH (permanent)
+    sudo mv zig-linux-x86_64-0.13.0 /opt/zig
+    echo 'export PATH=$PATH:/opt/zig' >> ~/.bashrc
+    source ~/.bashrc
+
+    # Clone and build
+    git clone https://github.com/nikopol/northstardb.git
+    cd northstardb
+    zig build
+    ```
+  </TabItem>
+  <TabItem label="Windows">
+    ```powershell
+    # Download Zig from https://ziglang.org/download/
+    # Extract and add to PATH
+
+    # Clone and build (use WSL or PowerShell)
+    git clone https://github.com/nikopol/northstardb.git
+    cd northstardb
+    zig build
+    ```
+  </TabItem>
+</Tabs>
+
+## System Requirements
+
+### Minimum Requirements
+
+- **Zig**: 0.13.0 or later
+- **RAM**: 512 MB (1 GB recommended)
+- **Disk**: 100 MB for build, additional space for database files
+- **OS**: Linux (kernel 5.4+), macOS 11+, Windows 10+ (WSL recommended)
+
+### Recommended Requirements
+
+- **RAM**: 2+ GB for large datasets
+- **Disk**: SSD for optimal performance
+- **CPU**: Multi-core for concurrent read workloads
 
 ## Installing Zig
 
-NorthstarDB requires Zig 0.13.0 or later.
+NorthstarDB requires Zig 0.13.0 or later. Choose your installation method:
 
-### Linux (Debian/Ubuntu)
+<Tabs>
+  <TabItem label="Package Manager">
+    ### macOS (Homebrew)
+    ```bash
+    brew install zig
+    brew upgrade zig  # Update to latest
+    ```
+
+    ### Arch Linux
+    ```bash
+    sudo pacman -S zig
+    ```
+
+    ### Fedora
+    ```bash
+    sudo dnf install zig
+    ```
+
+    ### Gentoo
+    ```bash
+    sudo emerge dev-lang/zig
+    ```
+  </TabItem>
+  <TabItem label="Binary Download">
+    ### Direct Download
+
+    1. Visit [ziglang.org/download](https://ziglang.org/download/)
+    2. Download the appropriate package for your system:
+       - `zig-linux-x86_64-0.13.0.tar.xz` (Linux x86_64)
+       - `zig-macos-aarch64-0.13.0.tar.xz` (macOS ARM)
+       - `zig-windows-x86_64-0.13.0.zip` (Windows)
+    3. Extract and add to PATH
+
+    ### Linux Installation
+    ```bash
+    # Download
+    wget https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz
+    tar -xf zig-linux-x86_64-0.13.0.tar.xz
+
+    # Install to /opt
+    sudo mv zig-linux-x86_64-0.13.0 /opt/zig
+
+    # Add to PATH permanently
+    echo 'export PATH=$PATH:/opt/zig' >> ~/.bashrc
+    source ~/.bashrc
+
+    # Verify
+    zig version
+    ```
+
+    ### macOS Installation
+    ```bash
+    # Download ARM64 for Apple Silicon
+    curl -O https://ziglang.org/download/0.13.0/zig-macos-aarch64-0.13.0.tar.xz
+    tar -xf zig-macos-aarch64-0.13.0.tar.xz
+
+    # Install to /usr/local
+    sudo mv zig-macos-aarch64-0.13.0 /usr/local/zig
+
+    # Add to PATH (if using zsh)
+    echo 'export PATH=$PATH:/usr/local/zig' >> ~/.zshrc
+    source ~/.zshrc
+
+    # Verify
+    zig version
+    ```
+
+    ### Windows Installation
+    ```powershell
+    # Download and extract
+    # 1. Download zig-windows-x86_64-0.13.0.zip
+    # 2. Extract to C:\zig
+    # 3. Add C:\zig to PATH via System Properties
+
+    # Verify in PowerShell
+    zig version
+    ```
+  </TabItem>
+  <TabItem label="Build from Source">
+    ### Building Zig from Source
+
+    Only recommended if you need a specific version or are contributing to Zig itself.
+
+    ```bash
+    # Prerequisites: C++ compiler, CMake, Ninja
+    git clone https://github.com/ziglang/zig.git
+    cd zig
+    git checkout 0.13.0
+
+    mkdir build
+    cd build
+    cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release
+    ninja
+
+    # Add to PATH
+    export PATH=$PATH:$PWD
+    ```
+  </TabItem>
+</Tabs>
+
+### Verify Zig Installation
+
 ```bash
-# Download Zig
-wget https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz
-tar -xf zig-linux-x86_64-0.13.0.tar.xz
-
-# Add to PATH
-export PATH=$PATH:$(pwd)/zig-linux-x86_64-0.13.0
+zig version
 ```
 
-### macOS
+Expected output: `0.13.0` or later.
+
+## Installing NorthstarDB
+
+### Method 1: Clone and Build (Recommended)
+
+<Tabs>
+  <TabItem label="HTTP">
+    ```bash
+    # Clone via HTTPS
+    git clone https://github.com/nikopol/northstardb.git
+    cd northstardb
+
+    # Build the project
+    zig build
+
+    # Run tests to verify
+    zig build test
+
+    # Run benchmarks
+    zig build run -- run --repeats 3
+    ```
+  </TabItem>
+  <TabItem label="SSH">
+    ```bash
+    # Clone via SSH (requires SSH key setup)
+    git clone git@github.com:nikopol/northstardb.git
+    cd northstardb
+
+    # Build the project
+    zig build
+
+    # Run tests to verify
+    zig build test
+    ```
+  </TabItem>
+</Tabs>
+
+### Method 2: Build Optimization Modes
+
+Zig supports multiple optimization modes:
+
 ```bash
-brew install zig
+# Debug mode (fast compile, slow execution)
+zig build -Doptimize=Debug
+
+# ReleaseSafe (recommended for production)
+zig build -Doptimize=ReleaseSafe
+
+# ReleaseFast (maximum performance, less safety)
+zig build -Doptimize=ReleaseFast
+
+# ReleaseSmall (smallest binary size)
+zig build -Doptimize=ReleaseSmall
 ```
 
-### Windows
-Download from [ziglang.org](https://ziglang.org/download/) and add to PATH.
+### Method 3: Cross-Compilation
 
-## Building NorthstarDB
+Build for different target platforms:
 
 ```bash
-# Clone the repository
-git clone https://github.com/nikopol/northstardb.git
-cd northstardb
+# Build for Linux x86_64 from macOS
+zig build -Dtarget=x86_64-linux-gnu
 
-# Build
-zig build
+# Build for Windows from Linux
+zig build -Dtarget=x86_64-windows-gnu
 
-# Run tests
-zig build test
+# Build for macOS ARM64 from Linux
+zig build -Dtarget=aarch64-macos-gnu
 
-# Run benchmarks
-zig build run -- run --repeats 5
+# Build for ARM64 Linux
+zig build -Dtarget=aarch64-linux-gnu
+```
+
+### Method 4: Static Library
+
+NorthstarDB can be built as a static library for embedding:
+
+```bash
+# The build.zig outputs the benchmark executable
+# To embed as a library, import src/db.zig directly in your project
+```
+
+Example embedding in your `build.zig`:
+
+```zig
+const northstardb = b.createModule(.{
+    .root_source_file = b.path("path/to/northstardb/src/db.zig"),
+    .target = target,
+    .optimize = optimize,
+});
+
+// Add to your executable
+const exe = b.addExecutable(.{ ... });
+exe.root_module.addImport("northstardb", northstardb);
 ```
 
 ## Build Artifacts
 
-- `zig-out/bin/bench` - Benchmark harness
-- `zig-out/bin/northstardb` - Database library
+After running `zig build`, you'll find:
 
-## CI Requirements
+```
+northstardb/
+├── zig-out/
+│   └── bin/
+│       └── bench           # Benchmark harness executable
+└── zig-cache/              # Build cache (can be deleted)
+```
 
-The project uses continuous integration with:
+### Running the Benchmark Harness
 
-- Regression gates: -5% throughput, +10% p99 latency
-- Hardening tests nightly
-- Baseline comparisons for performance validation
+```bash
+# List all available benchmarks
+./zig-out/bin/bench list
+
+# Run specific benchmark
+./zig-out/bin/bench run --filter "open_close_empty"
+
+# Run suite with options
+./zig-out/bin/bench run --suite micro --repeats 5
+```
+
+## Platform-Specific Notes
+
+### Linux
+
+<details>
+  <summary>File descriptor limits</summary>
+
+  For high-concurrency workloads, increase the file descriptor limit:
+
+  ```bash
+  # Check current limit
+  ulimit -n
+
+  # Increase temporarily
+  ulimit -n 65536
+
+  # Increase permanently (add to /etc/security/limits.conf)
+  * soft nofile 65536
+  * hard nofile 65536
+  ```
+</details>
+
+<details>
+  <summary>Performance tuning</summary>
+
+  For optimal performance on NVMe storage:
+
+  ```bash
+  # Disable I/O scheduler for NVMe
+  echo none > /sys/block/nvme0n1/queue/scheduler
+
+  # Increase I/O queue depth
+  echo 256 > /sys/block/nvme0n1/queue/nr_requests
+  ```
+</details>
+
+### macOS
+
+<details>
+  <summary>SIP and file system permissions</summary>
+
+  macOS may require additional permissions for file I/O:
+
+  ```bash
+  # Grant Full Disk Access if needed
+  # System Settings → Privacy & Security → Full Disk Access
+  # Add your terminal or IDE
+  ```
+</details>
+
+<details>
+  <summary>Apple Silicon considerations</summary>
+
+  On Apple Silicon (M1/M2/M3), Zig automatically uses ARM64 optimizations:
+
+  ```bash
+  # Verify architecture
+  uname -m  # Should show arm64
+  zig version  # Should detect native ARM64
+  ```
+</details>
+
+### Windows
+
+<details>
+  <summary>WSL2 recommended</summary>
+
+  Windows Subsystem for Linux provides the best experience:
+
+  ```powershell
+  # Enable WSL
+  wsl --install
+
+  # Install Ubuntu
+  wsl --install -d Ubuntu
+
+  # Inside WSL, follow Linux instructions
+  ```
+
+  Benefits:
+  - Native performance
+  - Full POSIX compatibility
+  - Better file I/O performance
+</details>
+
+<details>
+  <summary>Native Windows limitations</summary>
+
+  Building natively on Windows has some limitations:
+  - Slower file I/O compared to WSL2
+  - Some tests may require path adjustments
+  - Use forward slashes in paths or escape backslashes
+</details>
+
+## Verification
+
+### Verify Build
+
+```bash
+# Run unit tests
+zig build test
+
+# Expected: All tests pass
+```
+
+### Verify Performance
+
+Run a quick benchmark to verify expected performance:
+
+```bash
+# Run smoke test
+zig build run -- run --filter "open_close_empty" --repeats 1
+```
+
+Expected output (numbers vary by system):
+
+```
+[PASS] bench/pager/open_close_empty
+  ops/sec: 1,234
+  p50: 812µs  p95: 945µs  p99: 1.2ms
+  fsyncs/op: 0  allocations/op: 12
+```
+
+## Troubleshooting
+
+<Tabs>
+  <TabItem label="Installation Issues">
+    ### `zig: command not found`
+
+    **Problem**: Zig not installed or not in PATH.
+
+    **Solution**:
+    ```bash
+    # Find where Zig is installed
+    which zig
+
+    # If not found, install Zig or add to PATH
+    export PATH=$PATH:/path/to/zig
+
+    # Add to shell config for persistence
+    echo 'export PATH=$PATH:/path/to/zig' >> ~/.bashrc
+    ```
+
+    ### `zig version` shows old version
+
+    **Problem**: Outdated Zig installation.
+
+    **Solution**:
+    ```bash
+    # macOS
+    brew upgrade zig
+
+    # Linux (manual)
+    rm -rf /opt/zig
+    # Download new version and reinstall
+
+    # Verify
+    zig version
+    ```
+  </TabItem>
+  <TabItem label="Build Issues">
+    ### `error: Importing 'foo' failed`
+
+    **Problem**: Missing dependencies or incorrect Zig version.
+
+    **Solution**:
+    ```bash
+    # Verify Zig version
+    zig version  # Must be 0.13.0+
+
+    # Clean build cache
+    rm -rf zig-cache zig-out
+
+    # Rebuild
+    zig build
+    ```
+
+    ### `error: createFileW` permission denied
+
+    **Problem**: Insufficient permissions to write build artifacts.
+
+    **Solution**:
+    ```bash
+    # Check directory permissions
+    ls -la
+
+    # Fix permissions
+    chmod u+w .
+
+    # Or build in a writable directory
+    cd /tmp
+    git clone https://github.com/nikopol/northstardb.git
+    cd northstardb
+    zig build
+    ```
+
+    ### Linker errors on Linux
+
+    **Problem**: Missing system libraries.
+
+    **Solution**:
+    ```bash
+    # Install build dependencies (Debian/Ubuntu)
+    sudo apt-get install build-essential libc6-dev
+
+    # Install build dependencies (Fedora)
+    sudo dnf install gcc glibc-devel
+
+    # Rebuild
+    zig build
+    ```
+  </TabItem>
+  <TabItem label="Runtime Issues">
+    ### Test failures
+
+    **Problem**: Tests fail with assertion errors.
+
+    **Solution**:
+    ```bash
+    # Ensure running from project root
+    pwd  # Should show northstardb directory
+
+    # Check disk space
+    df -h
+
+    # Check file permissions
+    ls -la
+
+    # Run single test for debugging
+    zig test src/main.zig --test-filter [test_name]
+    ```
+
+    ### Segmentation faults
+
+    **Problem**: Memory corruption or unstable build.
+
+    **Solution**:
+    ```bash
+    # Try different optimization mode
+    zig build -Doptimize=ReleaseSafe
+
+    # Run with debug info
+    zig build -Doptimize=Debug
+
+    # If issue persists, file a bug with:
+    # - Zig version
+    # - OS and architecture
+    # - Backtrace
+    ```
+  </TabItem>
+  <TabItem label="Performance Issues">
+    ### Slower than expected benchmarks
+
+    **Problem**: Performance below baseline.
+
+    **Solution**:
+    ```bash
+    # Check optimization mode
+    zig build -Doptimize=ReleaseFast
+
+    # Verify using ReleaseFast
+    ./zig-out/bin/bench run --filter "bench_name"
+
+    # Check system load
+    top
+
+    # Check disk I/O (should be using SSD)
+    iostat -x 1
+
+    # Disable power saving (Linux)
+    sudo cpupower frequency-set -g performance
+    ```
+
+    ### High memory usage
+
+    **Problem**: Memory usage grows over time.
+
+    **Solution**:
+    ```bash
+    # Monitor memory usage
+    watch -n 1 'ps aux | grep bench'
+
+    # This is expected for large workloads
+    # The database uses memory for caching
+
+    # To limit memory, configure cache size when opening Db
+    # (See API documentation for details)
+    ```
+  </TabItem>
+</Tabs>
+
+## Next Steps
+
+After successful installation:
+
+<CardGrid stagger>
+	<Card title="Quick Start" icon="rocket">
+		Follow the <a href="/guides/quick-start/">5-minute quick start</a> for your first database.
+	</Card>
+	<Card title="Architecture" icon="open-book">
+		Learn about MVCC snapshots, B+tree storage, and the commit stream.
+	</Card>
+	<Card title="API Reference" icon="code">
+		Explore the complete Db API for transactions, queries, and configuration.
+	</Card>
+	<Card title="Benchmarking" icon="chart-line">
+		Run performance benchmarks and compare results.
+	</Card>
+</CardGrid>
+
+## Getting Help
+
+If you encounter issues not covered here:
+
+- **GitHub Issues**: [github.com/nikopol/northstardb/issues](https://github.com/nikopol/northstardb/issues)
+- **Discussions**: [github.com/nikopol/northstardb/discussions](https://github.com/nikopol/northstardb/discussions)
+- **Documentation**: [Full docs](/)
+
+When reporting issues, include:
+- Zig version (`zig version`)
+- OS and architecture (`uname -a`)
+- Build command used
+- Full error message
+- Steps to reproduce
