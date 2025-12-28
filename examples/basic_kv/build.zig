@@ -11,8 +11,14 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // Link to NorthstarDB (assumes it's installed or available as a module)
-    // In production, this would be: exe.root_module.addImport("northstar", northstar_module);
+    // Add northstar module dependency
+    // This assumes you're building from the project root
+    // The northstar module should be available in the parent directory
+    const northstar = b.dependency("northstar", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    exe.root_module.addImport("northstar", northstar.module("northstar"));
 
     b.installArtifact(exe);
 

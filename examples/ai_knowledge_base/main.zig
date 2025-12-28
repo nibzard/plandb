@@ -169,7 +169,7 @@ const KnowledgeBase = struct {
             .{ topic_id, name },
         );
 
-        const topic_key = try std.ffmt.allocPrint(self.allocator, "cartridge:topic:{s}", .{topic_id});
+        const topic_key = try std.fmt.allocPrint(self.allocator, "cartridge:topic:{s}", .{topic_id});
         try wtxn.put(topic_key, topic_json);
 
         try wtxn.commit();

@@ -11,6 +11,13 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Add northstar module dependency
+    const northstar = b.dependency("northstar", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    exe.root_module.addImport("northstar", northstar.module("northstar"));
+
     b.installArtifact(exe);
 
     const run = b.addRunArtifact(exe);

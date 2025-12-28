@@ -5,9 +5,44 @@
 //! - Write transactions for storing data
 //! - Read transactions for retrieving data
 //! - Updating and deleting values
+//! - Prefix scans for range queries
+//! - Error handling patterns
 
 const std = @import("std");
 const db = @import("northstar");
+
+/// Helper function to increment a counter atomically
+fn incrementCounter(database: *db.Db, allocator: std.mem.Allocator, key: []const u8) !u64 {
+    var wtxn = try database.beginWriteTxn();
+    errdefer wtxn.rollback();
+
+    const current = if (wtxn.get(key)) |val|
+        try std.fmt.parseInt(u64, val, 10)
+    else
+        0;
+
+    const new_val = current + 1;
+    const val_str = try std.fmt.allocPrint(allocator, "{d}", .{new_val});
+    try wtxn.put(key, val_str);
+
+    try wtxn.commit();
+    return new_val;
+}
+
+/// Helper function to check-and-set (conditional update)
+fn setIfNotExists(database: *db.Db, key: []const u8, value: []const u8) !bool {
+    var wtxn = try database.beginWriteTxn();
+    errdefer wtxn.rollback();
+
+    if (wtxn.get(key)) |_| {
+        try wtxn.rollback();
+        return false;
+    }
+
+    try wtxn.put(key, value);
+    try wtxn.commit();
+    return true;
+}
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -117,6 +152,41 @@ pub fn main() !void {
             count += 1;
         }
         std.debug.print("Found {d} fields for user 1001\n", .{count});
+    }
+
+    // === PATTERN: Counter increment ===
+    std.debug.print("\n--- Counter Pattern (page views) ---\n", .{});
+    const views = try incrementCounter(&database, allocator, "stats:page_views");
+    std.debug.print("Page views: {d}\n", .{views});
+
+    // === PATTERN: Check-and-set ===
+    std.debug.print("\n--- Check-And-Set Pattern ---\n", .{});
+    const created = try setIfNotExists(&database, "config:initialized", "true");
+    if (created) {
+        std.debug.print("Config initialized for first time\n", .{});
+    } else {
+        std.debug.print("Config already exists\n", .{});
+    }
+
+    // Try again (should fail)
+    const created2 = try setIfNotExists(&database, "config:initialized", "true");
+    std.debug.print("Second attempt: {s}\n", .{if (created2) "created" else "already exists"});
+
+    // === PATTERN: Batch operations ===
+    std.debug.print("\n--- Batch Operations (logging events) ---\n", .{});
+    {
+        var wtxn = try database.beginWriteTxn();
+        errdefer wtxn.rollback();
+
+        var i: usize = 0;
+        while (i < 5) : (i += 1) {
+            const log_key = try std.fmt.allocPrint(allocator, "log:{d}", .{std.time.timestamp() + i});
+            const log_value = try std.fmt.allocPrint(allocator, "Event {d}", .{i});
+            try wtxn.put(log_key, log_value);
+        }
+
+        try wtxn.commit();
+        std.debug.print("Logged 5 events in single transaction\n", .{});
     }
 
     std.debug.print("\n--- Example Complete ---\n", .{});
