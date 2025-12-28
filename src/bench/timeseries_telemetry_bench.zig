@@ -572,22 +572,25 @@ fn benchTimeSeriesWithScale(allocator: std.mem.Allocator, config: types.Config, 
         const entity_idx = i % num_metrics;
         const entity = metric_entities.items[entity_idx];
 
-        // Scale window sizes based on available data
-        const max_window = @as(i64, @intCast(points_per_metric * retention_days));
+        // Scale window sizes based on available data (in data points)
+        const max_points = points_per_metric * retention_days;
         const is_small = std.mem.eql(u8, scale.name, "small");
         const is_medium = std.mem.eql(u8, scale.name, "medium");
-        const window = if (is_small)
-            @min(60, max_window) // 1min max for small
+        // Window size as percentage of total data points (must be < max_points for intRangeLessThan)
+        const window_points: usize = if (is_small)
+            @min(60, max_points - 1) // 60 points max for small, ensure < max_points
         else if (is_medium) blk: {
-            const sizes = [_]i64{ 60, 300, 900, 3600, 7200 }; // 1min to 2hr
-            break :blk @min(sizes[i % sizes.len], max_window);
+            const sizes = [_]usize{ 10, 20, 50, 75 };
+            break :blk @min(sizes[i % sizes.len], max_points - 1);
         } else blk: {
-            const sizes = [_]i64{ 60, 300, 900, 3600, 21600, 43200 }; // 1min to 12hr
-            break :blk @min(sizes[i % sizes.len], max_window);
+            const sizes = [_]usize{ 20, 40, 60, 80 };
+            break :blk @min(sizes[i % sizes.len], max_points - 1);
         };
-        const end_offset = rand.intRangeLessThan(usize, @as(usize, @intCast(window)), points_per_metric * retention_days);
+        // Ensure window_points is at least 1 and less than max_points
+        const safe_window = if (window_points >= max_points) @max(1, max_points - 1) else window_points;
+        const end_offset = rand.intRangeLessThan(usize, safe_window, max_points);
         const end_time = base_timestamp + @as(i64, @intCast(end_offset));
-        const start_time_ts = end_time - window;
+        const start_time_ts = end_time - @as(i64, @intCast(safe_window));
 
         var changes = try cartridge.queryBetween(entity[0], entity[1], start_time_ts, end_time);
         defer {
@@ -613,21 +616,22 @@ fn benchTimeSeriesWithScale(allocator: std.mem.Allocator, config: types.Config, 
         const entity = metric_entities.items[entity_idx];
         const attr_key = attribute_keys[entity_idx % attribute_keys.len];
 
-        // Scale window sizes for aggregated queries
-        const max_window = @as(i64, @intCast(points_per_metric * retention_days));
+        // Scale window sizes for aggregated queries (in data points)
+        const max_points = points_per_metric * retention_days;
         const is_small = std.mem.eql(u8, scale.name, "small");
         const is_medium = std.mem.eql(u8, scale.name, "medium");
-        const window = if (is_small)
-            @min(60, max_window) // 1min for small
+        const window_points: usize = if (is_small)
+            @min(60, max_points - 1) // 60 points for small
         else if (is_medium)
-            @min(3600, max_window) // 1hr for medium
+            @min(50, max_points - 1) // 50 points for medium
         else blk: {
-            const sizes = [_]i64{ 3600, 7200, 21600 }; // 1hr-6hr for large
-            break :blk @min(sizes[i % sizes.len], max_window);
+            const sizes = [_]usize{ 30, 50, 80 };
+            break :blk @min(sizes[i % sizes.len], max_points - 1);
         };
-        const end_offset = rand.intRangeLessThan(usize, @as(usize, @intCast(window)), points_per_metric * retention_days);
+        const safe_window = if (window_points >= max_points) @max(1, max_points - 1) else window_points;
+        const end_offset = rand.intRangeLessThan(usize, safe_window, max_points);
         const end_time = base_timestamp + @as(i64, @intCast(end_offset));
-        const start_time_ts = end_time - window;
+        const start_time_ts = end_time - @as(i64, @intCast(safe_window));
 
         // Test distinct count aggregation
         _ = try cartridge.countDistinct(entity[0], entity[1], attr_key, start_time_ts, end_time);
@@ -679,16 +683,15 @@ fn benchTimeSeriesWithScale(allocator: std.mem.Allocator, config: types.Config, 
             };
         const granularity = granularities[i % granularities.len];
 
-        // Scale offset for rollup queries
+        // Scale offset for rollup queries (in data points)
         const max_offset = points_per_metric * retention_days;
-        const min_offset = blk: {
-            break :blk if (is_small) @as(usize, 60) else 3600;
-        };
-        const end_offset = rand.intRangeLessThan(usize, min_offset, max_offset);
+        const min_offset: usize = if (is_small) 10 else @min(20, max_offset - 1);
+        const safe_min = if (min_offset >= max_offset) @max(1, max_offset - 1) else min_offset;
+        const end_offset = rand.intRangeLessThan(usize, safe_min, max_offset);
         const end_time = base_timestamp + @as(i64, @intCast(end_offset));
-        const start_time_ts = end_time - blk: {
-            break :blk if (is_small) @as(i64, 60) else 86400;
-        }; // Scale window
+        const window_points: usize = if (is_small) 30 else @min(60, max_offset - 1);
+        const safe_window = if (window_points >= max_offset) @max(1, max_offset - 1) else window_points;
+        const start_time_ts = end_time - @as(i64, @intCast(safe_window)); // Scale window
 
         // Create and query rollups
         try cartridge.index.createRollup(entity[0], entity[1], attr_key, start_time_ts, end_time, granularity, .mean);
