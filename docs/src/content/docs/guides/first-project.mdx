@@ -1,0 +1,614 @@
+---
+title: First Project
+description: Build your first complete application with NorthstarDB - a task queue system
+sidebar:
+  order: 3
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+import { Code } from '@astrojs/starlight/components';
+
+Build your first complete application with NorthstarDB: a **concurrent task queue system**. This tutorial teaches practical database patterns through real-world usage.
+
+## What We're Building
+
+We'll build a task queue system that demonstrates NorthstarDB's core strengths:
+
+- **Concurrent task processing** — Multiple agents claim and complete tasks in parallel
+- **Atomic operations** — No duplicate claims with compare-and-swap semantics
+- **Time travel queries** — Query task history at any point in time
+- **Crash safety** — All operations persisted to disk
+
+<details>
+  <summary>Why a task queue?</summary>
+
+  Task queues are the perfect first project because they:
+  - Demonstrate NorthstarDB's multi-agent concurrency design
+  - Require atomic operations (claim/complete tasks)
+  - Benefit from time-travel queries (audit history)
+  - Mirror real-world AI agent orchestration patterns
+  - Fit naturally with key-value storage
+</details>
+
+## Prerequisites
+
+Before starting, ensure you've completed the [Quick Start](/guides/quick-start/) guide:
+
+- Zig 0.13.0+ installed
+- NorthstarDB cloned and built
+- Basic familiarity with transactions
+
+<Code code="zig version" />
+
+## Project Structure
+
+Create a new directory for your project:
+
+```bash
+mkdir taskqueue
+cd taskqueue
+```
+
+Your project structure:
+
+```
+taskqueue/
+├── build.zig          # Build configuration
+├── src/
+│   └── main.zig       # Entry point
+└── README.md          # Documentation
+```
+
+## Step 1: Basic Task Queue
+
+Let's start with a simple in-memory task queue. Create `src/main.zig`:
+
+```zig
+const std = @import("std");
+const db = @import("northstardb");
+
+pub fn main() !void {
+    // Set up memory allocator
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    // Open database (in-memory for now)
+    var database = try db.Db.open(allocator);
+    defer database.close();
+
+    std.debug.print("=== Task Queue Demo ===\n", .{});
+
+    // Step 1: Create some tasks
+    {
+        var write_txn = try database.beginWrite();
+        defer {
+            if (!write_txn.hasMutations()) write_txn.abort();
+        };
+
+        try write_txn.put("task:1", "Process file upload");
+        try write_txn.put("task:2", "Generate thumbnails");
+        try write_txn.put("task:3", "Send notifications");
+
+        _ = try write_txn.commit();
+        std.debug.print("Created 3 tasks\n", .{});
+    }
+
+    // Step 2: List all tasks
+    {
+        var read_txn = try database.beginReadLatest();
+        defer read_txn.close();
+
+        const tasks = try read_txn.scan("task:");
+        defer allocator.free(tasks);
+
+        std.debug.print("\nPending tasks:\n", .{});
+        for (tasks) |task| {
+            std.debug.print("  {s}: {s}\n", .{ task.key, task.value });
+        }
+    }
+}
+```
+
+### Update build.zig
+
+Create `build.zig` to reference your local NorthstarDB:
+
+```zig
+const std = @import("std");
+
+pub fn build(b: *std.Build) void {
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    // NorthstarDB dependency (local path)
+    const northstardb = b.dependency("northstardb", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const exe = b.addExecutable(.{
+        .name = "taskqueue",
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    exe.root_module.addImport("northstardb", northstardb.module("northstardb"));
+
+    b.installArtifact(exe);
+
+    const run_cmd = b.addRunArtifact(exe);
+    run_cmd.step.dependOn(b.getInstallStep());
+
+    if (b.args) |args| {
+        run_cmd.addArgs(args);
+    }
+
+    const run_step = b.step("run", "Run the task queue");
+    run_step.dependOn(&run_cmd.step);
+}
+```
+
+<details>
+  <summary>Configure local dependency</summary>
+
+  Create `build.zig.zon` in your project root:
+
+  ```zig
+  .{
+      .name = "taskqueue",
+      .version = "0.0.1",
+      .dependencies = .{
+          .northstardb = .{
+              .path = "../northstardb",
+          },
+      },
+  }
+  ```
+
+  Adjust the path to point to your NorthstarDB clone.
+</details>
+
+### Run the Basic Queue
+
+```bash
+zig build run
+```
+
+Expected output:
+
+```
+=== Task Queue Demo ===
+Created 3 tasks
+
+Pending tasks:
+  task:1: Process file upload
+  task:2: Generate thumbnails
+  task:3: Send notifications
+```
+
+## Step 2: Persistent Storage
+
+Now let's upgrade to file-based storage for crash safety. Update your `main()` function:
+
+```zig
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    // Open file-based database
+    const db_path = "taskqueue.db";
+    const wal_path = "taskqueue.wal";
+
+    var database = try db.Db.openWithFile(allocator, db_path, wal_path);
+    defer database.close();
+
+    std.debug.print("=== Task Queue (persistent) ===\n", .{});
+
+    // ... rest of code unchanged
+}
+```
+
+Now your tasks survive crashes and restarts!
+
+<details>
+  <summary>Test crash safety</summary>
+
+  1. Run the program to create tasks
+  2. Kill it before completion (Ctrl+C)
+  3. Run again — tasks are still there!
+
+  NorthstarDB's commit stream ensures data durability.
+</details>
+
+## Step 3: Atomic Task Claims
+
+Multiple agents need to claim tasks without conflicts. NorthstarDB provides built-in atomic operations for this:
+
+```zig
+// Agent 1 claims task:1
+{
+    var write_txn = try database.beginWrite();
+    defer if (!write_txn.hasMutations()) write_txn.abort();
+
+    // Create task metadata first
+    try write_txn.put("task:1", "Process file upload");
+
+    // Atomically claim the task
+    const claimed = try write_txn.claimTask(1,  // task_id
+                                             1,  // agent_id
+                                             @intCast(std.time.nanoTimestamp())); // timestamp
+
+    if (claimed) {
+        std.debug.print("Agent 1 claimed task 1\n", .{});
+        _ = try write_txn.commit();
+    } else {
+        std.debug.print("Task 1 already claimed\n", .{});
+        write_txn.abort();
+    }
+}
+```
+
+### Try Concurrent Claims
+
+Test that duplicate claims are prevented:
+
+```zig
+// Agent 2 tries to claim the same task
+{
+    var write_txn = try database.beginWrite();
+    defer if (!write_txn.hasMutations()) write_txn.abort();
+
+    const claimed = try write_txn.claimTask(1,  // same task
+                                             2,  // different agent
+                                             @intCast(std.time.nanoTimestamp()));
+
+    if (claimed) {
+        std.debug.print("Agent 2 claimed task 1\n", .{});
+        _ = try write_txn.commit();
+    } else {
+        std.debug.print("Agent 2: Task 1 already taken\n", .{});
+        write_txn.abort();
+    }
+}
+```
+
+Agent 2's claim fails — the task is already taken!
+
+## Step 4: Task Completion
+
+When an agent finishes a task, mark it complete:
+
+```zig
+{
+    var write_txn = try database.beginWrite();
+    defer if (!write_txn.hasMutations()) write_txn.abort();
+
+    // Complete the task (only works if this agent claimed it)
+    const completed = try write_txn.completeTask(
+        1,  // task_id
+        1,  // agent_id (must be the claimer)
+        @intCast(std.time.nanoTimestamp())
+    );
+
+    if (completed) {
+        std.debug.print("Agent 1 completed task 1\n", .{});
+        _ = try write_txn.commit();
+    } else {
+        std.debug.print("Agent 1 cannot complete task 1\n", .{});
+        write_txn.abort();
+    }
+}
+```
+
+<details>
+  <summary>What completeTask() does internally</summary>
+
+  1. Verifies the claim exists for this agent+task
+  2. Marks task as completed
+  3. Removes the claim record
+  4. Clears the claimed index
+  5. Decrements agent's active task count
+
+  All in one atomic transaction!
+</details>
+
+## Step 5: Time Travel Queries
+
+Query historical state with `beginReadAt()`:
+
+```zig
+// Do some work
+var txn1 = try database.beginWrite();
+try txn1.put("task:1", "Process file upload");
+const txn1_id = try txn1.commit();
+
+var txn2 = try database.beginWrite();
+try txn2.put("task:2", "Generate thumbnails");
+const txn2_id = try txn2.commit();
+
+// Query state at txn1 (only task:1 exists)
+{
+    var read_txn = try database.beginReadAt(txn1_id);
+    defer read_txn.close();
+
+    const tasks = try read_txn.scan("task:");
+    defer allocator.free(tasks);
+
+    std.debug.print("State at txn {}:\n", .{txn1_id});
+    for (tasks) |task| {
+        std.debug.print("  {s}\n", .{task.key});
+    }
+    // Output: task:1 only
+}
+
+// Query current state (both tasks exist)
+{
+    var read_txn = try database.beginReadLatest();
+    defer read_txn.close();
+
+    const tasks = try read_txn.scan("task:");
+    defer allocator.free(tasks);
+
+    std.debug.print("Current state:\n", .{});
+    for (tasks) |task| {
+        std.debug.print("  {s}\n", .{task.key});
+    }
+    // Output: task:1 and task:2
+}
+```
+
+## Step 6: Monitoring with Agent Statistics
+
+Track active tasks per agent:
+
+```zig
+fn printAgentStats(database: *db.Db, allocator: std.mem.Allocator) !void {
+    var read_txn = try database.beginReadLatest();
+    defer read_txn.close();
+
+    std.debug.print("\nAgent Statistics:\n", .{});
+
+    // Scan for all agent stats
+    const stats = try read_txn.scan("agent:");
+    defer allocator.free(stats);
+
+    for (stats) |stat| {
+        // Format: "agent:{id}:active" -> "count"
+        std.debug.print("  {s}: {s} active tasks\n", .{ stat.key, stat.value });
+    }
+}
+```
+
+## Complete Working Example
+
+Here's the complete task queue system:
+
+```zig
+const std = @import("std");
+const db = @import("northstardb");
+
+fn printTasks(database: *db.Db, allocator: std.mem.Allocator) !void {
+    var read_txn = try database.beginReadLatest();
+    defer read_txn.close();
+
+    const tasks = try read_txn.scan("task:");
+    defer allocator.free(tasks);
+
+    std.debug.print("\nTasks:\n", .{});
+    if (tasks.len == 0) {
+        std.debug.print("  (no tasks)\n", .{});
+    } else {
+        for (tasks) |task| {
+            std.debug.print("  {s}: {s}\n", .{ task.key, task.value });
+        }
+    }
+}
+
+fn printAgentStats(database: *db.Db, allocator: std.mem.Allocator) !void {
+    var read_txn = try database.beginReadLatest();
+    defer read_txn.close();
+
+    const stats = try read_txn.scan("agent:");
+    defer allocator.free(stats);
+
+    std.debug.print("\nAgent Stats:\n", .{});
+    if (stats.len == 0) {
+        std.debug.print("  (no active agents)\n", .{});
+    } else {
+        for (stats) |stat| {
+            std.debug.print("  {s}: {s} active\n", .{ stat.key, stat.value });
+        }
+    }
+}
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const db_path = "taskqueue.db";
+    const wal_path = "taskqueue.wal";
+
+    var database = try db.Db.openWithFile(allocator, db_path, wal_path);
+    defer database.close();
+
+    std.debug.print("=== NorthstarDB Task Queue ===\n", .{});
+
+    // Create tasks
+    {
+        var w = try database.beginWrite();
+        try w.put("task:1", "Process file upload");
+        try w.put("task:2", "Generate thumbnails");
+        try w.put("task:3", "Send notifications");
+        _ = try w.commit();
+        std.debug.print("\nCreated 3 tasks\n", .{});
+    }
+
+    try printTasks(&database, allocator);
+
+    // Agent 1 claims tasks
+    std.debug.print("\n--- Agent 1 claiming tasks ---\n", .{});
+    {
+        var w = try database.beginWrite();
+        _ = try w.claimTask(1, 1, @intCast(std.time.nanoTimestamp()));
+        _ = try w.claimTask(2, 1, @intCast(std.time.nanoTimestamp()));
+        _ = try w.commit();
+    }
+    try printAgentStats(&database, allocator);
+
+    // Agent 2 tries to claim (fails for already-claimed tasks)
+    std.debug.print("\n--- Agent 2 claiming tasks ---\n", .{});
+    {
+        var w = try database.beginWrite();
+        const claimed = try w.claimTask(1, 2, @intCast(std.time.nanoTimestamp()));
+        if (!claimed) {
+            std.debug.print("  Task 1 already claimed by Agent 1\n", .{});
+        }
+        _ = try w.claimTask(3, 2, @intCast(std.time.nanoTimestamp()));
+        _ = try w.commit();
+    }
+    try printAgentStats(&database, allocator);
+
+    // Complete some tasks
+    std.debug.print("\n--- Completing tasks ---\n", .{});
+    {
+        var w = try database.beginWrite();
+        _ = try w.completeTask(1, 1, @intCast(std.time.nanoTimestamp()));
+        _ = try w.completeTask(3, 2, @intCast(std.time.nanoTimestamp()));
+        _ = try w.commit();
+        std.debug.print("  Completed tasks 1 and 3\n", .{});
+    }
+    try printAgentStats(&database, allocator);
+
+    std.debug.print("\n=== Demo complete ===\n", .{});
+}
+```
+
+## Key Takeaways
+
+<CardGrid stagger>
+	<Card title="Atomic Operations" icon="lock">
+		<code>claimTask()</code> and <code>completeTask()</code> provide compare-and-swap semantics. No race conditions, no duplicate claims.
+	</Card>
+	<Card title="Read-Your-Writes" icon="eye">
+		Write transactions see their own mutations before commit. Check claims, update state, all atomically.
+	</Card>
+	<Card title="Time Travel" icon="clock">
+		<code>beginReadAt(txn_id)</code> queries historical snapshots. Audit "who claimed what when".
+	</Card>
+	<Card title="Crash Safety" icon="shield">
+		File-based databases persist all commits. Survive crashes, restarts, power loss.
+	</Card>
+</CardGrid>
+
+## Next Steps
+
+Now that you've built a complete application, explore:
+
+- **Range queries** — Use `iteratorRange()` for sorted task iteration
+- **Batch operations** — Process multiple tasks per transaction
+- **Monitoring** — Build dashboards with prefix scans
+- **AI features** — Enable plugins for intelligent task prioritization
+
+## Common Patterns
+
+### Pattern: Task Retry with Backoff
+
+```zig
+fn claimWithRetry(database: *db.Db, task_id: u64, agent_id: u64, max_retries: u32) !bool {
+    var retry: u32 = 0;
+    while (retry < max_retries) {
+        var w = try database.beginWrite();
+        const claimed = try w.claimTask(task_id, agent_id, @intCast(std.time.nanoTimestamp()));
+
+        if (claimed) {
+            _ = try w.commit();
+            return true;
+        }
+
+        w.abort();
+        retry += 1;
+        std.time.sleep(1_000_000_000 * retry); // 1s, 2s, 3s...
+    }
+
+    return error.MaxRetriesExceeded;
+}
+```
+
+### Pattern: Task Prioritization
+
+```zig
+// Store tasks with priority in key
+try w.put("task:high:1", "Process payment");
+try w.put("task:low:2", "Generate report");
+
+// Claim high-priority tasks first
+const high_priority = try read_txn.scan("task:high:");
+```
+
+### Pattern: Batch Processing
+
+```zig
+// Claim multiple tasks atomically
+var w = try database.beginWrite();
+_ = try w.claimTask(1, agent_id, now);
+_ = try w.claimTask(2, agent_id, now);
+_ = try w.claimTask(3, agent_id, now);
+_ = try w.commit();
+
+// Process...
+// Complete all when done
+var wc = try database.beginWrite();
+_ = try wc.completeTask(1, agent_id, complete_time);
+_ = try wc.completeTask(2, agent_id, complete_time);
+_ = try wc.completeTask(3, agent_id, complete_time);
+_ = try wc.commit();
+```
+
+## Troubleshooting
+
+<details>
+  <summary>"WriteBusy" error</summary>
+
+  **Problem:** Another write transaction is active.
+
+  **Solution:** Only one write transaction at a time. Commit or abort before starting another.
+</details>
+
+<details>
+  <summary>Task claim succeeds but data is missing</summary>
+
+  **Problem:** Forgetting to create task metadata before claiming.
+
+  **Solution:** Always `put("task:N", metadata)` before `claimTask(N, ...)`.
+</details>
+
+<details>
+  <summary>Time travel returns wrong data</summary>
+
+  **Problem:** Querying a txn_id that doesn't exist or is too old.
+
+  **Solution:** Use valid transaction IDs from previous commits. Snapshot registry cleans up old snapshots.
+</details>
+
+## What's Next?
+
+Congratulations on building your first NorthstarDB application! Continue your journey:
+
+<CardGrid>
+	<Card title="Core Concepts" icon="open-book">
+		Deep dive into <a href="/concepts/mvcc/">MVCC</a> and <a href="/concepts/architecture/">architecture</a>.
+	</Card>
+	<Card title="API Reference" icon="code">
+		Full <a href="/reference/db-api/">Db API</a> documentation.
+	</Card>
+	<Card title="Advanced Features" icon="star">
+		<a href="/ai/overview">AI intelligence</a>, plugins, and cartridges.
+	</Card>
+	<Card title="Benchmarking" icon="chart">
+		<a href="/guides/benchmarking/">Performance testing</a> and optimization.
+	</Card>
+</CardGrid>
