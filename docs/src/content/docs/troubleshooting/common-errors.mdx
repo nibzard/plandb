@@ -1,0 +1,590 @@
+---
+title: Common Errors
+description: Error catalog with solutions and prevention tips
+sidebar_label: Common Errors
+---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+
+This guide catalogs common errors you may encounter when working with NorthstarDB, along with their root causes, solutions, and prevention tips.
+
+## Quick Reference
+
+| Error | Category | Quick Fix |
+|-------|----------|-----------|
+| `WriteBusy` | Concurrency | Close existing write transaction |
+| `SnapshotNotFound` | Time-travel | Use valid txn_id from registry |
+| `InvalidMagic` | Corrupt file | File format mismatch |
+| `BufferTooSmall` | API usage | Use larger buffer |
+| `ProviderUnavailable` | AI/LLM | Check API key and network |
+
+---
+
+## Database Errors
+
+### `WriteBusy`
+
+**Symptoms:**
+```
+error.WriteBusy
+```
+
+**When it occurs:**
+- Attempting to begin a write transaction while another write transaction is active
+- NorthstarDB enforces single-writer concurrency
+
+**Root cause:**
+The database only allows one active write transaction at a time. A previous write transaction wasn't committed or aborted.
+
+**Solution:**
+```zig
+// Bad: Starting multiple writers
+var w1 = try db.beginWrite();
+_ = try db.beginWrite(); // ERROR: WriteBusy
+
+// Good: Commit or abort first
+var w1 = try db.beginWrite();
+try w1.put("key", "value");
+_ = try w1.commit(); // Releases lock
+
+var w2 = try db.beginWrite(); // OK now
+```
+
+**Prevention:**
+- Always `commit()` or `abort()` write transactions when done
+- Use defer blocks to ensure cleanup: `defer w.abort()`
+- Consider using an arena allocator for transaction lifetimes
+
+---
+
+### `SnapshotNotFound`
+
+**Symptoms:**
+```
+error.SnapshotNotFound
+```
+
+**When it occurs:**
+- Calling `beginReadAt(txn_id)` with an invalid or expired transaction ID
+- Requesting a snapshot that has been cleaned up from the registry
+
+**Root cause:**
+The snapshot registry doesn't have a record for the requested transaction ID.
+
+**Solution:**
+```zig
+// Check if snapshot exists first
+if (db.snapshot_registry) |*registry| {
+    if (registry.hasSnapshot(txn_id)) {
+        var r = try db.beginReadAt(txn_id);
+        defer r.close();
+        // Use snapshot
+    } else {
+        std.log.warn("Snapshot {} not found, using latest", .{txn_id});
+        var r = try db.beginReadLatest();
+        defer r.close();
+        // Use latest snapshot
+    }
+}
+```
+
+**Prevention:**
+- Use `beginReadLatest()` for most use cases
+- Store transaction IDs persistently if you need time-travel queries
+- Configure snapshot retention to match your query patterns
+
+---
+
+## Storage Errors
+
+### `InvalidMagic`
+
+**Symptoms:**
+```
+error.InvalidMagic
+```
+
+**When it occurs:**
+- Opening a file that isn't a valid NorthstarDB database
+- File corruption in the page header
+- Opening a database created by a different storage engine
+
+**Root cause:**
+The magic number (`0x4E534442` for "NSDB") doesn't match at the start of a page.
+
+**Solution:**
+```zig
+// Validate file before opening
+const file = std.fs.cwd().openFile(db_path, .{ .mode = .read_only }) catch |err| switch (err) {
+    error.FileNotFound => {
+        std.log.info("Database doesn't exist, creating new", .{});
+        // Create new database
+    },
+    else => return err,
+};
+
+// For existing files, verify it's a NorthstarDB file
+// (Read first page and check magic)
+```
+
+**Prevention:**
+- Always use `.db` extension for database files
+- Don't manually edit database files
+- Use proper shutdown procedures to avoid corruption
+
+---
+
+### `ChecksumMismatch`
+
+**Symptoms:**
+```
+error.ChecksumMismatch
+```
+
+**When it occurs:**
+- Reading a corrupted page
+- Hardware-level storage corruption
+- Incomplete writes due to crash/power failure
+
+**Root cause:**
+The stored CRC32C checksum doesn't match the calculated checksum for page data.
+
+**Solution:**
+```zig
+// When opening database with suspected corruption
+var pager = pager.Pager.open(db_path, allocator) catch |err| switch (err) {
+    error.ChecksumMismatch => {
+        std.log.err("Corruption detected in database file", .{});
+        // Option 1: Restore from backup
+        // Option 2: Run recovery/validation tools
+        // Option 3: Export recoverable data and rebuild
+        return error.DatabaseCorrupted;
+    },
+    else => return err,
+};
+```
+
+**Prevention:**
+- Use file-based databases with proper fsync (NorthstarDB handles this)
+- Ensure adequate disk space before operations
+- Don't kill processes with active database writes
+- Consider using SSDs with power-loss protection
+
+---
+
+## API Usage Errors
+
+### `BufferTooSmall`
+
+**Symptoms:**
+```
+error.BufferTooSmall
+```
+
+**When it occurs:**
+- Providing a buffer that's too small for the requested value
+- Common with `getBtreeValue()` and iterator operations
+
+**Root cause:**
+The destination buffer can't hold the data being read.
+
+**Solution:**
+```zig
+// Bad: Fixed buffer too small
+var buffer: [256]u8 = undefined;
+_ = try pager.getBtreeValue(key, &buffer); // Fails if value > 256 bytes
+
+// Good: Use stack-allocated large buffer or dynamic allocation
+var value_buffer: [4096]u8 = undefined; // Larger buffer
+if (try pager.getBtreeValue(key, &value_buffer)) |value| {
+    // Use value
+}
+
+// Or: Query size first if supported
+const value_size = try pager.getValueSize(key);
+var buffer = try allocator.alloc(u8, value_size);
+defer allocator.free(buffer);
+_ = try pager.getBtreeValue(key, buffer);
+```
+
+**Prevention:**
+- Use generous stack buffer sizes (4KB-16KB) for most operations
+- Handle this error gracefully by retrying with larger buffer
+- Consider max value sizes in your schema design (default: 16MB)
+
+---
+
+### `InMemoryIteratorNotSupported`
+
+**Symptoms:**
+```
+error.InMemoryIteratorNotSupported
+```
+
+**When it occurs:**
+- Calling `iterator()` on an in-memory database
+- Using file-specific APIs with in-memory mode
+
+**Root cause:**
+The iterator API is only implemented for file-based B+tree storage.
+
+**Solution:**
+```zig
+// For in-memory databases, use scan() instead
+var r = try db.beginReadLatest();
+defer r.close();
+
+// Bad: iterator() not supported
+var iter = try r.iterator(); // ERROR
+
+// Good: use scan() for prefix scans
+const items = try r.scan("prefix:");
+defer allocator.free(items);
+for (items) |kv| {
+    // Process kv.key and kv.value
+}
+```
+
+**Prevention:**
+- Use `scan()` for in-memory iteration
+- Switch to file-based database if you need full range iteration
+- Check `db.pager != null` before using iterator APIs
+
+---
+
+## AI/LLM Plugin Errors
+
+### `ProviderUnavailable`
+
+**Symptoms:**
+```
+error.ProviderUnavailable
+```
+
+**When it occurs:**
+- LLM provider API is down or unreachable
+- Network connectivity issues
+- Invalid API endpoint configuration
+
+**Root cause:**
+The configured LLM provider couldn't be contacted.
+
+**Solution:**
+```zig
+const plugin_config = plugins.PluginConfig{
+    .llm_provider = .{
+        .provider_type = "openai",
+        .model = "gpt-4",
+        .base_url = "https://api.openai.com/v1",
+        .api_key = api_key,
+        .timeout_ms = 30000,
+        .max_retries = 3,
+    },
+    .fallback_on_error = true, // Graceful degradation
+};
+
+// Check connectivity
+if (manager.llm_client) |client| {
+    const result = client.callFunction(...) catch |err| switch (err) {
+        error.ProviderUnavailable => {
+            std.log.warn("LLM provider unavailable, using fallback", .{});
+            // Continue without AI features
+        },
+        else => return err,
+    };
+}
+```
+
+**Prevention:**
+- Enable `fallback_on_error` in plugin config
+- Use reasonable timeout values (30s default)
+- Configure retry logic for transient failures
+- Implement graceful degradation without AI features
+
+---
+
+### `MissingApiKey`
+
+**Symptoms:**
+```
+error.MissingApiKey
+```
+
+**When it occurs:**
+- LLM provider configuration doesn't include an API key
+- API key environment variable not set
+
+**Root cause:**
+Provider authentication credentials are missing.
+
+**Solution:**
+```zig
+// Read API key from environment
+const api_key = std.process.getEnvVarOwned(allocator, "OPENAI_API_KEY") catch |err| switch (err) {
+    error.EnvironmentVariableNotFound => {
+        std.log.err("OPENAI_API_KEY not set", .{});
+        return error.MissingApiKey;
+    },
+    else => return err,
+};
+
+const plugin_config = plugins.PluginConfig{
+    .llm_provider = .{
+        .provider_type = "openai",
+        .api_key = api_key,
+        // ... other config
+    },
+};
+```
+
+**Prevention:**
+- Use environment variables for API keys
+- Validate configuration before initializing plugin manager
+- Document required environment variables in README
+- Consider using local models to avoid API keys
+
+---
+
+### `QuotaExceeded`
+
+**Symptoms:**
+```
+error.QuotaExceeded
+```
+
+**When it occurs:**
+- LLM API rate limits exceeded
+- Monthly token quota reached
+- Billing issues
+
+**Root cause:**
+Provider-side limits on API usage.
+
+**Solution:**
+```zig
+// Implement rate limiting
+const rate_limiter = RateLimiter.init(
+    max_requests_per_minute: 60,
+    max_tokens_per_minute: 90000,
+);
+
+// Check quota before calling
+if (!rate_limiter.canMakeRequest()) {
+    std.log.warn("Rate limit reached, backing off", .{});
+    std.time.sleep(60000); // Wait 1 minute
+}
+
+// Or: Use fallback to local model
+if (llm_call) |result| {
+    // Use result
+} else |err| switch (err) {
+    error.QuotaExceeded => {
+        std.log.warn("API quota exceeded, switching to local model", .{});
+        result = try local_model.infer(...);
+    },
+}
+```
+
+**Prevention:**
+- Monitor API usage and set alerts
+- Implement caching for common queries
+- Use local models for non-critical operations
+- Batch operations to reduce API calls
+
+---
+
+## Cartridge Errors
+
+### `InvalidMagic` (Cartridge)
+
+**Symptoms:**
+```
+error.InvalidMagic (from cartridges)
+```
+
+**When it occurs:**
+- Loading a corrupted cartridge file
+- Opening a file with wrong magic number
+
+**Root cause:**
+Cartridge magic number (`0x43525447` for "CRTG") doesn't match.
+
+**Solution:**
+```zig
+const cartridge = try cartridges.EmbeddingsCartridge.load(allocator, path) catch |err| switch (err) {
+    error.InvalidMagic => {
+        std.log.err("Not a valid cartridge file: {s}", .{path});
+        // Verify file path and integrity
+        // May need to rebuild cartridge from source data
+        return error.InvalidCartridge;
+    },
+    else => return err,
+};
+```
+
+**Prevention:**
+- Use `.crt` or `.cartridge` file extensions
+- Validate cartridge files before loading
+- Implement cartridge health checks
+- Keep backup of cartridge source data
+
+---
+
+### `ChecksumMismatch` (Cartridge)
+
+**Symptoms:**
+```
+error.ChecksumMismatch (from cartridges)
+```
+
+**When it occurs:**
+- Cartridge file corruption
+- Incomplete write during cartridge save
+
+**Root cause:**
+Cartridge header checksum validation failed.
+
+**Solution:**
+```zig
+// Validate before loading
+const file = try std.fs.cwd().openFile(path, .{ .mode = .read_only });
+defer file.close();
+
+const header = try cartridges.CartridgeHeader.deserialize(reader);
+if (header.validate()) {
+    // Load cartridge
+} else {
+    std.log.err("Cartridge checksum mismatch: {s}", .{path});
+    // Rebuild from source data
+}
+```
+
+**Prevention:**
+- Ensure disk has space before saving cartridges
+- Don't interrupt cartridge rebuild operations
+- Use atomic write patterns (write to temp, then rename)
+- Verify checksums after cartridge operations
+
+---
+
+## Transaction Errors
+
+### `TransactionNotActive`
+
+**Symptoms:**
+```
+error.TransactionNotActive
+```
+
+**When it occurs:**
+- Adding mutations after calling `prepare()`
+- Modifying transaction after `commit()` or `abort()`
+
+**Root cause:**
+Transaction is no longer in the `active` state.
+
+**Solution:**
+```zig
+var ctx = try txn.TransactionContext.init(allocator, txn_id, parent_txn_id);
+defer ctx.deinit();
+
+// Good: Do all mutations before prepare()
+try ctx.put("key1", "value1");
+try ctx.put("key2", "value2");
+try ctx.delete("old_key");
+
+try ctx.prepare(); // Moves to preparing state
+_ = try ctx.commit(); // Moves to committed state
+
+// Bad: Can't mutate after prepare()
+try ctx.prepare();
+try ctx.put("key3", "value3"); // ERROR: TransactionNotActive
+```
+
+**Prevention:**
+- Complete all mutations before calling `prepare()`
+- Use state checks if needed: `if (ctx.state == .active)`
+- Follow the transaction lifecycle: active → prepare → commit
+
+---
+
+### `TransactionNotPreparing`
+
+**Symptoms:**
+```
+error.TransactionNotPreparing
+```
+
+**When it occurs:**
+- Calling `commit()` without first calling `prepare()`
+- Calling `commit()` twice
+
+**Root cause:**
+Transaction isn't in the `preparing` state required for commit.
+
+**Solution:**
+```zig
+// Correct two-phase commit sequence
+var ctx = try txn.TransactionContext.init(allocator, txn_id, parent_txn_id);
+defer ctx.deinit();
+
+// Phase 1: Active mutations
+try ctx.put("key", "value");
+
+// Phase 2: Prepare
+try ctx.prepare();
+
+// Phase 3: Commit
+_ = try ctx.commit();
+
+// Wrong: Skipping prepare()
+try ctx.put("key", "value");
+_ = try ctx.commit(); // ERROR: TransactionNotPreparing
+```
+
+**Prevention:**
+- Always call `prepare()` before `commit()`
+- Never skip phases in two-phase commit
+- Validate transaction state before state transitions
+
+---
+
+## Benchmark Errors
+
+### `BaselineRequired`
+
+**Symptoms:**
+```
+error.BaselineRequired
+```
+
+**When it occurs:**
+- Running `bench compare` without specifying baseline directory
+- Missing baseline files for comparison
+
+**Root cause:**
+Comparison operation needs baseline JSON files.
+
+**Solution:**
+```bash
+# Generate baseline first
+zig build run -- run --repeats 5 --output baselines/my_baseline
+
+# Then compare against it
+zig build run -- compare baselines/my_baseline results/current
+```
+
+**Prevention:**
+- Always create baseline before doing comparisons
+- Store baselines in version control for regression testing
+- Use consistent naming for baseline directories
+
+---
+
+## See Also
+
+- [Performance Troubleshooting](./performance-troubleshooting.mdx) - Diagnose slow queries and operations
+- [Corruption Recovery](./corruption-recovery.mdx) - Recover from database corruption
+- [Benchmarking Guide](../guides/benchmarking.mdx) - Benchmark best practices
+- [Transaction Semantics](../specs/semantics_v0.md) - MVCC and transaction guarantees

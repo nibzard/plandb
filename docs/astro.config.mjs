@@ -62,6 +62,13 @@ export default defineConfig({
 						{ label: 'Structured Memory', slug: 'ai/structured-memory' },
 					],
 				},
+				{
+					label: 'Troubleshooting',
+					items: [
+						{ label: 'Overview', slug: 'troubleshooting/index' },
+						{ label: 'Common Errors', slug: 'troubleshooting/common-errors' },
+					],
+				},
 			],
 			head: [
 				{

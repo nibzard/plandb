@@ -1,0 +1,106 @@
+---
+title: Troubleshooting
+description: Debug and resolve common issues
+sidebar_label: Troubleshooting
+---
+
+This section helps you diagnose and resolve issues when working with NorthstarDB.
+
+## Quick Diagnosis
+
+| Problem | Guide |
+|---------|-------|
+| Error messages you don't understand | [Common Errors](./common-errors.mdx) |
+| Slow queries or high latency | [Performance Troubleshooting](./performance-troubleshooting.mdx) |
+| Database won't open | [Common Errors](./common-errors.mdx#invalidmagic) |
+| Suspected data corruption | [Corruption Recovery](./corruption-recovery.mdx) |
+| Transaction conflicts | [Common Errors](./common-errors.mdx#writebusy) |
+
+## Troubleshooting Guides
+
+### [Common Errors](./common-errors.mdx)
+
+A comprehensive catalog of error messages you may encounter, including:
+- Database errors (`WriteBusy`, `SnapshotNotFound`)
+- Storage errors (`InvalidMagic`, `ChecksumMismatch`)
+- API usage errors (`BufferTooSmall`)
+- AI/LLM plugin errors (`ProviderUnavailable`, `MissingApiKey`)
+- Transaction errors (`TransactionNotActive`)
+
+Each error includes symptoms, root causes, solutions, and prevention tips.
+
+### Performance Troubleshooting
+
+> **TODO**: This guide is not yet written.
+
+Will cover:
+- Diagnosing slow queries
+- Analyzing throughput bottlenecks
+- Identifying lock contention
+- Memory usage optimization
+- Benchmarking best practices
+
+### Corruption Recovery
+
+> **TODO**: This guide is not yet written.
+
+Will cover:
+- Detecting database corruption
+- Recovery procedures for different failure modes
+- Exporting data from corrupted databases
+- Rebuilding databases from backups
+- Prevention strategies
+
+## Getting Help
+
+If you can't resolve your issue using these guides:
+
+1. **Check the tests** - The test files in `src/` often show correct usage patterns
+2. **Review the specs** - Specifications in `spec/` document expected behavior
+3. **Search issues** - Check [GitHub Issues](https://github.com/yourusername/plandb/issues)
+4. **Ask the community** - Open a new issue with details about your problem
+
+When reporting issues, include:
+- NorthstarDB version (git commit hash)
+- Error message and stack trace
+- Minimal reproduction code
+- System information (OS, Zig version)
+
+## Debug Mode
+
+For development and debugging, you can enable additional logging:
+
+```zig
+// In your main.zig or test file
+const std = @import("std");
+
+// Enable debug logging
+pub const std_options = struct {
+    pub const log_level = .debug;
+};
+
+// Now all NorthstarDB logs will be verbose
+var db = try db.Db.open(allocator);
+```
+
+## Validation Tools
+
+NorthstarDB includes validation utilities:
+
+```zig
+const validator = @import("validator.zig");
+
+// Validate entire database
+const result = validator.validateDatabase(pager);
+if (!result.valid) {
+    std.log.err("Validation failed: {s}", .{result.errors});
+}
+```
+
+See [Validation API](../reference/validation.mdx) for details.
+
+## See Also
+
+- [Testing Guide](../guides/testing.md) - Writing tests and property-based validation
+- [Benchmarking Guide](../guides/benchmarking.md) - Performance measurement
+- [Development Setup](../guides/dev-setup.md) - Setting up your development environment
