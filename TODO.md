@@ -3,6 +3,17 @@
 Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · 🟢 P3 (low)
 
 **Completed 2025-12-28:**
+- [ ✅ ] 🔴 Implement Phase 1: Review & Observability
+  - **COMPLETED**: Event append + storage primitive (append-only, bounded payloads)
+  - **COMPLETED**: Plugin hooks for agent sessions + operations
+  - **COMPLETED**: CodeReviewCartridge (store/retrieve review notes, link to commits/files/symbols)
+  - **COMPLETED**: Extended NL intent routing for review/observability queries
+  - **FILES MODIFIED**: src/events/index.zig, src/events/storage.zig, src/events/types.zig
+  - **FILES MODIFIED**: src/plugins/manager.zig, src/plugins/testing.zig
+  - **FILES MODIFIED**: src/cartridges/code_review.zig
+  - **FILES MODIFIED**: src/queries/natural_language.zig
+  - **COMMIT**: 35e40a6
+  - **STATUS**: Phase 1 foundation complete, 2120 lines added across 7 files
 - [ ✅ ] 🔴 Write 5-minute quick start guide
   - **COMPLETED**: Created docs/src/content/docs/quickstart.mdx with comprehensive quick start
   - **COMPLETED**: Prerequisites checklist (Zig 0.13.0, system requirements)
@@ -1831,6 +1842,50 @@ Transform NorthstarDB's scattered markdown files into a modern, developer-friend
   - File: docs/branding.md
   - Additional file: CONTRIBUTORS.md - Contributor acknowledgment template
   - Completed 2025-12-28
+
+## Phase 9 — Review & Observability
+
+*Enable AI agents to track their own sessions, review code changes, and provide observability into autonomous operations.*
+
+### Phase 1: Foundation (COMPLETED 2025-12-28)
+- [x] 🔴 Implement event append + storage primitive
+  - **COMPLETED**: Append-only event log with bounded payloads
+  - **COMPLETED**: Created src/events/index.zig with event management API
+  - **COMPLETED**: Created src/events/storage.zig with persistent event storage
+  - **COMPLETED**: Created src/events/types.zig with event type definitions
+  - **COMPLETED**: Event types: agent_session, operation, code_review, system_event
+  - **COMPLETED**: Payload validation and size limits (max 4KB per event)
+  - **COMPLETED**: Efficient append operations with batch support
+  - **STATUS**: Event system operational and tested
+  - **COMMIT**: 35e40a6
+- [x] 🔴 Implement plugin hooks for agent sessions + operations
+  - **COMPLETED**: Created src/plugins/manager.zig with plugin system
+  - **COMPLETED**: Plugin lifecycle: init, pre_txn, post_txn, shutdown
+  - **COMPLETED**: Hook types: session_start, session_end, operation_start, operation_end
+  - **COMPLETED**: Automatic event logging via plugin hooks
+  - **COMPLETED**: Plugin registration and management
+  - **COMPLETED**: Testing utilities in src/plugins/testing.zig
+  - **STATUS**: Plugin system fully operational
+  - **COMMIT**: 35e40a6
+- [x] 🔴 Implement CodeReviewCartridge for review storage
+  - **COMPLETED**: Created src/cartridges/code_review.zig with complete review cartridge
+  - **COMPLETED**: Store/retrieve review notes with metadata
+  - **COMPLETED**: Link reviews to commits, files, and symbols
+  - **COMPLETED**: Query reviews by commit, file, symbol, date range
+  - **COMPLETED**: Review note format: title, content, severity, tags
+  - **COMPLETED**: Efficient indexing for fast lookups
+  - **STATUS**: Code review cartridge operational
+  - **COMMIT**: 35e40a6
+- [x] 🔴 Extend NL intent routing for review/observability queries
+  - **COMPLETED**: Extended src/queries/natural_language.zig with new intents
+  - **COMPLETED**: Intent types: find_reviews, agent_session_summary, operation_history
+  - **COMPLETED**: Natural language parsing for review queries
+  - **COMPLETED**: Structured query generation from NL input
+  - **COMPLETED**: Support for filtering by severity, date, author
+  - **STATUS**: NL query routing extended for review/observability
+  - **COMMIT**: 35e40a6
+- **PHASE 1 DELIVERABLES COMPLETE**: All 4 core components implemented
+- **NEXT PHASE**: Advanced analytics, visualizations, multi-agent collaboration
 
 ## Documentation Success Criteria
 
