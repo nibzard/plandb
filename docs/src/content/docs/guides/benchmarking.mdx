@@ -1,0 +1,481 @@
+---
+title: Benchmarking Guide
+description: Comprehensive guide to benchmarking in NorthstarDB, including running benchmarks, interpreting results, adding new benchmarks, and CI baseline management.
+---
+
+# Benchmarking Guide
+
+NorthstarDB's benchmark system is the **source of truth** for performance. All performance claims must be backed by reproducible benchmarks.
+
+## Table of Contents
+
+- [Benchmark Philosophy](#benchmark-philosophy)
+- [Running Benchmarks](#running-benchmarks)
+- [Interpreting Results](#interpreting-results)
+- [Adding New Benchmarks](#adding-new-benchmarks)
+- [CI Baseline Management](#ci-baseline-management)
+- [Benchmark Suites](#benchmark-suites)
+
+## Benchmark Philosophy
+
+NorthstarDB follows these benchmarking principles:
+
+1. **Benchmarks are law** - "You're allowed to implement the DB only if the benchmarks and tests are green"
+
+2. **Microbenchmark first** - Use microbenchmarks to profile and optimize before measuring macro workloads
+
+3. **Reproducible** - All benchmarks must be reproducible with minimal variance
+
+4. **Regression gates** - CI prevents performance regressions beyond 5% throughput or +10% p99 latency
+
+5. **Critical benchmarks** - Core performance-critical benchmarks are marked and must stay green
+
+## Running Benchmarks
+
+### Quick Start
+
+```bash
+# Build benchmark harness
+zig build
+
+# Run all benchmarks with default settings
+zig-out/bin/bench run
+
+# Run with 10 repeats for more statistical significance
+zig-out/bin/bench run --repeats 10
+```
+
+### Basic Commands
+
+| Command | Description |
+|---------|-------------|
+| `run` | Run benchmarks with options |
+| `compare <baseline> <candidate>` | Compare two result directories |
+| `gate <baseline-dir>` | Check if results meet baseline thresholds |
+| `--list` | List all registered benchmarks |
+
+### Command Options
+
+```bash
+zig-out/bin/bench run [options]
+
+Options:
+  --repeats <n>           Number of repeats (default: 5)
+  --filter <pattern>      Filter benchmarks by name pattern
+  --suite <type>          Filter by suite: micro|macro|hardening
+  --output <dir>          Output directory for JSON results
+  --baseline <dir>        Baseline directory for comparison
+  --csv                   Export results as CSV files
+  --seed <n>              Random seed for reproducibility
+  --warmup-ops <n>        Warmup operations before measurement
+  --warmup-ns <n>         Warmup time in nanoseconds
+```
+
+### Filter Benchmarks
+
+```bash
+# Run only pager benchmarks
+zig-out/bin/bench run --filter "pager"
+
+# Run specific benchmark
+zig-out/bin/bench run --filter "point_get_hot"
+
+# Run only micro benchmarks
+zig-out/bin/bench run --suite micro
+
+# Run multiple patterns
+zig-out/bin/bench run --filter "btree|mvcc"
+```
+
+### Suite Types
+
+| Suite | Description | Examples |
+|-------|-------------|----------|
+| **micro** | Low-level operations | Pager I/O, B+tree operations |
+| **macro** | Real-world workloads | Task queue, knowledge graph |
+| **hardening** | Crash recovery | Crash simulation, replay |
+
+### Example Sessions
+
+```bash
+# Quick development iteration
+zig-out/bin/bench run --filter "point_get" --repeats 3
+
+# Full performance validation
+zig-out/bin/bench run --repeats 10 --output results/
+
+# Compare against baseline
+zig-out/bin/bench run --baseline bench/baselines/dev_nvme/
+
+# Run with warmup for cache hot benchmarks
+zig-out/bin/bench run --warmup-ops 1000 --filter "cache"
+```
+
+## Interpreting Results
+
+### Result Structure
+
+Each benchmark produces a JSON result:
+
+```json
+{
+  "bench_name": "bench/btree/point_get_hot_1m",
+  "profile": {
+    "name": "dev_nvme",
+    "cpu_model": "AMD Ryzen 9 7950X",
+    "core_count": 16,
+    "ram_gb": 64.0
+  },
+  "results": {
+    "ops_total": 1000000,
+    "duration_ns": 123456789,
+    "ops_per_sec": 8100617.4,
+    "latency_ns": {
+      "p50": 98,
+      "p95": 145,
+      "p99": 201,
+      "max": 512
+    },
+    "bytes": {
+      "read_total": 16384000000,
+      "write_total": 0
+    },
+    "io": {
+      "fsync_count": 0,
+      "open_count": 1,
+      "close_count": 1
+    },
+    "alloc": {
+      "alloc_count": 1000002,
+      "free_count": 1000000,
+      "bytes_allocated": 81920000
+    }
+  }
+}
+```
+
+### Key Metrics
+
+| Metric | What It Measures | Good Range |
+|--------|-----------------|------------|
+| **ops_per_sec** | Throughput | Higher is better |
+| **latency_ns.p50** | Median latency | Lower is better |
+| **latency_ns.p99** | 99th percentile latency | Lower is better |
+| **alloc.bytes_allocated** | Memory allocated | Lower is better |
+| **io.fsync_count** | Disk syncs | Lower for write-heavy |
+
+### Throughput vs Latency
+
+```
+ops_per_sec = ops_total / (duration_ns / 1_000_000_000)
+
+High throughput  = High ops_per_sec
+Low latency     = Low latency_ns.p50/p99
+
+Example:
+  1M ops in 0.123 sec = 8.1M ops/sec
+  p99 latency of 201 ns = very fast
+```
+
+### Regression Thresholds
+
+| Metric | Threshold | Rationale |
+|--------|-----------|-----------|
+| Throughput | -5% | Guard against slowdowns |
+| p99 Latency | +10% | Guard against tail latency spikes |
+| Memory | +20% | Guard against leaks |
+
+### Comparing Results
+
+```bash
+# Compare two runs
+zig-out/bin/bench compare baseline_dir candidate_dir
+
+# Output shows:
+# Benchmark | Baseline | Candidate | Delta | Status
+# -----------|----------|-----------|-------|--------
+# point_get  | 8.1M/s   | 7.9M/s    | -2.5% | PASS
+```
+
+### Stability Analysis
+
+```json
+"stability": {
+  "coefficient_of_variation": 0.023,
+  "is_stable": true,
+  "repeat_count": 5,
+  "threshold_used": 0.05
+}
+```
+
+- **Coefficient of Variation (CV)**: Standard deviation / mean
+- **Stable**: CV < 5% threshold
+- **Unstable**: High variance, investigate environment
+
+## Adding New Benchmarks
+
+### Benchmark Template
+
+```zig
+//! Benchmark: Short description
+//!
+//! What: One sentence explaining what's measured
+//! Why: Why this metric matters
+
+const std = @import("std");
+const types = @import("bench/types.zig");
+const db = @import("../db.zig");
+
+fn benchMyFeature(allocator: std.mem.Allocator, args: *const types.BenchmarkArgs) !types.BenchmarkResult {
+    _ = allocator;
+    _ = args;
+
+    // Setup
+    const iterations = 10000;
+    var timer = try std.time.Timer.start();
+
+    // Warmup (optional)
+    for (0..100) |_| {
+        // warmup operations
+    }
+
+    // Measurement
+    timer.start();
+    for (0..iterations) |_| {
+        // operation to measure
+    }
+    const elapsed_ns = timer.read();
+
+    // Return results
+    return types.BenchmarkResult{
+        .ops_total = iterations,
+        .duration_ns = elapsed_ns,
+        .ops_per_sec = @as(f64, @floatFromInt(iterations)) / (@as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000),
+        .latency_ns = .{
+            .p50 = elapsed_ns / iterations,
+            .p95 = elapsed_ns / iterations,
+            .p99 = elapsed_ns / iterations,
+            .max = elapsed_ns,
+        },
+        // ... other fields
+    };
+}
+```
+
+### Register Benchmark
+
+```zig
+// In src/bench/suite.zig
+
+pub fn registerBenchmarks(bench_runner: *runner.Runner) !void {
+    try bench_runner.addBenchmark(.{
+        .name = "bench/myfeature/my_operation",
+        .run_fn = benchMyFeature,
+        .critical = true,  // Marks as performance-critical
+        .suite = .micro,   // or .macro, .hardening
+    });
+}
+```
+
+### Benchmark Naming
+
+```
+Format: bench/<component>/<operation>_<condition>_<scale>
+
+Examples:
+  bench/pager/open_close_empty
+  bench/btree/point_get_hot_1m
+  bench/mvcc/readers_256_point_get_hot
+  bench/log/append_commit_record
+```
+
+### Benchmark Types
+
+```zig
+// Throughput benchmark (ops/sec)
+fn benchThroughput() !BenchmarkResult {
+    const iterations = 1_000_000;
+    const start = timer.read();
+
+    for (0..iterations) |_| {
+        try operation();
+    }
+
+    const elapsed = timer.read() - start;
+    return BenchmarkResult{
+        .ops_total = iterations,
+        .duration_ns = elapsed,
+        .ops_per_sec = @as(f64, iterations) / (@as(f64, elapsed) / 1e9),
+        // ...
+    };
+}
+
+// Latency benchmark (percentiles)
+fn benchLatency() !BenchmarkResult {
+    var latencies = std.ArrayList(u64).init(allocator);
+    defer latencies.deinit();
+
+    for (0..10000) |_| {
+        const start = timer.read();
+        try operation();
+        const lat = timer.read() - start;
+        try latencies.append(lat);
+    }
+
+    // Calculate percentiles
+    std.sort.insertion(u64, latencies.items, {}, comptime std.sort.asc(u64));
+    const p50 = latencies.items[latencies.items.len / 2];
+    const p95 = latencies.items[@min(latencies.items.len * 95 / 100, latencies.items.len - 1)];
+    const p99 = latencies.items[@min(latencies.items.len * 99 / 100, latencies.items.len - 1)];
+
+    return BenchmarkResult{
+        .latency_ns = .{ .p50 = p50, .p95 = p95, .p99 = p99, .max = latencies.items[latencies.items.len - 1] },
+        // ...
+    };
+}
+```
+
+## CI Baseline Management
+
+### Baseline Directory Structure
+
+```
+bench/baselines/
+├── ci/                  # CI baselines (regression gates)
+│   ├── micro/
+│   │   ├── pager_open_close.json
+│   │   ├── btree_point_get.json
+│   │   └── ...
+│   ├── macro/
+│   └── hardening/
+└── dev_nvme/            # Development baselines
+    ├── micro/
+    ├── macro/
+    └── hardening/
+```
+
+### Creating Baselines
+
+```bash
+# Generate initial CI baselines
+zig-out/bin/bench run --suite micro --repeats 5 \
+  --output bench/results/
+
+# Copy to baseline directory
+./scripts/manage_baselines.sh generate micro 5 bench/baselines/ci
+```
+
+### Updating Baselines
+
+When making intentional performance changes:
+
+1. Run benchmarks locally
+2. Verify improvement is expected
+3. Commit with `[update-baselines]` in message
+
+```bash
+# Run benchmarks
+zig-out/bin/bench run --repeats 10 --output results/
+
+# Commit with special message
+git commit -m "feat(btree): add prefix compression
+
+[update-baselines]
+
+Reduces space overhead by 30%, slight throughput increase."
+
+# CI will automatically update baselines
+```
+
+### Baseline Comparison Script
+
+```bash
+#!/bin/bash
+# scripts/compare_baselines.sh
+
+CANDIDATE="bench/results/new"
+BASELINE="bench/baselines/dev_nvme"
+
+zig-out/bin/bench compare "$BASELINE" "$CANDIDATE"
+```
+
+### Regression Gates
+
+CI automatically checks for regressions:
+
+```yaml
+# .github/workflows/ci.yml (simplified)
+
+- name: Run benchmark gate
+  run: |
+    zig-out/bin/bench run --suite micro --repeats 5 --output results/
+    ./scripts/manage_baselines.sh gate bench/baselines/ci micro
+
+# Fails if:
+# - Throughput down >5%
+# - p99 latency up >10%
+```
+
+### Manual Baseline Validation
+
+```bash
+# Validate baselines are consistent
+./scripts/manage_baselines.sh validate bench/baselines/ci
+
+# Compare profiles
+./scripts/manage_baselines.sh compare-profiles ci dev_nvme
+```
+
+## Benchmark Suites
+
+### Micro Benchmarks
+
+Low-level operations that compose database functionality.
+
+**Pager Benchmarks**
+- `bench/pager/open_close_empty` - Database open/close overhead
+- `bench/pager/read_page_random_16k_hot` - Cached random reads
+- `bench/pager/read_page_random_16k_cold` - Uncached random reads
+- `bench/pager/commit_meta_fsync` - Meta page commit cost
+
+**B+tree Benchmarks**
+- `bench/btree/point_get_hot_1m` - Point lookup in cached tree
+- `bench/btree/build_sequential_insert_1m` - Tree construction cost
+- `bench/btree/range_scan_1k_rows_hot` - Range scan performance
+
+**MVCC Benchmarks**
+- `bench/mvcc/snapshot_open_close` - Snapshot creation overhead
+- `bench/mvcc/readers_256_point_get_hot` - Concurrent reader scalability
+- `bench/mvcc/writer_commits_with_readers_128` - Writer with active readers
+
+### Macro Benchmarks
+
+Real-world workload simulations.
+
+**Task Queue**
+- `bench/macro/task_queue_claims` - Claim and update tasks
+- Models AI agent task dispatch
+
+**Knowledge Graph**
+- `bench/macro/code_knowledge_graph` - Store and query code entities
+- Models semantic code understanding
+
+**Time Travel**
+- `bench/macro/time_travel_replay` - Historical state reconstruction
+- Models debugging and audit scenarios
+
+### Hardening Benchmarks
+
+Crash recovery and fault tolerance.
+
+**Crash Simulation**
+- Torn writes during commit
+- Short writes (missing trailer)
+- Corruption detection and recovery
+
+## Related Documentation
+
+- [Development Setup Guide](/guides/development-setup)
+- [Testing Guide](/guides/testing)
+- [Benchmarks V0 Spec](/specs/benchmarks-v0)
+- [Performance Tuning Guide](/guides/performance-tuning)
