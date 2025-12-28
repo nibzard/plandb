@@ -63,6 +63,18 @@ npm run build
 npm run preview
 ```
 
+### Generate API Documentation
+
+Auto-generated API documentation from Zig source code:
+
+```bash
+npm run docs:api
+```
+
+This generates HTML docs from `//!` comments in Zig source files and outputs to `public/api/`. The docs are automatically included in the build.
+
+**Note:** API docs require Zig to be installed. The generation uses `gen_docs.zig` at the project root to collect all public API modules.
+
 ## 🌐 Deployment
 
 ### GitHub Pages

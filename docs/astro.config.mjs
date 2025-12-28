@@ -47,6 +47,19 @@ export default defineConfig({
 					autogenerate: { directory: 'reference' },
 				},
 				{
+					label: 'Auto-Generated API Docs',
+					items: [
+						{
+							label: 'Zig API Documentation',
+							href: '/api/index.html',
+							badge: {
+								text: 'Generated',
+								variant: 'note'
+							}
+						}
+					]
+				},
+				{
 					label: 'Specifications',
 					items: [
 						{ label: 'File Format v0', slug: 'specs/file-format-v0' },
