@@ -21,6 +21,7 @@ const temporal_history_bench = @import("temporal_history_bench.zig");
 const document_history_bench = @import("document_history_bench.zig");
 const storage_efficiency_bench = @import("storage_efficiency_bench.zig");
 const timeseries_telemetry_bench = @import("timeseries_telemetry_bench.zig");
+const downsampling_comparison_bench = @import("downsampling_comparison_bench.zig");
 
 // Stub benchmark functions for testing the harness
 
@@ -265,6 +266,28 @@ pub fn registerBenchmarks(bench_runner: *runner.Runner) !void {
     try bench_runner.addBenchmark(.{
         .name = "bench/macro/timeseries_telemetry",
         .run_fn = timeseries_telemetry_bench.benchMacroTimeSeriesTelemetry,
+        .critical = true,
+        .suite = .macro,
+    });
+
+    // Downsampling comparison benchmarks
+    try bench_runner.addBenchmark(.{
+        .name = "bench/macro/downsampling_comparison",
+        .run_fn = downsampling_comparison_bench.benchDownsamplingComparison,
+        .critical = true,
+        .suite = .macro,
+    });
+
+    try bench_runner.addBenchmark(.{
+        .name = "bench/macro/retention_policy_enforcement",
+        .run_fn = downsampling_comparison_bench.benchRetentionPolicyEnforcement,
+        .critical = true,
+        .suite = .macro,
+    });
+
+    try bench_runner.addBenchmark(.{
+        .name = "bench/macro/rollup_cost_benefit",
+        .run_fn = downsampling_comparison_bench.benchRollupWindowCostBenefit,
         .critical = true,
         .suite = .macro,
     });
