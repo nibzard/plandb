@@ -170,6 +170,28 @@ pub fn registerBenchmarks(bench_runner: *runner.Runner) !void {
         .suite = .macro,
     });
 
+    // Time-series telemetry scale variants for baseline testing
+    try bench_runner.addBenchmark(.{
+        .name = "bench/macro/telemetry_timeseries_small",
+        .run_fn = timeseries_telemetry_bench.benchMacroTimeSeriesTelemetrySmall,
+        .critical = true,
+        .suite = .macro,
+    });
+
+    try bench_runner.addBenchmark(.{
+        .name = "bench/macro/telemetry_timeseries_medium",
+        .run_fn = timeseries_telemetry_bench.benchMacroTimeSeriesTelemetryMedium,
+        .critical = true,
+        .suite = .macro,
+    });
+
+    try bench_runner.addBenchmark(.{
+        .name = "bench/macro/telemetry_timeseries_large",
+        .run_fn = timeseries_telemetry_bench.benchMacroTimeSeriesTelemetryLarge,
+        .critical = true,
+        .suite = .macro,
+    });
+
     try bench_runner.addBenchmark(.{
         .name = "bench/macro/doc_ingestion",
         .run_fn = benchMacroDocIngestion,

@@ -681,16 +681,18 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - Rate calculation: compute per-second/minute derivatives (✓ NEW calculateRate)
   - Alert queries: threshold violations, anomaly detection (✓ NEW queryThresholdViolations)
   - Added Phase 9-10 benchmark tests, RatePoint/RateSeries/ThresholdViolation/AlertResult types
-- [ ] 🟠 Implement aggregation and downsampling
-  - Create rollups for multiple time windows (1m, 5m, 1h, 1d)
-  - Compute aggregated statistics: min, max, avg, p95, count
-  - Support percentile calculations (TDigest algorithm)
-  - Handle rollup invalidation on late-arriving data
-- [ ] 🟠 Macrobench scenario: 1000 metrics, 7 days retention
-  - Ingestion: 1000 metrics * 86400 points/day = 86M writes
-  - Query mix: 60% raw range queries, 30% aggregated, 10% rollups
-  - Measure: write throughput, query latency p50/p95, storage size
-  - Target: >10K writes/sec, <100ms for 24-hour range query
+- [x] 🟠 Implement aggregation and downsampling
+  - Create rollups for multiple time windows (1m, 5m, 1h, 1d) ✓ Added Rollup struct and rollup_granularities to TemporalIndex
+  - Compute aggregated statistics: min, max, avg, p95, count ✓ Extended AggregationMethod enum and downsampleSeries function
+  - Support percentile calculations (TDigest algorithm) ✓ Implemented TDigest with reservoir sampling
+  - Handle rollup invalidation on late-arriving data ✓ Added invalidateRollups with needs_invalidation flag
+- [x] 🟠 Macrobench scenario: 1000 metrics, 7 days retention
+  - **COMPLETED**: Created src/bench/timeseries_telemetry_bench.zig
+  - CI scale: 100 metrics × 8640 points × 3 days = 2.59M points (full: 1000 × 86400 × 7 = 604.8M)
+  - Query mix: 60% raw range queries, 30% aggregated queries, 10% rollup queries
+  - Metrics: write throughput, query latency (p50/p95/p99), storage efficiency (bytes per million points)
+  - Targets: >10K writes/sec, <100ms for 24h range, <50ms for percentile, <10MB per million points
+  - Registered as "bench/macro/timeseries_telemetry" in suite.zig
 - [ ] 🟠 Add baselines for varying metric counts and retention
   - Small: 100 metrics, 1 day (scale down test)
   - Medium: 1000 metrics, 7 days (baseline)
@@ -1485,18 +1487,20 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
 Transform NorthstarDB's scattered markdown files into a modern, developer-friendly documentation platform following 2025 best practices for documentation-as-code.
 
 ### Phase 1: Foundation
-- [ ] 🔴 Set up Astro with Starlight theme and navigation
+- [x] ✅ Set up Astro with Starlight theme and navigation
   - Install and configure Astro project
   - Set up Starlight theme with NorthstarDB branding
   - Configure navigation structure in astro.config.mjs
   - Enable search functionality
   - Add syntax highlighting for Zig (Shiki)
   - Configure dark/light mode support
-- [ ] 🔴 Create documentation landing page with quick links
+  *Completed: Full Astro + Starlight setup with custom branding, navigation, search, and syntax highlighting in /docs directory*
+- [x] ✅ Create documentation landing page with quick links
   - Write docs/index.md with project introduction
   - Add quick links to key sections
   - Include feature highlights
   - Add getting started call-to-action
+  *Completed: Created docs/src/content/docs/index.mdx with hero section, feature highlights, and navigation cards to all doc sections*
 - [ ] 🔴 Reorganize existing content into new structure
   - Move and restructure existing docs/ files
   - Update all internal links
