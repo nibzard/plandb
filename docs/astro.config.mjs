@@ -31,6 +31,8 @@ export default defineConfig({
 						{ label: 'Installation', slug: 'guides/installation' },
 					],
 				},
+				{ label: 'FAQ', slug: 'faq' },
+				{ label: 'Contributing', slug: 'contributing' },
 				{
 					label: 'Core Concepts',
 					items: [
@@ -64,10 +66,7 @@ export default defineConfig({
 				},
 				{
 					label: 'Troubleshooting',
-					items: [
-						{ label: 'Overview', slug: 'troubleshooting/index' },
-						{ label: 'Common Errors', slug: 'troubleshooting/common-errors' },
-					],
+					autogenerate: { directory: 'troubleshooting' },
 				},
 			],
 			head: [

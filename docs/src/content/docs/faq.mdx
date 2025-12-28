@@ -1,0 +1,318 @@
+---
+title: FAQ
+description: Frequently asked questions about NorthstarDB with quick answers linking to detailed documentation.
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+# Frequently Asked Questions
+
+Quick answers to common questions about NorthstarDB. Each answer links to detailed documentation.
+
+## General
+
+### What is NorthstarDB?
+
+NorthstarDB is a database built from scratch in Zig, designed for massive read concurrency and deterministic replay. It's evolving into a "Living Database" with AI-driven intelligence through structured memory cartridges, natural language queries, and autonomous optimization.
+
+**Learn more:** [Introduction](/guides/introduction/) | [Architecture Overview](/concepts/architecture/)
+
+### Why build a database in Zig?
+
+Zig provides explicit memory management, explicit errors, and explicit performance — no hidden allocations, no surprise GC pauses, full control over system resources. This makes it ideal for building a database where performance predictability matters more than peak throughput.
+
+**Learn more:** [Introduction - Why Zig?](/guides/introduction/#-why-zig)
+
+### Is NorthstarDB production-ready?
+
+NorthstarDB is currently in active development as an educational project evolving toward production readiness. The core database engine (pager, B+tree, MVCC) is implemented and tested. The AI intelligence layer is in the design phase (see [Living Database Plan](/ai/living-db-plan/)).
+
+**Learn more:** [Project Status](/guides/introduction/#-project-status) | [Benchmarks v0](/specs/benchmarks-v0/)
+
+### What makes NorthstarDB different?
+
+- **Commit stream as truth** — All state derived from an append-only log
+- **Cheap snapshot reads** — Coordination paid at commit, not on every read
+- **Time travel queries** — Query historical snapshots with AS OF semantics
+- **AI intelligence** — Structured memory cartridges, not black-box embeddings
+- **Benchmarks as law** — Performance claims must be reproducible
+
+**Learn more:** [Project Principles](/guides/introduction/#-project-principles)
+
+### What license is NorthstarDB released under?
+
+NorthstarDB is released under the MIT License. See LICENSE in the repository for details.
+
+## Architecture
+
+### How does the commit stream work?
+
+Every transaction emits a canonical commit record to an append-only write-ahead log. This log is the source of truth — all database state can be rebuilt by replaying the commit stream. This enables crash recovery, time travel queries, and deterministic replay.
+
+**Learn more:** [Commit Stream](/concepts/commit-stream/) | [File Format v0](/specs/file-format-v0/)
+
+### What is MVCC and why does it matter?
+
+Multi-Version Concurrency Control (MVCC) allows many concurrent readers while maintaining a single writer. Readers see consistent snapshots without blocking writes or each other. This is critical for AI agent swarms that need parallel access to large working sets.
+
+**Learn more:** [MVCC Concepts](/concepts/mvcc/) | [Semantics v0](/specs/semantics-v0/)
+
+### How are pages managed?
+
+NorthstarDB uses a pager system for page allocation and I/O. The database file is divided into fixed-size pages (typically 4KB). The pager handles page caching, eviction, and coordinating with the commit stream for crash safety.
+
+**Learn more:** [Storage Engine](/concepts/storage/) | [Architecture Deep Dive](/architecture/overview/)
+
+### What is a B+tree?
+
+A B+tree is a balanced tree structure optimized for disk-based storage. It maintains ordered key-value pairs with O(log n) lookup, insert, and delete operations. NorthstarDB uses B+trees as the primary indexing structure.
+
+**Learn more:** [B+tree Index](/concepts/btree/) | [B+tree Implementation](/architecture/btree-implementation/)
+
+## Usage
+
+### How do I get started?
+
+1. [Install Zig](https://ziglang.org/download/) (0.11.0 or later)
+2. Clone the repository
+3. Run `zig build` to compile
+4. Run `zig build run -- run --help` for benchmark options
+
+**Learn more:** [Installation](/guides/installation/) | [Quick Start](/guides/quick-start/)
+
+### How do I open a database?
+
+```zig
+const std = @import("std");
+const db = @import("northstardb");
+
+var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+const allocator = gpa.allocator();
+var northstar = try db.Db.open(allocator, "mydb.db");
+defer northstar.close();
+```
+
+**Learn more:** [Db API Reference](/reference/db/)
+
+### How do I read data?
+
+```zig
+var txn = northstar.readTxn();
+defer txn.deinit();
+
+const value = txn.get("user:1234");
+if (value) |v| {
+    std.debug.print("Value: {s}\n", .{v});
+}
+```
+
+**Learn more:** [ReadTxn API Reference](/reference/readtxn/) | [CRUD Operations Guide](/guides/crud-operations/)
+
+### How do I write data?
+
+```zig
+var txn = northstar.writeTxn();
+defer txn.deinit();
+
+try txn.put("user:1234", "Alice");
+try txn.commit();
+```
+
+**Learn more:** [WriteTxn API Reference](/reference/writetxn/) | [CRUD Operations Guide](/guides/crud-operations/)
+
+### How do I use time travel queries?
+
+```zig
+// Query as of a specific transaction
+const target_txn_id: u64 = 12345;
+var txn = northstar.readTxnAsOf(target_txn_id);
+defer txn.deinit();
+
+const value = txn.get("user:1234");
+```
+
+**Learn more:** [Time Travel Queries](/concepts/commit-stream/#time-travel-queries) | [Time Travel Tutorial](/tutorials/time-travel/)
+
+## Performance
+
+### How fast is NorthstarDB?
+
+NorthstarDB is designed for predictable tail latency rather than peak throughput. Benchmark results are tracked as regression gates — any performance change must be proven with reproducible benchmarks. See the [Benchmarks v0 spec](/specs/benchmarks-v0/) for target metrics.
+
+**Learn more:** [Benchmarks v0](/specs/benchmarks-v0/) | [Performance Tuning Guide](/guides/performance-tuning/)
+
+### How do I profile slow queries?
+
+1. Enable query logging in your application
+2. Use `zig build run --run --filter your_benchmark` to isolate workloads
+3. Use system profilers (`perf`, `valgrind`) to identify hot paths
+4. Check the performance counters in the Db stats
+
+**Learn more:** [Performance Troubleshooting](/guides/performance-troubleshooting/)
+
+### Why are my reads slow?
+
+Possible causes:
+- **Page cache thrashing** — Increase cache size or reduce working set
+- **Long-running transactions** — Snapshots retain old versions
+- **Lock contention** — Single writer blocking
+- **I/O saturation** — Check disk utilization
+
+**Learn more:** [Performance Troubleshooting](/guides/performance-troubleshooting/#-diagnosing-slow-queries)
+
+### How do I tune performance?
+
+Key tuning parameters:
+- **Page cache size** — Balance memory usage vs cache hit rate
+- **Checkpoint frequency** — Trade off recovery time vs write amplification
+- **B+tree fanout** — Larger fanout = shallower tree, fewer reads
+
+**Learn more:** [Performance Tuning Guide](/guides/performance-tuning/)
+
+## Reliability
+
+### Is NorthstarDB crash-safe?
+
+Yes. The commit stream provides write-ahead logging (WAL). On recovery, NorthstarDB replays committed transactions and rebuilds database state. Hardening tests verify crash consistency across failure scenarios.
+
+**Learn more:** [Hardening v0](/specs/hardening-v0/) | [Commit Stream & Recovery](/architecture/commit-stream-recovery/)
+
+### How do I recover from corruption?
+
+1. Run `dbdump` to validate page checksums
+2. Use export/rebuild to salvage valid data
+3. For file-level corruption, use page-level salvage if available
+4. Restore from backup if all else fails
+
+**Learn more:** [Corruption Recovery Guide](/guides/corruption-recovery/)
+
+### What happens if a write transaction crashes?
+
+Uncommitted changes are never visible to readers. On recovery, partially-written transactions are rolled back using the commit stream. Only fully committed transactions are replayed.
+
+**Learn more:** [Semantics v0 - Transaction Safety](/specs/semantics-v0/)
+
+### Does NorthstarDB handle schema migrations?
+
+NorthstarDB is schemaless at the storage layer — keys and values are arbitrary byte strings. Schema management is application-layer. For structured data, consider encoding schemas (e.g., JSON, Protobuf) in your application.
+
+## AI Intelligence
+
+### What is a "Living Database"?
+
+A Living Database autonomously maintains, optimizes, and understands its own data using structured memory cartridges. Instead of being a passive storage engine, it uses AI to build semantic understanding of stored content.
+
+**Learn more:** [Living Database Plan](/ai/living-db-plan/)
+
+### What are structured memory cartridges?
+
+Cartridges are offline-built indices containing:
+- **Entities** — Extracted objects (people, places, things)
+- **Topics** — Clusters of related content
+- **Relationships** — Graph connections between entities
+
+Cartridges are built using LLM function calling (deterministic) rather than vector embeddings (opaque).
+
+**Learn more:** [Structured Memory](/ai/structured-memory/)
+
+### How do natural language queries work?
+
+1. User provides NL query ("find tasks assigned to Alice")
+2. Query planner parses into structured operations using LLM function calling
+3. Planner maps to cartridge indices + B+tree lookups
+4. Results returned using optimal access paths
+
+**Learn more:** [AI Queries Guide](/guides/ai-queries/)
+
+### Which LLM providers are supported?
+
+NorthstarDB is provider-agnostic. Any LLM with function calling support can be used:
+- OpenAI (GPT-4, GPT-3.5)
+- Anthropic (Claude)
+- Local models (via OpenAI-compatible APIs)
+
+**Learn more:** [LLM Interface](/reference/llm/)
+
+## Development
+
+### How do I run tests?
+
+```bash
+# All tests
+zig build test
+
+# Specific test file
+zig test src/db.zig
+```
+
+**Learn more:** [Testing Guide](/guides/testing/)
+
+### How do I run benchmarks?
+
+```bash
+# Run all benchmarks
+zig build run -- run
+
+# Filter benchmarks
+zig build run -- run --filter point_get
+
+# Configure repeats
+zig build run -- run --repeats 10
+```
+
+**Learn more:** [Benchmarking Guide](/guides/benchmarking/)
+
+### How do I contribute?
+
+1. Check [CONTRIBUTING.md](/contributing)
+2. Find a good first issue or create a discussion
+3. Write tests first (TDD)
+4. Submit PR with benchmarks showing improvement/no regression
+
+**Learn more:** [Contributing Guide](/contributing)
+
+### What's the development workflow?
+
+1. Write/extend benchmark or hardening test
+2. Implement smallest change to pass
+3. Lock in with regression baselines
+4. Profile and optimize if needed
+5. Document any API changes
+
+**Learn more:** [Development Setup](/guides/development-setup/)
+
+## Community
+
+### Where can I ask questions?
+
+- **GitHub Issues** — Bug reports and feature requests
+- **GitHub Discussions** — General questions and community discussion
+- **Discord/Slack** — Real-time chat (coming soon)
+
+### How do I report a bug?
+
+Use GitHub Issues with:
+- Clear title and description
+- Minimal reproduction case
+- Zig version and OS
+- Expected vs actual behavior
+- Backtrace if available
+
+### Can I request features?
+
+Yes! Use GitHub Discussions for exploration, then create an issue for tracking. Large features should be discussed in [Living Database Plan](/ai/living-db-plan/) context first.
+
+### How do I stay updated?
+
+- **Watch the GitHub repo** for releases
+- **Watch the commit stream** for development activity
+- **Check the docs** — always improving
+
+<CardGrid>
+	<Card title="Still have questions?" icon="open-book">
+		Check the <a href="/guides/">guides</a> for in-depth topics, <a href="/troubleshooting/">troubleshooting</a> for common errors, or <a href="/contributing">contributing</a> to get involved.
+	</Card>
+	<Card title="Found an issue?" icon="pencil">
+		<a href="https://github.com/nikopol/northstardb/issues">Report a bug</a> or <a href="https://github.com/nikopol/northstardb/discussions">start a discussion</a> on GitHub.
+	</Card>
+</CardGrid>
