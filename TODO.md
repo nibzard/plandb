@@ -1622,7 +1622,7 @@ Transform NorthstarDB's scattered markdown files into a modern, developer-friend
   - Time-travel queries
   - Snapshot isolation guarantees
   - Use cases and patterns
-- [ ] 🟠 Write cartridges usage guide
+- [x] 🟠 Write cartridges usage guide (Completed: added comprehensive cartridges usage guide covering performance scenarios, quick start examples, built-in cartridges usage, cartridge invalidation and rebuild strategies, building custom cartridges, performance tips, and complete real-time analytics example - docs/src/content/docs/guides/cartridges-usage.md)
   - When to use cartridges
   - Built-in cartridges reference
   - Building custom cartridges
