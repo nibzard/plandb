@@ -1798,10 +1798,11 @@ Transform NorthstarDB's scattered markdown files into a modern, developer-friend
   - Detect broken links
   - Block merge on broken docs links
   - Completed 2025-12-28: Created .github/workflows/link-check.yml with markdown-link-check for documentation and ADR files
-- [ ] 🟠 Add documentation linting
+- [x] 🟠 Add documentation linting
   - Markdown linting rules
   - Consistency checks
   - Style enforcement
+  - Completed 2025-12-28: Created .markdownlint.jsonc config, .github/workflows/docs-lint.yml CI workflow with consistency/style checks, and docs/markdown-lint-guide.md developer guide
 - [ ] 🟡 Integrate auto-generated API docs
   - Evaluate Zig doc generation tools
   - Integrate auto-generated API docs
