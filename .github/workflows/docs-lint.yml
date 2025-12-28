@@ -1,0 +1,207 @@
+name: Documentation Lint
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'docs/**'
+      - 'spec/**'
+      - '*.md'
+      - '.github/workflows/docs-lint.yml'
+      - '.markdownlint.jsonc'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'docs/**'
+      - 'spec/**'
+      - '*.md'
+      - '.github/workflows/docs-lint.yml'
+      - '.markdownlint.jsonc'
+
+jobs:
+  markdown-lint:
+    name: Lint Markdown Files
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run markdownlint
+        uses: actionshub/markdownlint@v3.1.1
+        with:
+          config: .markdownlint.jsonc
+          files: |
+            docs/src/content/docs/**/*.md
+            docs/src/content/docs/**/*.mdx
+            docs/adr/*.md
+            spec/**/*.md
+            *.md
+          exclude: |
+            docs/node_modules/**
+            **/node_modules/**
+
+  markdown-lint-cli:
+    name: Lint with markdownlint-cli (Alternative)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install markdownlint-cli
+        run: npm install -g markdownlint-cli
+
+      - name: Run markdownlint-cli
+        run: |
+          # Lint documentation files
+          markdownlint "docs/src/content/docs/**/*.md" \
+                      "docs/src/content/docs/**/*.mdx" \
+                      "docs/adr/*.md" \
+                      "spec/**/*.md" \
+                      "*.md" \
+                      --config ".markdownlint.jsonc" \
+                      --ignore "docs/node_modules/**" \
+                      --ignore "**/node_modules/**" || exit_code=$?
+
+          # Exit with proper code
+          if [ -n "${exit_code+x}" ]; then
+            exit $exit_code
+          fi
+
+  consistency-check:
+    name: Check Documentation Consistency
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Check for proper heading hierarchy
+        run: |
+          echo "Checking heading hierarchy..."
+          find docs/src/content/docs spec -name "*.md" -o -name "*.mdx" | while read file; do
+            echo "Checking: $file"
+            # Check for proper heading progression (skip this check for index files)
+            if [[ ! "$file" =~ (index|README) ]]; then
+              # Ensure first heading is h1 or h2 (Astro/Starlight compatibility)
+              first_heading=$(grep -m1 "^#" "$file" || echo "")
+              if [[ -n "$first_heading" ]]; then
+                heading_level=$(echo "$first_heading" | grep -o "^#" | wc -l)
+                if [ "$heading_level" -gt 2 ]; then
+                  echo "::warning file=$file::First heading should be h1 or h2, found h$heading_level"
+                fi
+              fi
+            fi
+          done
+
+      - name: Check code block languages
+        run: |
+          echo "Checking code blocks have language specified..."
+          find docs/src/content/docs spec -name "*.md" -o -name "*.mdx" | while read file; do
+            echo "Checking: $file"
+            # Find fenced code blocks without language
+            grep -n '^```[[:space:]]*$' "$file" && echo "::error file=$file::Code block without language specified" || true
+          done
+
+      - name: Check trailing whitespace
+        run: |
+          echo "Checking for trailing whitespace..."
+          find docs/src/content/docs spec docs/adr -name "*.md" -o -name "*.mdx" | while read file; do
+            if grep -q "[[:space:]]$" "$file"; then
+              echo "::warning file=$file::Contains trailing whitespace"
+            fi
+          done
+
+      - name: Check line length in prose (warn only)
+        run: |
+          echo "Checking line length in prose..."
+          find docs/src/content/docs spec -name "*.md" -o -name "*.mdx" | while read file; do
+            # Skip code blocks and tables
+            awk '
+              BEGIN { in_code = 0; in_table = 0 }
+              /^```/ { in_code = !in_code; next }
+              in_code { next }
+              /^\|.*\|/ { in_table = 1; next }
+              in_table && /^$/ { in_table = 0; next }
+              in_table { next }
+              {
+                if (length($0) > 120 && !/^\s*#/ && !/^http/ && !/^</) {
+                  print FILENAME ":" NR ":" substr($0, 1, 50) "..."
+                }
+              }
+            ' "$file" | while read line; do
+              echo "::warning file=$file::Line exceeds 120 characters: $line"
+            done
+          done
+
+  style-enforcement:
+    name: Enforce Documentation Style
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check heading capitalization
+        run: |
+          echo "Checking heading style..."
+          find docs/src/content/docs spec -name "*.md" -o -name "*.mdx" | while read file; do
+            # Check for title case in headings (warn only, as sentence case may be intentional)
+            grep -n "^##*\s\+[a-z]" "$file" | while read line; do
+              echo "::warning file=$file::Heading may not start with capital letter: $line"
+            done
+          done
+
+      - name: Check list consistency
+        run: |
+          echo "Checking list consistency..."
+          find docs/src/content/docs spec -name "*.md" -o -name "*.mdx" | while read file; do
+            # Check for consistent unordered list markers
+            if grep -q "^\* " "$file" && grep -q "^- " "$file"; then
+              echo "::warning file=$file::Mixed unordered list markers (* and -)"
+            fi
+            if grep -q "^+ " "$file"; then
+              echo "::warning file=$file::Using + for unordered lists (use - instead)"
+            fi
+          done
+
+      - name: Check for TODO/FIXME comments
+        run: |
+          echo "Checking for unresolved TODO comments..."
+          find docs/src/content/docs spec -name "*.md" -o -name "*.mdx" | while read file; do
+            if grep -i -n "TODO\|FIXME\|XXX" "$file" | grep -v "```" > /dev/null; then
+              echo "::warning file=$file::Contains TODO/FIXME comments"
+            fi
+          done
+
+  summary:
+    name: Documentation Lint Summary
+    runs-on: ubuntu-latest
+    needs: [markdown-lint, markdown-lint-cli, consistency-check, style-enforcement]
+    if: always()
+    steps:
+      - name: Check results
+        run: |
+          echo "## Documentation Lint Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Markdown Lint | ${{ needs.markdown-lint.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Markdown Lint CLI | ${{ needs.markdown-lint-cli.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Consistency Check | ${{ needs.consistency-check.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Style Enforcement | ${{ needs.style-enforcement.result }} |" >> $GITHUB_STEP_SUMMARY
+
+          # Fail if any required job failed
+          if [ "${{ needs.markdown-lint.result }}" = "failure" ] || \
+             [ "${{ needs.markdown-lint-cli.result }}" = "failure" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "❌ **Critical linting errors found. Please fix before merging.**" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi

@@ -1,0 +1,159 @@
+{
+  // Markdown linting configuration for NorthstarDB documentation
+  // Based on CommonMark style guidelines with project-specific customizations
+
+  // MD001 - Heading levels should only increment by one level at a time
+  "MD001": false, // Allow flexibility in heading hierarchy
+
+  // MD002 - First heading should be a top level heading
+  "MD002": false, // Docs often start with h2 in Astro/Starlight structure
+
+  // MD003 - Heading style
+  "MD003": { "style": "atx" }, // Use # ATX style headings consistently
+
+  // MD004 - Unordered list style
+  "MD004": { "style": "dash" }, // Use - for unordered lists
+
+  // MD005 - Inconsistent indentation for list items at the same level
+  "MD005": true,
+
+  // MD006 - Consider starting bulleted lists at the beginning of the line
+  "MD006": false, // Allow nested lists with indentation
+
+  // MD007 - Unordered list indentation
+  "MD007": { "indent": 2, "start_indented": false },
+
+  // MD009 - Trailing spaces
+  "MD009": { "br_spaces": 2, "list_item_empty_lines": false, "strict": false },
+
+  // MD010 - Hard tabs
+  "MD010": { "code_blocks": false, "spaces_per_tab": 2 }, // Allow tabs in code blocks
+
+  // MD011 - Reversed link syntax
+  "MD011": true,
+
+  // MD012 - Multiple consecutive blank lines
+  "MD012": { "maximum": 2 }, // Max 2 consecutive blank lines
+
+  // MD013 - Line length
+  "MD013": {
+    "line_length": 120,
+    "code_blocks": false,
+    "tables": false,
+    "headings": false
+  }, // Relaxed for code blocks and tables
+
+  // MD014 - Dollar signs used before commands without showing output
+  "MD014": false, // We often show commands without output in docs
+
+  // MD018 - No space after hash on ATX style heading
+  "MD018": true,
+
+  // MD019 - Multiple spaces after hash on ATX style heading
+  "MD019": true,
+
+  // MD020 - No space after hashes in closed ATX style heading
+  "MD020": true,
+
+  // MD021 - Multiple spaces after hashes in closed ATX style heading
+  "MD021": true,
+
+  // MD022 - Headings should be surrounded by blank lines
+  "MD022": { "lines_above": 1, "lines_below": 1 },
+
+  // MD023 - Headings must start at the beginning of the line
+  "MD023": true,
+
+  // MD024 - No duplicate heading (allow siblings with different content)
+  "MD024": { "allow_different_nesting": true }, // Allow same heading at different levels
+
+  // MD025 - Multiple top level headings in the same document
+  "MD025": { "level": 1, "front_matter_title": "" }, // Only one h1 per doc
+
+  // MD026 - Trailing punctuation in heading
+  "MD026": { "punctuation": ".,;:!?" }, // No trailing punctuation in headings
+
+  // MD027 - Multiple spaces after blockquote symbol
+  "MD027": true,
+
+  // MD028 - Blank line inside blockquote
+  "MD028": true,
+
+  // MD029 - Ordered list item prefix
+  "MD029": { "style": "one" }, // Use 1. for all ordered list items
+
+  // MD030 - Spaces after list markers
+  "MD030": { "ul_single": 1, "ol_single": 1, "ul_multi": 1, "ol_multi": 1 },
+
+  // MD031 - Fenced code blocks should be surrounded by blank lines
+  "MD031": { "list_items": false }, // Allow code blocks in lists without blank lines
+
+  // MD032 - Lists should be surrounded by blank lines
+  "MD032": { "ul_multi": 1, "ol_multi": 1 }, // Blank lines around lists
+
+  // MD033 - Allow inline HTML
+  "MD033": false, // We use HTML components in MDX files
+
+  // MD034 - Bare URL used
+  "MD034": false, // Allow bare URLs for reference
+
+  // MD035 - Horizontal rule style
+  "MD035": { "style": "---" }, // Consistent horizontal rule style
+
+  // MD036 - Emphasis used instead of a heading
+  "MD036": false, // Allow emphasis for important notes
+
+  // MD037 - Spaces inside emphasis markers
+  "MD037": true,
+
+  // MD038 - Spaces inside code span elements
+  "MD038": true,
+
+  // MD039 - Spaces inside link text
+  "MD039": true,
+
+  // MD040 - Fenced code blocks should have a language specified
+  "MD040": true, // Require language for syntax highlighting
+
+  // MD041 - First line in file should be a top level heading
+  "MD041": false, // Astro/Starlight has frontmatter before heading
+
+  // MD042 - No empty links
+  "MD042": true,
+
+  // MD043 - Required heading structure (custom per doc type)
+  "MD043": false, // Different doc types have different structures
+
+  // MD044 - Proper names should have the correct capitalization
+  "MD044": {
+    "names": [
+      "NorthstarDB",
+      "Zig",
+      "JavaScript",
+      "GitHub",
+      "Astro",
+      "Starlight",
+      "MVCC",
+      "B+tree",
+      "AI",
+      "API",
+      "LSN",
+      "JSON",
+      "CI/CD",
+      "LLM"
+    ],
+    "code_blocks": false
+  },
+
+  // MD045 - Alt text should be enclosed in double quotes
+  "MD045": false, // Allow single or no quotes for simplicity
+
+  // MD046 - Code block style
+  "MD046": { "style": "fenced" }, // Use fenced code blocks (```)
+
+  // MD047 - File should end with a single newline character
+  "MD047": true,
+
+  // MD048 - Code fence style
+  "MD048": { "style": "backtick" } // Use backticks for code fences
+}
