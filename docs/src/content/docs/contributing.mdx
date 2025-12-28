@@ -1,0 +1,469 @@
+---
+title: Contributing Guide
+description: Learn how to contribute to NorthstarDB, including development workflow, code style, and pull request process.
+---
+
+# Contributing to NorthstarDB
+
+Thank you for your interest in contributing to NorthstarDB! This guide will help you get started with contributing code, documentation, tests, or bug reports.
+
+## Table of Contents
+
+- [Quick Start](#quick-start)
+- [Development Workflow](#development-workflow)
+- [Code Style Guide](#code-style-guide)
+- [Pull Request Checklist](#pull-request-checklist)
+- [Review Process](#review-process)
+
+## Quick Start
+
+### Prerequisites
+
+- **Zig**: Version 0.11.0 or later (master branch recommended)
+- **Git**: For version control
+- **Make**: Optional, for build automation
+
+### Initial Setup
+
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/plandb.git
+cd plandb
+
+# Build the project
+zig build
+
+# Run tests
+zig build test
+
+# Run benchmarks
+zig build run -- run --repeats 5
+```
+
+### Understanding the Codebase
+
+Before making contributions, familiarize yourself with:
+
+1. **Project Structure**: See [Architecture Overview](/architecture/overview)
+2. **Core Concepts**: Review [Core Concepts](/concepts/commit-stream)
+3. **API Reference**: Check [API Documentation](/reference/db)
+4. **Specifications**: Read specifications in `spec/` directory
+
+## Development Workflow
+
+### Workflow Diagram
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  1. Find/Create Issue                                   │
+│     - Browse existing issues                            │
+│     - Create new issue for bug/feature                  │
+└────────────────┬────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────┐
+│  2. Fork and Branch                                     │
+│     - Fork repository on GitHub                         │
+│     - Create feature branch: git checkout -b feature/x  │
+└────────────────┬────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────┐
+│  3. Make Changes                                        │
+│     - Write code following style guide                  │
+│     - Add tests for new functionality                   │
+│     - Update documentation                              │
+└────────────────┬────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────┐
+│  4. Test Locally                                        │
+│     - zig build test (all tests pass)                   │
+│     - zig build run -- run --filter your-test           │
+│     - Check benchmarks for regressions                  │
+└────────────────┬────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────┐
+│  5. Commit Changes                                      │
+│     - Write clear commit messages                       │
+│     - Use conventional commits format                   │
+└────────────────┬────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────┐
+│  6. Push and Create PR                                  │
+│     - git push origin feature/x                         │
+│     - Create Pull Request on GitHub                     │
+└────────────────┬────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────┐
+│  7. Address Review Feedback                             │
+│     - Respond to comments                               │
+│     - Make requested changes                            │
+└────────────────┬────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────┐
+│  8. Merge                                               │
+│     - PR approved and merged by maintainers             │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Branch Naming
+
+Use descriptive branch names:
+
+```
+feature/btree-optimization
+fix/wal-checksum-error
+docs/api-reference-update
+test/replay-correctness
+refactor/pager-cleanup
+```
+
+### Commit Message Format
+
+Follow the [Conventional Commits](https://www.conventionalcommits.org/) specification:
+
+```
+<type>(<scope>): <description>
+
+[optional body]
+
+[optional footer]
+```
+
+**Types**:
+- `feat`: New feature
+- `fix`: Bug fix
+- `docs`: Documentation changes
+- `test`: Test additions or modifications
+- `refactor`: Code refactoring
+- `perf`: Performance improvements
+- `chore`: Build/process changes
+
+**Examples**:
+
+```
+feat(btree): add prefix compression for internal nodes
+
+Implement prefix key compression in internal B+tree nodes
+to reduce space overhead. Compression ratio ~30% for
+sequential keys.
+
+Closes #123
+```
+
+```
+fix(wal): validate payload checksum before replay
+
+Add payload checksum validation during WAL replay to detect
+corrupted records early. Previously, corrupted records
+could cause undefined behavior during replay.
+
+Fixes #456
+```
+
+## Code Style Guide
+
+### Zig Style Guidelines
+
+Follow the official [Zig Style Guide](https://ziglang.org/documentation/master/#Style-Guide) with these project-specific conventions:
+
+#### Naming
+
+```zig
+// Types: PascalCase
+const PageHeader = struct { ... };
+const WriteAheadLog = struct { ... };
+
+// Functions: camelCase
+pub fn calculateChecksum(data: []const u8) u32 { ... }
+
+// Constants: SCREAMING_SNAKE_CASE
+pub const PAGE_SIZE: u16 = 16384;
+pub const MAX_KEYS_PER_LEAF: usize = 200;
+
+// Local variables: snake_case
+var page_buffer: [16384]u8 = undefined;
+const entry_count = node.header.key_count;
+```
+
+#### Error Handling
+
+```zig
+// Prefer error unions over try/catch where possible
+pub fn parseHeader(data: []const u8) !Header {
+    if (data.len < Header.SIZE) return error.InvalidData;
+
+    const header = std.mem.bytesAsValue(Header, data[0..Header.SIZE]);
+    if (header.magic != EXPECTED_MAGIC) return error.InvalidMagic;
+
+    return header.*;
+}
+
+// Use try for simple error propagation
+pub fn readPage(file: std.fs.File, page_id: u64) ![]const u8 {
+    const page = try allocator.alloc(u8, PAGE_SIZE);
+    errdefer allocator.free(page);
+
+    const offset = page_id * PAGE_SIZE;
+    _ = try file.pread(page, offset);
+
+    return page;
+}
+```
+
+#### Documentation
+
+```zig
+//! Module-level documentation
+//!
+//! Provides page allocation and IO operations for the database.
+//! All pages are fixed-size (16KB) and identified by a PageId.
+
+/// PageHeader represents the common header at the start of every page.
+///
+/// Fields:
+///   - magic: Magic number for identification (0x4E534442)
+///   - page_type: Type of page (meta, btree_leaf, etc.)
+///   - page_id: Unique page identifier
+pub const PageHeader = struct {
+    /// Validate the header checksum
+    pub fn validateChecksum(self: PageHeader) bool {
+        return self.header_crc32c == self.calculateChecksum();
+    }
+};
+```
+
+#### Testing
+
+```zig
+test "page header checksum validation" {
+    const header = PageHeader{
+        .magic = PAGE_MAGIC,
+        .page_type = .btree_leaf,
+        .page_id = 42,
+        // ... other fields
+    };
+
+    try testing.expect(header.validateChecksum());
+}
+
+test "invalid magic returns error" {
+    const data = [_]u8{0xDE, 0xAD, 0xBE, 0xEF};
+    const result = PageHeader.decode(&data);
+
+    try testing.expectError(error.InvalidMagic, result);
+}
+```
+
+### Project-Specific Conventions
+
+#### Module Organization
+
+```
+src/
+├── db.zig              // Public API (Db, ReadTxn, WriteTxn)
+├── pager.zig           // Page allocation and IO
+├── txn.zig             // Transaction implementation
+├── wal.zig             // Write-ahead log
+├── replay.zig          // Commit stream replay
+├── recovery.zig        // Crash recovery
+├── snapshot.zig        // Snapshot management
+├── cartridges/         // Structured memory cartridges
+├── plugins/            // AI plugin system
+├── llm/                // LLM provider abstraction
+└── bench/              // Benchmark infrastructure
+```
+
+#### Error Sets
+
+Define error sets at module level:
+
+```zig
+pub const BtreeError = error{
+    LeafFull,
+    InvalidSlotIndex,
+    KeyNotFound,
+    Underflow,
+};
+
+pub fn insert(self: *Leaf, key: []const u8, value: []const u8) BtreeError!void {
+    if (self.isFull()) return error.LeafFull;
+    // ...
+}
+```
+
+#### Allocation Pattern
+
+```zig
+// Prefer explicit allocator parameters
+pub fn init(allocator: std.mem.Allocator) !Btree {
+    return Btree{
+        .allocator = allocator,
+        .root = null,
+    };
+}
+
+// Clean up in deinit
+pub fn deinit(self: *Btree) void {
+    if (self.root) |node| {
+        node.deinit(self.allocator);
+    }
+}
+```
+
+## Pull Request Checklist
+
+### Before Submitting
+
+- [ ] **Code compiles** without warnings
+- [ ] **All tests pass**: `zig build test`
+- [ ] **Benchmarks pass**: `zig build run -- run --repeats 5`
+- [ ] **Documentation updated** for API changes
+- [ ] **Commit messages** follow conventional format
+- [ ] **Branch is up to date** with main branch
+
+### PR Description Template
+
+```markdown
+## Summary
+Brief description of changes (2-3 sentences).
+
+## Type of Change
+- [ ] Bug fix
+- [ ] New feature
+- [ ] Performance improvement
+- [ ] Documentation update
+- [ ] Refactoring
+- [ ] Breaking change
+
+## Testing
+- [ ] Unit tests added/updated
+- [ ] Integration tests added/updated
+- [ ] Benchmarks run and show improvement/regression
+- [ ] Manual testing performed
+
+## Checklist
+- [ ] Code follows style guide
+- [ ] Self-review completed
+- [ ] Documentation updated
+- [ ] No new warnings generated
+- [ ] Added tests for changes
+- [ ] All tests passing
+
+## Related Issues
+Fixes #123
+Related to #456
+```
+
+### Performance Benchmarks
+
+For performance-related changes, include benchmark results:
+
+```markdown
+## Performance Impact
+
+### Before
+```
+point_get (1000 iterations):
+  mean: 1.2 µs
+  p99: 2.1 µs
+```
+
+### After
+```
+point_get (1000 iterations):
+  mean: 0.9 µs (-25%)
+  p99: 1.5 µs (-29%)
+```
+
+### Method
+Reduced page reads by caching recently accessed pages in LRU cache.
+```
+
+## Review Process
+
+### Review Criteria
+
+Maintainers evaluate PRs based on:
+
+1. **Correctness**: Does the code work as intended?
+2. **Testing**: Are there adequate tests?
+3. **Documentation**: Is the code well-documented?
+4. **Style**: Does it follow the style guide?
+5. **Performance**: Does it meet performance requirements?
+
+### Review Timeline
+
+- **Initial review**: Within 3-5 business days
+- **Follow-up reviews**: Within 1-2 days after updates
+- **Complex changes**: May require additional discussion
+
+### Addressing Feedback
+
+1. **Respond to all comments**: Even if just "acknowledged"
+2. **Create follow-up commits**: Don't squash until approved
+3. **Request clarification**: If feedback is unclear
+4. **Push updates**: Notify reviewers when ready for re-review
+
+### Merging
+
+PRs are merged when:
+
+1. **Approved** by at least one maintainer
+2. **All CI checks pass** (tests, benchmarks, lints)
+3. **No outstanding objections** from reviewers
+4. **Squashed to clean commits** (unless otherwise requested)
+
+### After Merge
+
+- **Delete your branch**: After merge is complete
+- **Update your fork**: Sync with upstream regularly
+- **Monitor issues**: Watch for regressions reported post-merge
+
+## Getting Help
+
+### Resources
+
+- **Documentation**: See `/docs` directory
+- **Specifications**: Review `spec/*.md` files
+- **Architecture**: Read [Architecture Overview](/architecture/overview)
+- **Existing Tests**: Learn patterns from `src/*.zig` tests
+
+### Communication Channels
+
+- **GitHub Issues**: For bugs and feature requests
+- **Pull Requests**: For code reviews
+- **Discussions**: For design questions and architecture
+
+### Reporting Bugs
+
+When reporting bugs, include:
+
+1. **Zig version**: `zig version`
+2. **Operating system**: e.g., Linux 6.11.0
+3. **Minimal reproduction**: Smallest code that reproduces the issue
+4. **Expected behavior**: What should happen
+5. **Actual behavior**: What actually happens
+6. **Error messages**: Complete stack traces
+
+### Feature Requests
+
+For feature requests:
+
+1. **Use case**: Describe the problem you're solving
+2. **Proposed solution**: How you envision it working
+3. **Alternatives considered**: Other approaches you've thought of
+4. **Impact**: Who would benefit and how
+
+## License
+
+By contributing to NorthstarDB, you agree that your contributions will be licensed under the same license as the project.
+
+---
+
+Thank you for contributing to NorthstarDB! Every contribution helps make the database better for everyone.
