@@ -1732,6 +1732,7 @@ Transform NorthstarDB's scattered markdown files into a modern, developer-friend
   - Styled with Starlight-compatible CSS for seamless documentation integration
   - Examples run directly in browser without Zig installation
   - Real-time output visualization in embedded terminal
+  - *Completed 2025-12-28: See commit fa4d30ae5b5ced2127c1019b8106eb36e98a728d*
 - [ ] 🟡 Write 4 step-by-step interactive tutorials
   - "Build a task queue in 15 minutes" (interactive)
   - "Add semantic search to your app" (interactive)
@@ -1739,7 +1740,7 @@ Transform NorthstarDB's scattered markdown files into a modern, developer-friend
   - "Create an AI plugin" (interactive)
 
 ### Phase 8: Troubleshooting
-- [ ] 🟠 Create common errors guide
+- [x] 🟠 Create common errors guide (Completed 2025-12-28, commit f3fa83d)
   - Error message catalog
   - Root cause analysis
   - Solutions and workarounds
