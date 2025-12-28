@@ -2012,6 +2012,13 @@ Transform NorthstarDB's scattered markdown files into a modern, developer-friend
   - **STATUS**: Snapshot metadata generation operational
   - **COMMIT**: 36b1833
 
+- [x] 🟢 Implement proper CRC32 checksums
+  - **COMPLETED**: Header and payload CRC32 verification in src/replay.zig using std.hash.Crc32
+  - **COMPLETED**: Cartridge checksum in src/cartridges/pending_tasks.zig using pager.crc32c
+  - **FILES MODIFIED**: src/replay.zig, src/cartridges/pending_tasks.zig
+  - **STATUS**: Data integrity verification operational
+  - **COMMIT**: 63e9af8
+
 ## Documentation Success Criteria
 
 1. **Developer Experience**: Developers can find answers in <30 seconds
