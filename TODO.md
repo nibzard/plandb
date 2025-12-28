@@ -1803,26 +1803,34 @@ Transform NorthstarDB's scattered markdown files into a modern, developer-friend
   - Consistency checks
   - Style enforcement
   - Completed 2025-12-28: Created .markdownlint.jsonc config, .github/workflows/docs-lint.yml CI workflow with consistency/style checks, and docs/markdown-lint-guide.md developer guide
-- [ ] 🟡 Integrate auto-generated API docs
+- [x] 🟡 Integrate auto-generated API docs
   - Evaluate Zig doc generation tools
   - Integrate auto-generated API docs
   - Keep docs in sync with code
+  - Completed 2025-12-28: Added gen_docs.zig wrapper, docs/scripts/generate-api-docs.js automation, npm run docs:api script, Astro sidebar integration, and generation instructions in docs/README.md
 
 ### Phase 10: Community
-- [ ] 🟡 Create project governance documentation
-  - Governance model
-  - Decision-making process
-  - Role definitions
-  - Contribution recognition
-- [ ] 🟡 Document community resources and support
-  - Discord/Slack link
-  - GitHub discussions guide
-  - Code of conduct
-  - Support channels
-- [ ] 🟢 Establish branding and design guidelines
-  - Logo and color scheme
-  - Documentation theming
-  - Consistent terminology
+- [x] 🟡 Create project governance documentation
+  - Governance model ✅
+  - Decision-making process ✅
+  - Role definitions ✅
+  - Contribution recognition ✅
+  - File: docs/governance.md
+  - Completed 2025-12-28
+- [x] 🟡 Document community resources and support
+  - Discord/Slack link ✅
+  - GitHub discussions guide ✅
+  - Code of conduct ✅
+  - Support channels ✅
+  - File: docs/community.md
+  - Completed 2025-12-28
+- [x] 🟢 Establish branding and design guidelines
+  - Logo and color scheme ✅
+  - Documentation theming ✅
+  - Consistent terminology ✅
+  - File: docs/branding.md
+  - Additional file: CONTRIBUTORS.md - Contributor acknowledgment template
+  - Completed 2025-12-28
 
 ## Documentation Success Criteria
 

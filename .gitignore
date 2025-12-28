@@ -36,3 +36,8 @@ bench/output/
 test/
 test_output*/
 
+# Build artifacts
+*.o
+*.a
+wasm/*.a
+
