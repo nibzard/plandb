@@ -1,0 +1,449 @@
+---
+title: Development Setup Guide
+description: Complete guide to setting up a development environment for contributing to NorthstarDB.
+---
+
+# Development Setup Guide
+
+This guide will help you set up a complete development environment for contributing to NorthstarDB.
+
+## Table of Contents
+
+- [Prerequisites](#prerequisites)
+- [Getting the Source](#getting-the-source)
+- [Building from Source](#building-from-source)
+- [Running Tests](#running-tests)
+- [Debugging Setup](#debugging-setup)
+- [IDE Recommendations](#ide-recommendations)
+- [Common Issues](#common-issues)
+
+## Prerequisites
+
+### Required Software
+
+| Tool | Minimum Version | Recommended Version | Installation |
+|------|----------------|---------------------|--------------|
+| Zig | 0.11.0 | 0.13.0 (master) | [ziglang.org/download](https://ziglang.org/download) |
+| Git | 2.0 | 2.40+ | [git-scm.com](https://git-scm.com/) |
+| Make | 4.0 | 4.3+ | Usually included with OS |
+
+### Optional Tools
+
+| Tool | Purpose | Installation |
+|------|---------|--------------|
+| gdb | Debugging | `sudo apt-get install gdb` (Linux) |
+| lldb | Debugging (macOS) | `brew install llvm` |
+| valgrind | Memory profiling | `sudo apt-get install valgrind` |
+| perf | Performance profiling | `sudo apt-get install linux-tools-generic` |
+
+### Platform-Specific Notes
+
+#### Linux (Ubuntu/Debian)
+
+```bash
+# Install build essentials
+sudo apt-get update
+sudo apt-get install -y build-essential git gdb valgrind
+
+# Install Zig
+wget https://ziglang.org/builds/zig-linux-x86_64-0.13.0.tar.xz
+tar -xf zig-linux-x86_64-0.13.0.tar.xz
+sudo mv zig-linux-x86_64-0.13.0 /opt/zig
+echo 'export PATH=$PATH:/opt/zig' >> ~/.bashrc
+source ~/.bashrc
+```
+
+#### macOS
+
+```bash
+# Install Homebrew if not already installed
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# Install Zig
+brew install zig
+
+# Install LLDB (comes with Xcode Command Line Tools)
+xcode-select --install
+```
+
+#### Windows (WSL2)
+
+```bash
+# Install WSL2 following Microsoft's guide
+# Then use Ubuntu Linux instructions above inside WSL2
+
+wsl --install -d Ubuntu
+```
+
+## Getting the Source
+
+### Fork and Clone
+
+1. Fork the repository on GitHub
+2. Clone your fork:
+
+```bash
+git clone https://github.com/yourusername/plandb.git
+cd plandb
+```
+
+3. Add upstream remote:
+
+```bash
+git remote add upstream https://github.com/northstardb/plandb.git
+```
+
+### Branch Strategy
+
+Create a feature branch for your work:
+
+```bash
+git checkout -b feature/your-feature-name
+```
+
+## Building from Source
+
+### Initial Build
+
+```bash
+# Build the project
+zig build
+
+# Expected output:
+# Build Summary: 3 steps, 5 warnings, 0 errors
+```
+
+### Build Targets
+
+| Target | Description | Command |
+|--------|-------------|---------|
+| `bench` | Benchmark harness | `zig build bench` |
+| `test` | Test executable | `zig build test` |
+| `docs` | Documentation | `zig build docs` (if available) |
+
+### Build Options
+
+```bash
+# Show available build options
+zig build --help
+
+# Build with optimizations
+zig build -Doptimize=ReleaseFast
+
+# Build with debug info
+zig build -Doptimize=Debug
+
+# Clean build artifacts
+zig build clean
+```
+
+### Build Verification
+
+```bash
+# Run the executable
+./zig-out/bin/bench --help
+
+# Expected output:
+# NorthstarDB Benchmark Harness
+# Usage: bench [command] [options]
+```
+
+## Running Tests
+
+### Run All Tests
+
+```bash
+zig build test
+```
+
+### Run Specific Test Suite
+
+```bash
+# Test specific file
+zig test src/pager.zig
+
+# Test with verbose output
+zig test src/db.zig --test-cmd -v
+
+# Test specific test name
+zig test src/db.zig --test-cmd test-db-open-close
+```
+
+### Test Organization
+
+```
+src/
+├── db.zig              # Tests: basic operations
+├── pager.zig           # Tests: page allocation, checksums
+├── txn.zig             # Tests: transaction semantics
+├── hardening.zig       # Tests: crash recovery
+├── property_based.zig  # Tests: property-based tests
+└── ref_model.zig       # Tests: reference model validation
+```
+
+### Writing Tests
+
+```zig
+test "point lookup returns correct value" {
+    const db = try Db.open(std.testing.allocator);
+    defer db.close();
+
+    var w = try db.beginWrite();
+    try w.put("key", "value");
+    _ = try w.commit();
+
+    var r = try db.beginReadLatest();
+    defer r.close();
+
+    const result = try r.get("key");
+    try testing.expectEqualStrings("value", result);
+}
+```
+
+## Debugging Setup
+
+### Using GDB (Linux)
+
+```bash
+# Build debug version
+zig build -Doptimize=Debug
+
+# Start GDB
+gdb ./zig-out/bin/bench
+
+# Common GDB commands
+(gdb) break main
+(gdb) run
+(gdb) backtrace
+(gdb) print variable_name
+(gdb) continue
+(gdb) quit
+```
+
+### Using LLDB (macOS)
+
+```bash
+# Build debug version
+zig build -Doptimize=Debug
+
+# Start LLDB
+lldb ./zig-out/bin/bench
+
+# Common LLDB commands
+(lldb) breakpoint set --name main
+(lldb) run
+(lldb) bt
+(lldb) expression variable_name
+(lldb) continue
+(lldb) quit
+```
+
+### Zig Debug Features
+
+```bash
+# Enable verbose logging
+zig build -Dlog=trace
+
+# Enable safety checks
+zig build -Dsanitize=thread,address
+
+# Generate compile commands for IDE tools
+zig build-obj --emit-ast -fno-emit-bin src/db.zig
+```
+
+### Logging
+
+NorthstarDB uses `std.log` for logging:
+
+```zig
+const std = std.log;
+
+std.log.info("Opening database at {s}", .{db_path});
+std.log.debug("Page header: {}", .{header});
+std.log.err("Failed to open database: {}", .{error});
+```
+
+Enable logging at runtime:
+
+```bash
+# Enable info logging
+export ZIG_LOG_LEVEL=info
+
+# Enable debug logging
+export ZIG_LOG_LEVEL=debug
+
+# Run with logging
+zig-out/bin/bench run
+```
+
+## IDE Recommendations
+
+### VS Code
+
+**Recommended Extensions:**
+
+| Extension | Purpose |
+|-----------|---------|
+| [ziglang.vscode-zig](https://marketplace.visualstudio.com/items?itemName=ziglang.vscode-zig) | Zig language support |
+| [ms-vscode.cpptools](https://marketplace.visualstudio.com/items?itemName=ms-vscode.cpptools) | Debugging support |
+| [usernamehw.errorlens](https://marketplace.visualstudio.com/items?itemName=usernamehw.errorlens) | Inline error display |
+
+**Configuration (`.vscode/settings.json`):**
+
+```json
+{
+    "zig.zigPath": "/opt/zig/zig",
+    "zig.buildOnSave": true,
+    "zig.formatOnSave": true,
+    "files.associations": {
+        "*.zge": "zig"
+    }
+}
+```
+
+**Launch configuration (`.vscode/launch.json`):**
+
+```json
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug Bench",
+            "program": "${workspaceFolder}/zig-out/bin/bench",
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "zig-build-debug"
+        }
+    ]
+}
+```
+
+**Tasks (`.vscode/tasks.json`):**
+
+```json
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "zig-build-debug",
+            "type": "shell",
+            "command": "zig build -Doptimize=Debug",
+            "problemMatcher": []
+        },
+        {
+            "label": "zig-test",
+            "type": "shell",
+            "command": "zig build test",
+            "problemMatcher": []
+        }
+    ]
+}
+```
+
+### Neovim/Vim
+
+**Configuration (init.lua):**
+
+```lua
+-- Zig LSP configuration
+local lspconfig = require('lspconfig')
+lspconfig.zls.setup({
+    cmd = { "zls" },
+    settings = {
+        zls = {
+            enable_snippets = true,
+            enable_autofix = true,
+        }
+    }
+})
+
+-- Tree-sitter for Zig
+vim.treesitter.language.register('zig')
+```
+
+### JetBrains CLion
+
+1. Install the [Zig plugin](https://plugins.jetbrains.com/plugin/21255-zig)
+2. Configure ZLS path in Settings → Languages & Frameworks → Zig
+3. Use "File → Open" to open the project directory
+
+### Emacs
+
+```elisp
+;; Zig mode
+(use-package zig-mode
+  :ensure t
+  :hook ((zig-mode . lsp-deferred)))
+
+;; LSP configuration
+(use-package lsp-mode
+  :config
+  (lsp-register-client
+   (make-lsp-client
+    :new-connection (lsp-tramp-connection (list "zls"))
+    :major-modes '(zig-mode)
+    :server-id 'zls)))
+```
+
+## Common Issues
+
+### Build Errors
+
+**"zig: command not found"**
+
+```bash
+# Add Zig to PATH
+export PATH=$PATH:/opt/zig
+
+# Or install globally
+sudo mv zig-linux-x86_64-* /usr/local/bin/zig
+```
+
+**"error: unable to find libstdc++"**
+
+```bash
+# Install C++ standard library
+sudo apt-get install libstdc++-12-dev  # Ubuntu/Debian
+```
+
+### Test Failures
+
+**"Timeout waiting for database lock"**
+
+```bash
+# Check for existing database files
+rm -f test.db test.db.log
+```
+
+**"Checksum mismatch in page"**
+
+```bash
+# Clear test database
+rm -rf /tmp/northstar-test-*
+```
+
+### Development Tips
+
+1. **Run tests frequently**: Catch regressions early
+2. **Use debug builds**: For faster iteration during development
+3. **Clean build artifacts**: `zig build clean` periodically
+4. **Check benchmarks**: Ensure no performance regressions
+5. **Read the specs**: Consult `spec/*.md` files for requirements
+
+## Next Steps
+
+Once your development environment is set up:
+
+1. Read the [Architecture Overview](/architecture/overview)
+2. Review the [Contributing Guide](/contributing)
+3. Find a [good first issue](https://github.com/northstardb/plandb/labels/good%20first%20issue)
+4. Join the [discussions](https://github.com/northstardb/plandb/discussions)
+
+## Getting Help
+
+If you encounter issues not covered here:
+
+- Check [GitHub Issues](https://github.com/northstardb/plandb/issues)
+- Start a [Discussion](https://github.com/northstardb/plandb/discussions)
+- Ask in [Contributing Guide](/contributing#communication-channels)
