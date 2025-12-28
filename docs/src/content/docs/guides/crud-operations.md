@@ -664,3 +664,74 @@ Now that you understand CRUD operations, explore:
 - [Cartridges Usage](./cartridges-usage.md) - AI-powered data structures
 - [Performance Tuning](./performance-tuning.md) - Optimize your database
 - [API Reference](../reference/db.md) - Complete API documentation
+
+## Try It Yourself
+
+Experiment with CRUD operations in your browser:
+
+export const CrudExamples = [
+  {"name":"Basic CRUD","description":"Create, Read, Update, Delete operations","code":"// Create - store new data\nput:task:1 = Buy groceries\nput:task:2 = Finish report\n\n// Read - retrieve data\nget:task:1\n\n// Update - modify existing data\nput:task:1 = Buy groceries and cook dinner\n\n// Verify update\nget:task:1"},
+  {"name":"Multi-Value Records","description":"Storing related data with key prefixes","code":"// Store product data\nput:product:1001:name = Wireless Mouse\nput:product:1001:price = $29.99\nput:product:1001:stock = 150\n\nput:product:1002:name = Mechanical Keyboard\nput:product:1002:price = $89.99\nput:product:1002:stock = 75\n\n// Query product info\nget:product:1001:name\nget:product:1001:price"},
+  {"name":"Task Queue","description":"Simple task management system","code":"// Add tasks to queue\nput:queue:email:1 = send welcome email to user@example.com\nput:queue:email:2 = send password reset to john@doe.com\nput:queue:email:3 = send weekly newsletter\n\n// Process tasks\nget:queue:email:1\nget:queue:email:2"},
+  {"name":"Configuration Storage","description":"Application configuration management","code":"// Store configuration\nput:config:app:debug = true\nput:config:app:port = 8080\nput:config:app:host = localhost\n\n// Database settings\nput:config:db:pool_size = 10\nput:config:db:timeout = 30\n\n// Read config\nget:config:app:port\nget:config:db:pool_size"}
+];
+
+<div class="code-runner" data-default-index="0" style="--editor-height: 280px;" data-examples={JSON.stringify(CrudExamples)}>
+	<div class="code-runner-loading">
+		<div class="code-runner-spinner"></div>
+		<p>Loading WebAssembly module...</p>
+	</div>
+	<div class="code-runner-error" style="display: none;">
+		<p>Failed to load WebAssembly module</p>
+		<p class="code-runner-error-details"></p>
+		<button class="code-runner-btn code-runner-btn-retry">Retry</button>
+	</div>
+	<div class="code-runner-content" style="display: none;">
+		<div class="code-runner-selector">
+			<label>Examples:</label>
+			<select class="code-runner-select"></select>
+		</div>
+		<div class="code-runner-description"></div>
+		<div class="code-runner-editor">
+			<div class="code-runner-header">
+				<span>Code</span>
+				<div class="code-runner-actions">
+					<button class="code-runner-btn code-runner-btn-copy" title="Copy to clipboard">
+						<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+							<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 0 1 0 1.5h-1.5a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-1.5a.75.75 0 0 1 1.5 0v1.5A1.75 1.75 0 0 1 9.25 16h-7.5A1.75 1.75 0 0 1 0 14.25Z"></path>
+							<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0 1 14.25 11h-7.5A1.75 1.75 0 0 1 5 9.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z"></path>
+						</svg>
+						Copy
+					</button>
+					<button class="code-runner-btn code-runner-btn-run" title="Run code (Ctrl+Enter)">
+						<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+							<path d="M4 2v12l10-6Z"></path>
+						</svg>
+						Run
+					</button>
+				</div>
+			</div>
+			<textarea class="code-runner-textarea" spellcheck="false"></textarea>
+		</div>
+		<div class="code-runner-output">
+			<div class="code-runner-header">
+				<span>Output</span>
+				<button class="code-runner-btn code-runner-btn-clear" title="Clear output">
+					<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+						<path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"></path>
+					</svg>
+				</button>
+			</div>
+			<pre class="code-runner-output-content"></pre>
+			<div class="code-runner-status">
+				<span>
+					<span class="code-runner-status-dot"></span>
+					<span class="code-runner-status-text">Ready</span>
+				</span>
+				<span class="code-runner-time"></span>
+			</div>
+		</div>
+	</div>
+</div>
+
+<link rel="stylesheet" href="/js/code-runner.css" /><script src="/js/code-runner.js"></script>
