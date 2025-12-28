@@ -1,112 +1,584 @@
 ---
 title: Plugin System
 description: Extensible AI plugin architecture for custom intelligence
+sidebar_position: 4
 ---
 
 ## Overview
 
-The NorthstarDB plugin system allows extending the database with custom AI capabilities.
+The NorthstarDB plugin system enables extending the database with custom AI capabilities through a robust hook-based architecture. Plugins hook into the commit stream, query execution, and maintenance scheduling to provide autonomous intelligence.
+
+**Key Features:**
+- **Async Hook Execution**: Plugins run in parallel with performance isolation
+- **Function Calling**: Register LLM-callable functions via JSON Schema
+- **Provider Agnostic**: Works with OpenAI, Anthropic, and local models
+- **Graceful Degradation**: Database remains functional without AI services
+- **Cost Management**: Built-in rate limiting and budget controls
 
 ## Plugin Architecture
 
+### Plugin Trait
+
+Every plugin implements the `Plugin` trait from `src/plugins/manager.zig`:
+
 ```zig
-// Plugin interface
-const Plugin = struct {
+pub const Plugin = struct {
     name: []const u8,
     version: []const u8,
-    init: *const fn(*Allocator) !void,
-    deinit: *const fn() void,
-    functions: []const Function,
+    on_commit: ?*const fn(allocator, CommitContext) anyerror!PluginResult,
+    on_query: ?*const fn(allocator, QueryContext) anyerror!?QueryPlan,
+    on_schedule: ?*const fn(allocator, ScheduleContext) anyerror!MaintenanceTask,
+    get_functions: ?*const fn(allocator) []FunctionSchema,
 };
 ```
 
-## Function Registry
+**Fields:**
+- `name`: Unique plugin identifier
+- `version`: Semantic version string
+- `on_commit`: Hook called after each transaction commit
+- `on_query`: Hook called before query execution for optimization
+- `on_schedule`: Hook called during maintenance windows
+- `get_functions`: Returns LLM-callable function schemas
 
-AI functions can be called by LLMs:
+### PluginManager
+
+The `PluginManager` handles plugin lifecycle and execution:
 
 ```zig
-// Register a function
-try plugins.registerFunction(.{
-    .name = "get_user",
-    .description = "Get user by ID",
-    .schema = .{
-        .type = "object",
-        .properties = .{
-            .id = .{ .type = "integer" },
-        },
+pub const PluginManager = struct {
+    allocator: std.mem.Allocator,
+    plugins: std.StringHashMap(Plugin),
+    llm_provider: *LLMProvider,
+    function_registry: std.StringHashMap(FunctionSchema),
+    config: PluginConfig,
+};
+```
+
+**Initialization:**
+
+```zig
+const config = PluginConfig{
+    .llm_provider = .{
+        .provider_type = "openai",  // or "anthropic", "local"
+        .model = "gpt-4",
+        .api_key = "sk-...",
+        .endpoint = null,  // optional override
     },
-    .handler = getUserHandler,
-});
+    .performance_isolation = true,
+    .max_llm_latency_ms = 5000,
+    .cost_budget_per_hour = 10.0,
+    .fallback_on_error = true,
+};
+
+var manager = try PluginManager.init(allocator, config);
+defer manager.deinit();
 ```
 
-## Built-in Functions
-
-### Data Access
-- `get_table(table)` - Read table schema
-- `query(sql)` - Execute SQL query
-- `get_index(table)` - List indexes
-
-### Metadata
-- `describe_entity(id)` - Get entity metadata
-- `find_entities(type)` - Find entities by type
-- `get_relationships(id)` - Get entity relationships
-
-### Optimization
-- `suggest_indexes()` - Suggest indexes based on queries
-- `analyze_table(table)` - Analyze table statistics
-- `estimate_cost(query)` - Estimate query cost
-
-## Lifecycle Hooks
+**Plugin Registration:**
 
 ```zig
-// Before query execution
-hooks.onQueryStart = fn(Query) void;
+const my_plugin = Plugin{
+    .name = "my_plugin",
+    .version = "0.1.0",
+    .on_commit = onCommitHook,
+    .on_query = null,
+    .on_schedule = null,
+    .get_functions = getFunctionsHook,
+};
 
-// After query completion
-hooks.onQueryEnd = fn(Query, Result) void;
-
-// On error
-hooks.onError = fn(Error) void;
-
-// Periodic (for optimization)
-hooks.onSchedule = "@hourly", "@daily", etc.;
+try manager.register_plugin(my_plugin);
 ```
 
-## Example Plugin
+## Hook System
+
+### on_commit Hook
+
+Called after each transaction commit with context about mutations:
 
 ```zig
-const MyPlugin = struct {
-    fn init(alloc: std.mem.Allocator) !void {
-        // Initialize plugin
+fn onCommitHook(
+    allocator: std.mem.Allocator,
+    ctx: CommitContext
+) anyerror!PluginResult {
+    // Process mutations
+    for (ctx.mutations) |mutation| {
+        // Extract entities, build relationships, etc.
     }
 
-    fn deinit() void {
-        // Cleanup
-    }
+    return PluginResult{
+        .success = true,
+        .operations_processed = ctx.mutations.len,
+        .cartridges_updated = 1,
+        .confidence = 0.9,
+    };
+}
+```
 
-    fn getUser(args: Value) !Value {
-        const id = args.objectGet("id").?.integer;
-        return db.getUserById(id);
-    }
+**CommitContext:**
+
+```zig
+pub const CommitContext = struct {
+    txn_id: u64,
+    mutations: []const txn.Mutation,
+    timestamp: i64,
+    metadata: std.StringHashMap([]const u8),
 };
 ```
+
+**Execution Model:**
+- Plugins with `on_commit` hooks execute **in parallel** (separate threads)
+- Timeout enforced via `max_llm_latency_ms`
+- Errors isolated per-plugin - one failure doesn't stop others
+- Results aggregated into `PluginExecutionResult`
+
+### on_query Hook
+
+Called before query execution to provide optimization hints:
+
+```zig
+fn onQueryHook(
+    allocator: std.mem.Allocator,
+    ctx: QueryContext
+) anyerror!?QueryPlan {
+    // Analyze query and suggest execution strategy
+
+    // If semantic query, use entity cartridge
+    if (isSemanticQuery(ctx.query)) {
+        return QueryPlan{
+            .use_cartridge = .{
+                .cartridge_type = .entity,
+                .query = "find entities matching: {s}",
+            },
+        };
+    }
+
+    return null;  // No optimization suggested
+}
+```
+
+**QueryContext:**
+
+```zig
+pub const QueryContext = struct {
+    query: []const u8,
+    user_intent: ?QueryIntent,
+    available_cartridges: []CartridgeType,
+    performance_constraints: QueryConstraints,
+};
+```
+
+**QueryPlan Options:**
+
+```zig
+pub const QueryPlan = union(enum) {
+    none,  // No optimization
+    use_cartridge: struct {
+        cartridge_type: CartridgeType,  // .entity, .topic, .relationship
+        query: []const u8,
+    },
+    use_llm: struct {
+        prompt: []const u8,
+    },
+    use_hybrid: struct {
+        cartridge_query: []const u8,
+        llm_prompt: []const u8,
+    },
+};
+```
+
+### on_schedule Hook
+
+Called during maintenance windows for background tasks:
+
+```zig
+fn onScheduleHook(
+    allocator: std.mem.Allocator,
+    ctx: ScheduleContext
+) anyerror!MaintenanceTask {
+    return MaintenanceTask{
+        .task_name = "rebuild_entity_index",
+        .priority = 5,
+        .estimated_duration_ms = 30000,
+        .execute = rebuildIndex,
+    };
+}
+```
+
+## LLM Integration
+
+### Function Registration
+
+Register functions that LLMs can call via `get_functions`:
+
+```zig
+fn getFunctionsHook(allocator: std.mem.Allocator) []FunctionSchema {
+    const schema = FunctionSchema.init(
+        allocator,
+        "find_similar_entities",
+        "Find entities similar to the given name",
+        buildEntitySearchSchema(allocator)
+    ) catch return &.{};
+
+    return &[_]FunctionSchema{schema};
+}
+```
+
+### JSON Schema for Parameters
+
+Define parameter schemas using `JSONSchema`:
+
+```zig
+fn buildEntitySearchSchema(allocator: std.mem.Allocator) JSONSchema {
+    var schema = JSONSchema.init(.object);
+
+    // Add properties
+    var name_prop = JSONSchema.init(.string);
+    name_prop.setDescription(allocator, "Entity name to search for") catch {};
+    schema.addProperty(allocator, "name", name_prop) catch {};
+
+    var type_prop = JSONSchema.init(.string);
+    var enum_vals = ArrayListManaged(Value){};
+    enum_vals.append(allocator, .{.string = "person"}) catch {};
+    enum_vals.append(allocator, .{.string = "organization"}) catch {};
+    type_prop.enum_values = enum_vals;
+    schema.addProperty(allocator, "type", type_prop) catch {};
+
+    // Mark required fields
+    schema.addRequired(allocator, "name") catch {};
+
+    return schema;
+}
+```
+
+**Schema Types:**
+- `.string`, `.number`, `.integer`, `.boolean`
+- `.array` (with `items` schema)
+- `.object` (with `properties` map)
+- `.null`
+
+### Provider Configuration
+
+**OpenAI:**
+
+```zig
+.llm_provider = .{
+    .provider_type = "openai",
+    .model = "gpt-4-turbo",
+    .api_key = "sk-...",
+    .endpoint = "https://api.openai.com/v1",
+}
+```
+
+**Anthropic:**
+
+```zig
+.llm_provider = .{
+    .provider_type = "anthropic",
+    .model = "claude-3-opus-20240229",
+    .api_key = "sk-ant-...",
+    .endpoint = "https://api.anthropic.com/v1",
+}
+```
+
+**Local Model (Ollama, etc.):**
+
+```zig
+.llm_provider = .{
+    .provider_type = "local",
+    .model = "codellama:34b",
+    .api_key = null,
+    .endpoint = "http://localhost:11434",
+}
+```
+
+## Plugin Development Guide
+
+### Complete Example: Entity Extractor
+
+```zig
+const std = @import("std");
+const manager = @import("../plugins/manager.zig");
+const llm_function = @import("../llm/function.zig");
+
+/// Plugin state
+var extractor_state: ?ExtractorState = null;
+
+const ExtractorState = struct {
+    pending_mutations: std.ArrayListUnmanaged(PendingMutation),
+    batch_size: usize,
+
+    const PendingMutation = struct {
+        key: []const u8,
+        value: []const u8,
+        txn_id: u64,
+    };
+};
+
+/// on_commit hook implementation
+fn onCommitHook(
+    allocator: std.mem.Allocator,
+    ctx: manager.CommitContext
+) anyerror!manager.PluginResult {
+    const state = extractor_state orelse return error.PluginNotInitialized;
+
+    // Buffer mutations
+    for (ctx.mutations) |mutation| {
+        const value = switch (mutation) {
+            .put => |p| p.value,
+            .delete => "",
+        };
+        try state.pending_mutations.append(allocator, .{
+            .key = try allocator.dupe(u8, mutation.getKey()),
+            .value = try allocator.dupe(u8, value),
+            .txn_id = ctx.txn_id,
+        });
+    }
+
+    // Process batch if ready
+    if (state.pending_mutations.items.len >= state.batch_size) {
+        const entities_extracted = try extractEntities(allocator, state);
+        state.pending_mutations.clearRetainingCapacity();
+
+        return manager.PluginResult{
+            .success = true,
+            .operations_processed = ctx.mutations.len,
+            .cartridges_updated = if (entities_extracted > 0) 1 else 0,
+        };
+    }
+
+    return manager.PluginResult{
+        .success = true,
+        .operations_processed = ctx.mutations.len,
+        .cartridges_updated = 0,
+    };
+}
+
+/// Extract entities using LLM
+fn extractEntities(
+    allocator: std.mem.Allocator,
+    state: *ExtractorState
+) !usize {
+    // Build prompt from buffered mutations
+    var prompt = std.ArrayList(u8).init(allocator);
+    defer prompt.deinit();
+
+    try prompt.appendSlice("Extract entities from these mutations:\n");
+    for (state.pending_mutations.items) |m| {
+        try prompt.print("{s} = {s}\n", .{m.key, m.value});
+    }
+
+    // Call LLM with function calling
+    // In production, use llm_provider.call_function()
+    return 5; // Mock: extracted 5 entities
+}
+
+/// Get function schemas
+fn getFunctionsHook(allocator: std.mem.Allocator) []manager.FunctionSchema {
+    var params = llm_function.JSONSchema.init(.object);
+
+    const schema = manager.FunctionSchema.init(
+        allocator,
+        "extract_entities",
+        "Extract entities from key-value mutations",
+        params
+    ) catch return &[_]manager.FunctionSchema{};
+
+    const allocator_clone = allocator;
+    const schema_ptr = &schema;
+    _ = allocator_clone;
+    _ = schema_ptr;
+
+    return &[_]manager.FunctionSchema{schema};
+}
+
+/// Plugin definition
+pub const EntityExtractorPlugin = manager.Plugin{
+    .name = "entity_extractor",
+    .version = "0.1.0",
+    .on_commit = onCommitHook,
+    .on_query = null,
+    .on_schedule = null,
+    .get_functions = getFunctionsHook,
+};
+
+/// Create plugin instance
+pub fn createPlugin(allocator: std.mem.Allocator, batch_size: usize) !manager.Plugin {
+    const state = try allocator.create(ExtractorState);
+    state.* = .{
+        .pending_mutations = .{},
+        .batch_size = batch_size,
+    };
+    extractor_state = state;
+
+    return manager.Plugin{
+        .name = "entity_extractor",
+        .version = "0.1.0",
+        .on_commit = onCommitHook,
+        .on_query = null,
+        .on_schedule = null,
+        .get_functions = getFunctionsHook,
+    };
+}
+```
+
+### Best Practices
+
+**1. Batch Processing**
+- Buffer mutations to minimize LLM calls
+- Use configurable batch sizes
+- Flush on commit if buffer exceeds threshold
+
+**2. Error Handling**
+- Return errors from hooks, don't crash
+- Use `fallback_on_error` config for graceful degradation
+- Log errors for debugging
+
+**3. Performance Isolation**
+- Keep hooks fast - LLM calls run in background
+- Respect `max_llm_latency_ms` timeout
+- Avoid blocking database operations
+
+**4. Resource Management**
+- Free allocated memory in `deinit()`
+- Use arena allocators for temporary data
+- Clear buffers after processing
+
+**5. Testing**
+- Test hooks with mock contexts
+- Verify batch processing logic
+- Test error isolation
+
+## Built-in Plugins
+
+### Entity Extractor
+Extracts entities, topics, and relationships from commit stream.
+
+**Location:** `src/plugins/entity_extractor.zig`
+
+**Features:**
+- Batch processing for cost efficiency
+- Confidence scoring
+- Topic clustering
+- Configurable thresholds
+
+### Context Summarizer
+Prevents context explosion by summarizing large contexts.
+
+**Location:** `src/plugins/context_summarizer.zig`
+
+**Features:**
+- Multiple summarization strategies (LLM, truncation, sliding window, hierarchical)
+- Token estimation
+- Cache for repeated contexts
+- Compression ratio optimization
+
+### Code Relationships
+Discovers hidden connections between code entities.
+
+**Location:** `src/plugins/code_relationships.zig`
+
+**Features:**
+- Import/dependency analysis
+- Function call detection
+- Semantic relationship inference
+- Pattern caching
+
+### Performance Bottleneck
+Identifies slow operations and suggests optimizations.
+
+**Location:** `src/plugins/performance_bottleneck.zig`
+
+### Security Vulnerability
+Detects potential security issues in data.
+
+**Location:** `src/plugins/security_vulnerability.zig`
+
+### Semantic Diff
+Generates semantic summaries of code changes.
+
+**Location:** `src/plugins/semantic_diff.zig`
+
+### Debug/Testing
+Testing utilities for plugin development.
+
+**Location:** `src/plugins/testing.zig`, `src/plugins/debug.zig`
 
 ## Plugin Discovery
 
-Plugins are loaded from:
+Plugins can be loaded via:
 
-1. **Configuration file**: `plugins.json`
-2. **Dynamic loading**: `.so` files (future)
-3. **Embedded plugins**: Compiled into binary
+1. **Static Registration** (current):
+   ```zig
+   try manager.register_plugin(EntityExtractorPlugin);
+   ```
+
+2. **Configuration File** (planned):
+   ```json
+   {
+     "plugins": [
+       {"name": "entity_extractor", "enabled": true},
+       {"name": "context_summarizer", "config": {"batch_size": 20}}
+     ]
+   }
+   ```
+
+3. **Dynamic Loading** (future):
+   - Load `.so` files from plugins directory
+   - WASM-based plugin sandbox
 
 ## Security
 
-- **Sandboxing**: Plugins run in isolated context
-- **Resource limits**: CPU, memory, API quotas
-- **Permission model**: Read/write/execute grants
-- **Audit logging**: All function calls logged
+### Sandboxing
+- Plugins run in isolated tasks
+- No direct database access (go through hooks)
+- Memory limits enforced
+
+### Resource Limits
+- **CPU:** `max_cpu_percent` in resource limits
+- **Memory:** `max_memory_mb` per plugin
+- **API Quotas:** `cost_budget_per_hour` for LLM calls
+- **Timeout:** `max_llm_latency_ms` enforcement
+
+### Permission Model (Planned)
+- **Read:** Access to committed data
+- **Write:** Cartridge modification
+- **Execute:** Function calling privileges
+
+### Audit Logging
+All function calls logged with:
+- Plugin name
+- Function called
+- Parameters (sanitized)
+- Result/Error
+- Timestamp
+
+## Configuration Reference
+
+```zig
+pub const PluginConfig = struct {
+    // LLM provider settings
+    llm_provider: LLMProviderConfig,
+
+    // Execution behavior
+    fallback_on_error: bool = true,      // Continue on plugin failure
+    performance_isolation: bool = true,   // Run plugins in parallel
+
+    // Resource limits
+    max_llm_latency_ms: u64 = 5000,       // Timeout for LLM calls
+    cost_budget_per_hour: f64 = 10.0,    // Max LLM cost per hour
+};
+
+pub const LLMProviderConfig = struct {
+    provider_type: []const u8,   // "openai", "anthropic", "local"
+    model: []const u8,           // Model identifier
+    api_key: ?[]const u8 = null, // API key (null for local)
+    endpoint: ?[]const u8 = null, // Custom endpoint URL
+};
+```
 
 ## See Also
 
-- [AI Overview](/ai/overview)
-- [Structured Memory](/ai/structured-memory)
+- [AI Overview](/ai/overview) - High-level AI intelligence architecture
+- [Structured Memory](/ai/structured-memory) - Entity/Topic/Relationship cartridges
+- [LLM Integration](/ai/llm) - LLM client and function calling details
+- [Natural Language Queries](/ai/queries) - Semantic query planning
