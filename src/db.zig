@@ -135,8 +135,13 @@ pub const Db = struct {
             const latest_txn_id = registry.getCurrentTxnId();
             const latest_root = registry.getLatestSnapshot();
 
+            // For file-based DBs, model snapshot is empty (data is in B+tree)
+            // Create an empty snapshot state
+            var snap_state = ref_model.SnapshotState.init(self.allocator);
+            errdefer snap_state.deinit();
+
             return ReadTxn{
-                .snapshot = try self.model.beginRead(self.model.current_txn_id),
+                .snapshot = snap_state,
                 .allocator = self.allocator,
                 .db = self,
                 .txn_id = latest_txn_id,
@@ -159,8 +164,13 @@ pub const Db = struct {
         if (self.snapshot_registry) |*registry| {
             const root_page_id = registry.getSnapshotRoot(txn_id) orelse return error.SnapshotNotFound;
 
+            // For file-based DBs, model snapshot is empty (data is in B+tree)
+            // Create an empty snapshot state
+            var snap_state = ref_model.SnapshotState.init(self.allocator);
+            errdefer snap_state.deinit();
+
             return ReadTxn{
-                .snapshot = try self.model.beginRead(txn_id),
+                .snapshot = snap_state,
                 .allocator = self.allocator,
                 .db = self,
                 .txn_id = txn_id,
