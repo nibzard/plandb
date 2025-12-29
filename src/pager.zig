@@ -1696,7 +1696,7 @@ pub const Pager = struct {
 
     // Create a new empty database file
     pub fn create(path: []const u8, allocator: std.mem.Allocator) !Self {
-        const file = try std.fs.cwd().createFile(path, .{ .truncate = true });
+        const file = try std.fs.cwd().createFile(path, .{ .truncate = true, .read = true });
         errdefer file.close();
 
         // Create initial meta pages
@@ -2099,6 +2099,7 @@ pub const Pager = struct {
             } else if (header.page_type == .btree_internal) {
                 // Find child to traverse
                 const child_page_id = findChildInBtreeInternal(&page_buffer, key) orelse return error.CorruptBtree;
+                std.log.debug("    internal node points to child {}", .{child_page_id});
                 if (child_page_id == 0) return error.CorruptBtree;
 
                 current_page_id = child_page_id;
@@ -2111,6 +2112,7 @@ pub const Pager = struct {
     // Find a key-value pair in the B+tree at a specific root page (for snapshots)
     pub fn getBtreeValueAtRoot(self: *Self, key: []const u8, buffer: []u8, root_page_id: u64) !?[]const u8 {
         if (root_page_id == 0) return null; // Empty tree
+        std.log.debug("getBtreeValueAtRoot: key={s}, root_page_id={}", .{key, root_page_id});
 
         var current_page_id = root_page_id;
 
@@ -2119,7 +2121,15 @@ pub const Pager = struct {
             try self.readPage(current_page_id, &page_buffer);
 
             const header = try validatePage(&page_buffer);
+            std.log.debug("  read page {}: page_type={}", .{current_page_id, header.page_type});
             if (header.page_type == .btree_leaf) {
+                // Debug: print all keys in leaf
+                const payload_start = PageHeader.SIZE;
+                const payload_end = payload_start + header.payload_len;
+                const payload_bytes = page_buffer[payload_start..payload_end];
+                const node_header = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
+                std.log.debug("    leaf has {} keys", .{node_header.key_count});
+
                 // Found leaf - search for key
                 const value = getValueFromBtreeLeaf(&page_buffer, key);
                 if (value) |val| {
@@ -2131,6 +2141,7 @@ pub const Pager = struct {
             } else if (header.page_type == .btree_internal) {
                 // Find child to traverse
                 const child_page_id = findChildInBtreeInternal(&page_buffer, key) orelse return error.CorruptBtree;
+                std.log.debug("    internal node points to child {}", .{child_page_id});
                 if (child_page_id == 0) return error.CorruptBtree;
 
                 current_page_id = child_page_id;
@@ -2579,6 +2590,7 @@ pub const Pager = struct {
         // Get all entries from the original leaf
         var leaf = BtreeLeafPayload{};
         const node_header = std.mem.bytesAsValue(BtreeNodeHeader, left_payload_bytes[0..BtreeNodeHeader.SIZE]);
+        const original_key_count = node_header.key_count; // Save before modifying
 
         // Structure to own key/value data (copies to avoid aliasing after zeroing)
         const OwnedEntry = struct {
@@ -2586,19 +2598,25 @@ pub const Pager = struct {
             value: []const u8,
 
             fn deinit(entry: *const @This(), allocator: std.mem.Allocator) void {
-                allocator.free(entry.key);
-                allocator.free(entry.value);
+                // Only free non-empty slices (empty slices are uninitialized or already freed)
+                if (entry.key.len > 0) allocator.free(entry.key);
+                if (entry.value.len > 0) allocator.free(entry.value);
             }
         };
 
-        var owned_entries = try self.allocator.alloc(OwnedEntry, node_header.key_count);
+        var owned_entries = try self.allocator.alloc(OwnedEntry, original_key_count);
         defer {
             for (owned_entries) |*e| e.deinit(self.allocator);
             self.allocator.free(owned_entries);
         }
 
+        // Initialize all entries to empty slices (safe to free if initialization fails)
+        for (0..original_key_count) |i| {
+            owned_entries[i] = .{ .key = &.{}, .value = &.{} };
+        }
+
         // Extract all entries and copy key/value data (must own copies before zeroing)
-        for (0..node_header.key_count) |i| {
+        for (0..original_key_count) |i| {
             const entry = try leaf.getEntry(left_payload_bytes, @intCast(i));
             owned_entries[i] = .{
                 .key = try self.allocator.dupe(u8, entry.key),
@@ -2608,6 +2626,7 @@ pub const Pager = struct {
 
         // Find split point (middle entry)
         const split_point = node_header.key_count / 2;
+        std.log.debug("  before zeroing: node_header.key_count={}, split_point={}", .{node_header.key_count, split_point});
         const separator_key = owned_entries[split_point].key;
 
         // Clear and rebuild left leaf
@@ -2615,6 +2634,7 @@ pub const Pager = struct {
         var left_node_header = std.mem.bytesAsValue(BtreeNodeHeader, left_payload_bytes[0..BtreeNodeHeader.SIZE]);
         left_node_header.key_count = 0;
         left_node_header.right_sibling = right_page_id; // Link to right sibling
+        std.log.debug("  after zeroing: left_node_header.key_count={}, node_header.key_count={}", .{left_node_header.key_count, node_header.key_count});
 
         // Insert entries into left leaf (first half)
         for (0..split_point) |i| {
@@ -2623,7 +2643,9 @@ pub const Pager = struct {
 
         // Insert entries into right leaf (second half)
         var right_leaf = BtreeLeafPayload{};
-        for (split_point..node_header.key_count) |i| {
+        std.log.debug("  populating right leaf: split_point={}, original_key_count={}, right_payload_bytes.len={}", .{split_point, original_key_count, right_payload_bytes.len});
+        for (split_point..original_key_count) |i| {
+            std.log.debug("    adding entry {} to right leaf: key={s}", .{i, owned_entries[i].key});
             _ = try right_leaf.addEntry(right_payload_bytes, owned_entries[i].key, owned_entries[i].value);
         }
 
@@ -2643,6 +2665,10 @@ pub const Pager = struct {
         right_header_mut.header_crc32c = right_header_mut.calculateHeaderChecksum();
         const right_page_data = right_buffer[0 .. PageHeader.SIZE + right_header_mut.payload_len];
         right_header_mut.page_crc32c = calculatePageChecksum(right_page_data);
+
+        // Debug: check key counts before writing
+        const right_node_header = std.mem.bytesAsValue(BtreeNodeHeader, right_payload_bytes[0..BtreeNodeHeader.SIZE]);
+        std.log.debug("splitLeafNode: left_page_id={}, left_keys={}, right_page_id={}, right_keys={}", .{left_header.page_id, left_node_header.key_count, right_page_id, right_node_header.key_count});
 
         // Write both pages
         const left_page_id = left_header.page_id;
@@ -2726,9 +2752,14 @@ pub const Pager = struct {
         var separator_keys = try self.allocator.alloc([]const u8, internal_node_header.key_count);
         defer {
             for (separator_keys) |key| {
-                self.allocator.free(key);
+                if (key.len > 0) self.allocator.free(key);
             }
             self.allocator.free(separator_keys);
+        }
+
+        // Initialize separator keys to empty slices
+        for (0..internal_node_header.key_count) |i| {
+            separator_keys[i] = &.{};
         }
 
         // Extract child pointers
