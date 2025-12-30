@@ -793,6 +793,7 @@ pub const AccessControl = struct {
     allocator: std.mem.Allocator,
     roles: std.StringHashMap(Role),
     policies: std.StringHashMap(Policy),
+    user_roles: std.StringHashMap(std.ArrayList([]const u8)),
 
     const Self = @This();
 
@@ -801,6 +802,7 @@ pub const AccessControl = struct {
             .allocator = allocator,
             .roles = std.StringHashMap(Role).init(allocator),
             .policies = std.StringHashMap(Policy).init(allocator),
+            .user_roles = std.StringHashMap(std.ArrayList([]const u8)).init(allocator),
         };
     }
 
@@ -818,24 +820,157 @@ pub const AccessControl = struct {
             entry.value_ptr.deinit(self.allocator);
         }
         self.policies.deinit();
+
+        var user_role_it = self.user_roles.iterator();
+        while (user_role_it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            for (entry.value_ptr.items) |role_name| {
+                self.allocator.free(role_name);
+            }
+            entry.value_ptr.deinit(self.allocator);
+        }
+        self.user_roles.deinit();
     }
 
+    /// Check if user has permission based on their roles and policies
     pub fn checkAccess(self: *Self, allocator: std.mem.Allocator, user_id: []const u8, permission: Permission) !bool {
-        _ = self;
         _ = allocator;
-        _ = user_id;
-        _ = permission;
 
-        // Simplified: grant all permissions for now
-        // In production, would check user roles against policies
+        // Get user's roles
+        const user_role_entry = self.user_roles.get(user_id) orelse {
+            // No roles assigned = no access
+            return false;
+        };
+
+        // Collect all permissions from user's roles
+        var user_permissions = std.ArrayList(Permission).initCapacity(self.allocator, 10) catch unreachable;
+        defer user_permissions.deinit(self.allocator);
+
+        for (user_role_entry.items) |role_name| {
+            if (self.roles.get(role_name)) |role| {
+                for (role.permissions) |perm| {
+                    // Add permission if not already present
+                    var already_has = false;
+                    for (user_permissions.items) |existing| {
+                        if (existing == perm) {
+                            already_has = true;
+                            break;
+                        }
+                    }
+                    if (!already_has) {
+                        try user_permissions.append(self.allocator, perm);
+                    }
+                }
+            }
+        }
+
+        // Check if user has the required permission
+        var has_permission = false;
+        for (user_permissions.items) |perm| {
+            if (perm == permission) {
+                has_permission = true;
+                break;
+            }
+        }
+
+        if (!has_permission) {
+            return false;
+        }
+
+        // Evaluate policies (deny takes precedence)
+        var policy_it = self.policies.iterator();
+        while (policy_it.next()) |entry| {
+            const policy = entry.value_ptr.*;
+            // Check if policy applies to this permission
+            const policy_applies = for (policy.permissions) |policy_perm| {
+                if (policy_perm == permission) {
+                    break true;
+                }
+            } else false;
+
+            if (policy_applies) {
+                // For now, apply policy if permission matches
+                // TODO: Check policy conditions against user context
+                if (policy.effect == .deny) {
+                    return false;
+                }
+            }
+        }
+
         return true;
     }
 
-    pub fn addRole(self: *Self, name: []const u8, role: Role) !void {
+    /// Assign a role to a user
+    pub fn assignRole(self: *Self, user_id: []const u8, role_name: []const u8) !void {
+        const role_entry = try self.user_roles.getOrPut(user_id);
+        if (!role_entry.found_existing) {
+            role_entry.key_ptr.* = try self.allocator.dupe(u8, user_id);
+            role_entry.value_ptr.* = std.ArrayList([]const u8).initCapacity(self.allocator, 5) catch unreachable;
+        }
+
+        // Check if user already has this role
+        for (role_entry.value_ptr.items) |existing_role| {
+            if (std.mem.eql(u8, existing_role, role_name)) {
+                return; // Already has role
+            }
+        }
+
+        // Add role
+        try role_entry.value_ptr.append(self.allocator, try self.allocator.dupe(u8, role_name));
+    }
+
+    /// Revoke a role from a user
+    pub fn revokeRole(self: *Self, user_id: []const u8, role_name: []const u8) !void {
+        const user_role_entry_ptr = self.user_roles.getPtr(user_id) orelse {
+            return; // No roles to revoke
+        };
+
+        // Find and remove the role
+        for (user_role_entry_ptr.items, 0..) |existing_role, i| {
+            if (std.mem.eql(u8, existing_role, role_name)) {
+                const removed = user_role_entry_ptr.orderedRemove(i);
+                self.allocator.free(removed);
+                return;
+            }
+        }
+    }
+
+    /// Get all permissions for a user
+    pub fn getUserPermissions(self: *Self, user_id: []const u8) !std.ArrayList(Permission) {
+        var permissions = std.ArrayList(Permission).initCapacity(self.allocator, 10) catch unreachable;
+
+        const user_role_entry = self.user_roles.get(user_id) orelse {
+            return permissions;
+        };
+
+        for (user_role_entry.items) |role_name| {
+            if (self.roles.get(role_name)) |role| {
+                for (role.permissions) |perm| {
+                    // Add permission if not already present
+                    var already_has = false;
+                    for (permissions.items) |existing| {
+                        if (existing == perm) {
+                            already_has = true;
+                            break;
+                        }
+                    }
+                    if (!already_has) {
+                        try permissions.append(self.allocator, perm);
+                    }
+                }
+            }
+        }
+
+        return permissions;
+    }
+
+    pub fn addRole(self: *Self, name: []const u8, permissions: []const Permission) !void {
+        const role = try Role.init(self.allocator, permissions);
         try self.roles.put(try self.allocator.dupe(u8, name), role);
     }
 
-    pub fn addPolicy(self: *Self, name: []const u8, policy: Policy) !void {
+    pub fn addPolicy(self: *Self, name: []const u8, effect: PolicyEffect, permissions: []const Permission, conditions: []const PolicyCondition) !void {
+        const policy = try Policy.init(self.allocator, name, effect, permissions, conditions);
         try self.policies.put(try self.allocator.dupe(u8, name), policy);
     }
 };
@@ -843,6 +978,13 @@ pub const AccessControl = struct {
 /// Role for access control
 pub const Role = struct {
     permissions: []const Permission,
+
+    pub fn init(allocator: std.mem.Allocator, permissions: []const Permission) !Role {
+        const perms = try allocator.dupe(Permission, permissions);
+        return .{
+            .permissions = perms,
+        };
+    }
 
     pub fn deinit(self: *Role, allocator: std.mem.Allocator) void {
         allocator.free(self.permissions);
@@ -855,6 +997,15 @@ pub const Policy = struct {
     effect: PolicyEffect,
     permissions: []const Permission,
     conditions: []const PolicyCondition,
+
+    pub fn init(allocator: std.mem.Allocator, name: []const u8, effect: PolicyEffect, permissions: []const Permission, conditions: []const PolicyCondition) !Policy {
+        return .{
+            .name = try allocator.dupe(u8, name),
+            .effect = effect,
+            .permissions = try allocator.dupe(Permission, permissions),
+            .conditions = try allocator.dupe(PolicyCondition, conditions),
+        };
+    }
 
     pub fn deinit(self: *Policy, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
@@ -1275,8 +1426,13 @@ test "AISecurityManager init" {
 test "AISecurityManager sanitizeForLLM basic" {
     var pii_detector = PIIDetector.init(std.testing.allocator, &.{});
     var access_control = AccessControl.init(std.testing.allocator);
+    defer access_control.deinit();
     var rate_limiter = RateLimiter.init(std.testing.allocator);
     var audit_log = AuditLog.init(std.testing.allocator);
+
+    // Grant test-user the ai_query permission
+    try access_control.addRole("user", &.{.ai_query});
+    try access_control.assignRole("test-user", "user");
 
     var manager = AISecurityManager.init(std.testing.allocator, .{
         .pii_redaction_enabled = false,
@@ -1407,9 +1563,56 @@ test "AccessControl checkAccess" {
     var access = AccessControl.init(std.testing.allocator);
     defer access.deinit();
 
-    const result = try access.checkAccess(std.testing.allocator, "user1", .ai_query);
+    // Add role to access control
+    try access.addRole("user", &.{.ai_query});
 
-    try std.testing.expect(result); // Default allows all
+    // Test 1: User without roles should be denied
+    const result1 = try access.checkAccess(std.testing.allocator, "user1", .ai_query);
+    try std.testing.expect(!result1); // No roles assigned
+
+    // Test 2: User with role should have access
+    try access.assignRole("user1", "user");
+    const result2 = try access.checkAccess(std.testing.allocator, "user1", .ai_query);
+    try std.testing.expect(result2); // Has role with ai_query permission
+
+    // Test 3: User without specific permission should be denied
+    const result3 = try access.checkAccess(std.testing.allocator, "user1", .admin_access);
+    try std.testing.expect(!result3); // Role doesn't have admin_access permission
+
+    // Test 4: Revoke role and verify access is removed
+    try access.revokeRole("user1", "user");
+    const result4 = try access.checkAccess(std.testing.allocator, "user1", .ai_query);
+    try std.testing.expect(!result4); // Role revoked
+}
+
+test "AccessControl deny policy" {
+    var access = AccessControl.init(std.testing.allocator);
+    defer access.deinit();
+
+    // Define admin role with all permissions
+    const admin_role_perms = [_]Permission{
+        .ai_query,
+        .admin_access,
+        .data_export,
+    };
+
+    try access.addRole("admin", &admin_role_perms);
+    try access.assignRole("admin1", "admin");
+
+    // Test 1: Admin should have access
+    const result1 = try access.checkAccess(std.testing.allocator, "admin1", .ai_query);
+    try std.testing.expect(result1);
+
+    // Test 2: Add deny policy for ai_query
+    try access.addPolicy("deny_ai_query", .deny, &.{.ai_query}, &.{});
+
+    // Test 3: Admin should be denied by policy
+    const result2 = try access.checkAccess(std.testing.allocator, "admin1", .ai_query);
+    try std.testing.expect(!result2); // Deny policy takes precedence
+
+    // Test 4: Admin should still have other permissions
+    const result3 = try access.checkAccess(std.testing.allocator, "admin1", .admin_access);
+    try std.testing.expect(result3); // Not affected by deny policy
 }
 
 test "AuditLog log and query" {

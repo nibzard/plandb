@@ -2240,6 +2240,7 @@ This is a **non-critical** benchmark (`.critical = false`) that demonstrates adv
     - P2: No resource quotas for AI operations (CWE-770)
     - P2: Insecure defaults for API keys (CWE-276)
     - P2: Missing input validation for function parameters ✅ FIXED (commit 3c63d74)
+    - P2: No URL validation for custom endpoints (SSRF) ✅ FIXED (commit 0df8e07)
   - **STATUS**: Audit complete, ALL P0 and P1 issues fixed ✅
   - **PRIORITY**: 🟡 Address P2 issues for enhanced production security
 - [ ] Load testing at production scale
