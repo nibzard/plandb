@@ -2317,8 +2317,10 @@ This is a **non-critical** benchmark (`.critical = false`) that demonstrates adv
   - **IMPLEMENTATION**: Created spec/replication_v1.md with complete protocol design including primary-replica topology, consistency model, failure modes, and implementation phases
 - [x] Raft consensus integration
   - **IMPLEMENTATION**: Created spec/raft_v1.md with complete Raft consensus design including leader election, log replication, safety, and configuration changes
-- [ ] Distributed transaction coordination
-- [ ] Leader election and failover
+- [x] Distributed transaction coordination
+  - **IMPLEMENTATION**: Created spec/dist_transactions_v1.md with complete 2PC protocol design including concurrency control, deadlock detection, and failure recovery
+- [x] Leader election and failover
+  - **IMPLEMENTATION**: Created spec/leader_election_v1.md with complete leader election, failover detection, and split-brain prevention design
 
 ### Phase 10.4: Advanced AI Features
 - [ ] Multi-model orchestration optimization
