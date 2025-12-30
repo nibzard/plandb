@@ -13,11 +13,16 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **CHECKSUMS**: Correctly recalculated in splitLeafNode() (lines 2778-2785 in pager.zig)
   - **PREVIOUS FIXES**: Memory corruption and slot array bounds resolved (commits 67a8d42, ef0cd72)
   - **STATUS**: B+tree split logic working correctly, TODO entry was outdated
-  - **NOTES**: Only remaining issue is memory leaks in WriteTxn.commit() (non-blocking)
 
 ---
 
 **Completed 2025-12-30:**
+- [ ✅ ] 🟠 Fix memory leak in WriteTxn.commit() and WriteTxn.abort()
+  - **COMPLETED**: Added txn_ctx.deinit() to WriteTxn.commit() to cleanup TransactionContext mutations
+  - **COMPLETED**: Added txn_ctx.deinit() to WriteTxn.abort() for consistent cleanup
+  - **FIXED**: Memory leaks from HashMap mutations in TransactionContext during transaction lifecycle
+  - **COMMIT**: 7e815c1
+  - **VERIFIED**: All transaction cleanup paths now properly deinitialize context
 - [ ✅ ] 🔴 Fix P0 Critical Security Issue - Replace weak XOR encryption with AES-256-GCM in CredentialManager
   - **COMPLETED**: Replaced weak XOR encryption with AES-256-GCM authenticated encryption
   - **IMPLEMENTATION**: Used PBKDF2-HMAC-SHA256 key derivation (100k iterations) for secure key expansion
