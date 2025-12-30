@@ -10,6 +10,9 @@
 
 const std = @import("std");
 const mem = std.mem;
+const crypto = std.crypto;
+const auth = crypto.auth;
+const Aes256Gcm = std.crypto.aead.aes_gcm.Aes256Gcm;
 
 /// Security level for AI operations
 pub const SecurityLevel = enum {
@@ -1124,21 +1127,103 @@ pub const CredentialManager = struct {
     }
 
     fn encrypt(self: *Self, data: []const u8) ![]const u8 {
-        _ = self.encryption_key;
-        // Simple XOR for demo (would use AES-GCM in production)
-        const result = try self.allocator.alloc(u8, data.len);
-        for (data, 0..) |byte, i| {
-            result[i] = byte ^ 0x42;
-        }
-        return result;
+        // AES-256-GCM encryption with proper key derivation
+        // Derive 256-bit key from encryption_key using PBKDF2
+        const key_len = 32; // 256 bits for AES-256
+        const derived_key = try self.deriveKey(self.encryption_key, key_len);
+        defer self.allocator.free(derived_key);
+
+        // Generate random nonce (96 bits for GCM)
+        var nonce_array: [12]u8 = undefined;
+        std.crypto.random.bytes(&nonce_array);
+
+        // AES-256-GCM: ciphertext = nonce || ciphertext || tag
+        const tag_len = 16; // 128-bit auth tag
+        const nonce_len = 12;
+        const cipher_result = try self.allocator.alloc(u8, nonce_len + data.len + tag_len);
+        errdefer self.allocator.free(cipher_result);
+
+        // Copy nonce to output
+        @memcpy(cipher_result[0..nonce_len], &nonce_array);
+
+        // Encrypt with AES-256-GCM
+        var key_array: [32]u8 = undefined;
+        @memcpy(&key_array, derived_key[0..32]);
+
+        var tag_array: [16]u8 = undefined;
+        Aes256Gcm.encrypt(
+            cipher_result[nonce_len .. nonce_len + data.len],
+            &tag_array,
+            data,
+            &.{}, // no additional authenticated data
+            nonce_array,
+            key_array,
+        );
+
+        // Append tag
+        @memcpy(cipher_result[nonce_len + data.len ..][0..tag_len], &tag_array);
+
+        return cipher_result;
     }
 
     fn decrypt(self: *Self, data: []const u8) ![]const u8 {
-        _ = self.encryption_key;
-        const result = try self.allocator.alloc(u8, data.len);
-        for (data, 0..) |byte, i| {
-            result[i] = byte ^ 0x42;
+        // AES-256-GCM decryption
+        // Format: nonce(12) || ciphertext || tag(16)
+        const nonce_len = 12;
+        const tag_len = 16;
+
+        if (data.len < nonce_len + tag_len) {
+            return error.InvalidCiphertext;
         }
+
+        const ciphertext_len = data.len - nonce_len - tag_len;
+        const nonce_bytes = data[0..nonce_len];
+        const ciphertext = data[nonce_len .. nonce_len + ciphertext_len];
+        const tag_bytes = data[nonce_len + ciphertext_len ..];
+
+        // Derive key
+        const key_len = 32;
+        const derived_key = try self.deriveKey(self.encryption_key, key_len);
+        defer self.allocator.free(derived_key);
+
+        // Decrypt with AES-256-GCM
+        var key_array: [32]u8 = undefined;
+        @memcpy(&key_array, derived_key[0..32]);
+
+        var nonce_array: [12]u8 = undefined;
+        @memcpy(&nonce_array, nonce_bytes[0..12]);
+
+        var tag_array: [16]u8 = undefined;
+        @memcpy(&tag_array, tag_bytes[0..16]);
+
+        const result = try self.allocator.alloc(u8, ciphertext_len);
+        errdefer self.allocator.free(result);
+
+        Aes256Gcm.decrypt(
+            result,
+            ciphertext,
+            tag_array,
+            &.{}, // no additional authenticated data
+            nonce_array,
+            key_array,
+        ) catch {
+            return error.DecryptionFailed;
+        };
+
+        return result;
+    }
+
+    /// Derive cryptographic key from input using PBKDF2-HMAC-SHA256
+    fn deriveKey(self: *Self, input: []const u8, len: usize) ![]const u8 {
+        // Use PBKDF2 with HMAC-SHA256 to derive a key of specified length
+        const salt = "northstar-db-salt-v1"; // In production, should be configurable
+        const iterations = 100_000;
+
+        const result = try self.allocator.alloc(u8, len);
+
+        // PBKDF2-HMAC-SHA256 key derivation
+        try crypto.pwhash.pbkdf2(result, input, salt, iterations, crypto.auth.hmac.sha2.HmacSha256);
+
         return result;
     }
 };
