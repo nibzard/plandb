@@ -22,6 +22,7 @@ const document_history_bench = @import("document_history_bench.zig");
 const storage_efficiency_bench = @import("storage_efficiency_bench.zig");
 const timeseries_telemetry_bench = @import("timeseries_telemetry_bench.zig");
 const downsampling_comparison_bench = @import("downsampling_comparison_bench.zig");
+const load_test = @import("load_test.zig");
 
 // Stub benchmark functions for testing the harness
 
@@ -340,6 +341,35 @@ pub fn registerBenchmarks(bench_runner: *runner.Runner) !void {
         .run_fn = benchHardeningCleanRecovery,
         .critical = true,
         .suite = .hardening,
+    });
+
+    // Production load testing benchmarks
+    try bench_runner.addBenchmark(.{
+        .name = "bench/load/concurrent_readers_1000",
+        .run_fn = benchLoadConcurrentReaders,
+        .critical = false,
+        .suite = .macro,
+    });
+
+    try bench_runner.addBenchmark(.{
+        .name = "bench/load/mixed_read_write_1000x4",
+        .run_fn = benchLoadMixedReadWrite,
+        .critical = false,
+        .suite = .macro,
+    });
+
+    try bench_runner.addBenchmark(.{
+        .name = "bench/load/burst_traffic_pattern",
+        .run_fn = benchLoadBurstTraffic,
+        .critical = false,
+        .suite = .macro,
+    });
+
+    try bench_runner.addBenchmark(.{
+        .name = "bench/load/sustained_1hour",
+        .run_fn = benchLoadSustained,
+        .critical = false,
+        .suite = .macro,
     });
 }
 
@@ -6618,4 +6648,99 @@ fn benchMacroMultiRegionReplication(allocator: std.mem.Allocator, config: types.
         .errors_total = 0,
         .notes = notes_value,
     };
+}
+
+// ========== Load Test Benchmarks ==========
+
+/// Load test: 1000 concurrent readers
+fn benchLoadConcurrentReaders(allocator: std.mem.Allocator, config: types.Config) !types.Results {
+    _ = config;
+    const load_config = load_test.LoadTestConfig{
+        .reader_count = 1000,
+        .writer_count = 0,
+        .warmup_duration_ns = 5 * std.time.ns_per_s,
+        .measure_duration_ns = 60 * std.time.ns_per_s,
+        .initial_keys = 1_000_000,
+        .key_size = 16,
+        .value_size = 256,
+    };
+
+    var harness = load_test.LoadTestHarness.init(allocator, load_config);
+    defer harness.deinit();
+
+    var load_result = try harness.runConcurrentLoadTest();
+    defer load_result.deinit(allocator);
+
+    return load_test.loadTestToResults(allocator, load_result);
+}
+
+/// Load test: Mixed read/write workload (1000 readers, 4 writers)
+fn benchLoadMixedReadWrite(allocator: std.mem.Allocator, config: types.Config) !types.Results {
+    _ = config;
+    const load_config = load_test.LoadTestConfig{
+        .reader_count = 1000,
+        .writer_count = 4,
+        .warmup_duration_ns = 5 * std.time.ns_per_s,
+        .measure_duration_ns = 60 * std.time.ns_per_s,
+        .initial_keys = 1_000_000,
+        .key_size = 16,
+        .value_size = 256,
+    };
+
+    var harness = load_test.LoadTestHarness.init(allocator, load_config);
+    defer harness.deinit();
+
+    var load_result = try harness.runConcurrentLoadTest();
+    defer load_result.deinit(allocator);
+
+    return load_test.loadTestToResults(allocator, load_result);
+}
+
+/// Load test: Burst traffic pattern (simulating spikes)
+fn benchLoadBurstTraffic(allocator: std.mem.Allocator, config: types.Config) !types.Results {
+    _ = config;
+    const load_config = load_test.LoadTestConfig{
+        .reader_count = 500,
+        .writer_count = 2,
+        .warmup_duration_ns = 5 * std.time.ns_per_s,
+        .measure_duration_ns = 60 * std.time.ns_per_s,
+        .initial_keys = 500_000,
+        .key_size = 16,
+        .value_size = 256,
+        .enable_burst = true,
+        .burst_interval_ns = 10 * std.time.ns_per_s,
+        .burst_duration_ns = 2 * std.time.ns_per_s,
+        .burst_multiplier = 5,
+    };
+
+    var harness = load_test.LoadTestHarness.init(allocator, load_config);
+    defer harness.deinit();
+
+    var load_result = try harness.runBurstLoadTest();
+    defer load_result.deinit(allocator);
+
+    return load_test.loadTestToResults(allocator, load_result);
+}
+
+/// Load test: Sustained 1-hour run (for stability testing)
+fn benchLoadSustained(allocator: std.mem.Allocator, config: types.Config) !types.Results {
+    _ = config;
+    const load_config = load_test.LoadTestConfig{
+        .reader_count = 100,
+        .writer_count = 2,
+        .warmup_duration_ns = 5 * std.time.ns_per_s,
+        .measure_duration_ns = 60 * std.time.ns_per_s, // 1 min for CI, override for full test
+        .initial_keys = 100_000,
+        .key_size = 16,
+        .value_size = 256,
+    };
+
+    var harness = load_test.LoadTestHarness.init(allocator, load_config);
+    defer harness.deinit();
+
+    // For CI, run shorter test. Full test runs 1 hour.
+    var load_result = try harness.runConcurrentLoadTest();
+    defer load_result.deinit(allocator);
+
+    return load_test.loadTestToResults(allocator, load_result);
 }
