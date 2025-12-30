@@ -140,10 +140,20 @@ pub const Comparator = struct {
 
     fn checkStability(self: *Comparator, result: types.BenchmarkResult) !bool {
         _ = self;
-        _ = result;
-        // TODO: Implement stability check based on repeat_count
-        // For now, assume stable
-        return true;
+
+        // If stability metadata is available, use the pre-computed is_stable flag
+        if (result.results.stability) |stability| {
+            return stability.is_stable;
+        }
+
+        // For single-repeat benchmarks (repeat_count == 1), assume stable
+        if (result.repeat_count <= 1) {
+            return true;
+        }
+
+        // If no stability metadata but multiple repeats, assume unstable
+        // (caller should aggregate results first to compute CV)
+        return false;
     }
 
     fn validateParsedResult(self: *Comparator, result: types.BenchmarkResult) !void {
