@@ -3,6 +3,21 @@
 Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · 🟢 P3 (low)
 
 **Completed 2025-12-30:**
+- [ ✅ ] 🟢 Phase 2: Observability Cartridges (from PLAN-REVIEW-OBSERVABILITY.md)
+  - **COMPLETED**: ObservabilityCartridge with metric ingestion, regression detection, and correlation
+  - **COMPLETED**: perf_analyzer plugin with on_benchmark_complete hook
+  - **COMPLETED**: Hot path safety enforcement (payload size limits, rate limiting, sampling)
+  - **COMPLETED**: Documentation for standard event schemas (docs/observability-event-schemas.md)
+  - **COMPLETED**: Plugin manager extended with BenchmarkCompleteContext and on_benchmark_complete hook
+  - **FILES MODIFIED**: src/plugins/manager.zig, src/plugins/perf_analyzer.zig, src/plugins/testing.zig
+  - **FILES ADDED**: docs/observability-event-schemas.md
+  - **COMMIT**: 60171d9
+  - **STATUS**: Phase 2 observability implementation complete, benchmark metrics automatically tracked
+  - **NOTES**:
+    - Benchmark completion now records ops/sec, p99 latency, and throughput metrics
+    - Token bucket rate limiting prevents metric flooding
+    - Configurable sampling and retention policies
+    - Event schemas documented for all observability events
 - [ ✅ ] 🟢 Create end-to-end AI integration example
   - **COMPLETED**: Implemented complete Living Database demo with mock LLM
   - **COMPLETED**: Demonstrates entity extraction, NL queries, autonomous optimization
