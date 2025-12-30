@@ -2271,7 +2271,17 @@ This is a **non-critical** benchmark (`.critical = false`) that demonstrates adv
 - [ ] macOS support and testing
 - [ ] Windows support and testing
 - [ ] ARM64 architecture testing
-- [ ] Cross-platform CI matrix
+- [x] Cross-platform CI matrix
+  - **IMPLEMENTATION**: Created .github/workflows/cross-platform.yml with test matrix for:
+    - Linux x86_64 (baseline)
+    - macOS x86_64 (Intel)
+    - macOS ARM64 (Apple Silicon)
+    - Windows x86_64
+    - Linux ARM64 (compilation only, QEMU too slow for execution)
+  - **IMPLEMENTATION**: Updated scripts/manage_baselines.sh with cross-platform dependency installation (supports apt-get, yum, dnf, pacman, brew, scoop, chocolatey)
+  - **IMPLEMENTATION**: Updated scripts/verify_ci_setup.sh to verify cross-platform workflow exists
+  - **VERIFICATION**: YAML syntax validated, build passes
+  - **FILES MODIFIED**: .github/workflows/cross-platform.yml, scripts/manage_baselines.sh, scripts/verify_ci_setup.sh
 
 ### Phase 10.3: Distributed Features
 - [ ] Multi-region replication design

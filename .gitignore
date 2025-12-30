@@ -43,3 +43,6 @@ test_output*/
 *.a
 wasm/*.a
 
+# Test data files
+test_arraylist
+
