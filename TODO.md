@@ -2,6 +2,17 @@
 
 Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · 🟢 P3 (low)
 
+**Completed 2025-12-30:**
+- [ ✅ ] 🔴 Migrate to Zig 0.15.2 API changes
+  - **COMPLETED**: Fixed ArrayList API migration (removed deprecated second parameter)
+  - **COMPLETED**: Fixed File.writer() API migration (use writer() directly, not writer().*)
+  - **COMPLETED**: Fixed nanoTimestamp migration to timestamp (nanosecond precision)
+  - **COMPLETED**: Fixed db.zig test code (beginReadLatest, delete alias, close vs end)
+  - **COMPLETED**: Hardening tests now compile and run successfully
+  - **FILES MODIFIED**: src/db.zig, src/hardening.zig, src/pager.zig, src/events/index.zig, src/plugins/manager.zig, src/bench/runner.zig
+  - **COMMIT**: Most recent commit covers these changes
+  - **STATUS**: All API migrations complete, project builds and tests pass with Zig 0.15.2
+
 **Completed 2025-12-29:**
 - [ ✅ ] 🔴 Fix snapshot state handling for file-based databases
   - **COMPLETED**: Fixed beginReadLatest() and beginReadAt() to use empty SnapshotState for file-based DBs
