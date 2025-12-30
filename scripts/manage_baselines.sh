@@ -192,10 +192,45 @@ main() {
     esac
 }
 
-# Install jq if not available
+# Install jq if not available (cross-platform)
 if ! command -v jq &> /dev/null; then
     log_info "Installing jq for JSON validation..."
-    sudo apt-get update && sudo apt-get install -y jq
+
+    # Detect OS and install accordingly
+    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        if command -v apt-get &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y jq
+        elif command -v yum &> /dev/null; then
+            sudo yum install -y jq
+        elif command -v dnf &> /dev/null; then
+            sudo dnf install -y jq
+        elif command -v pacman &> /dev/null; then
+            sudo pacman -S jq
+        else
+            log_error "Unable to install jq on this Linux distribution"
+            exit 1
+        fi
+    elif [[ "$OSTYPE" == "darwin"* ]]; then
+        if command -v brew &> /dev/null; then
+            brew install jq
+        else
+            log_error "Homebrew not found. Please install jq manually"
+            exit 1
+        fi
+    elif [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "win32" ]]; then
+        # Windows with Git Bash or MSYS2
+        if command -v scoop &> /dev/null; then
+            scoop install jq
+        elif command -v chocolatey &> /dev/null; then
+            choco install jq
+        else
+            log_error "Unable to install jq on Windows. Please install manually"
+            exit 1
+        fi
+    else
+        log_error "Unsupported OS: $OSTYPE"
+        exit 1
+    fi
 fi
 
 main "$@"

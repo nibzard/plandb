@@ -85,6 +85,14 @@ else
     exit 1
 fi
 
+# Check 5b: Cross-platform CI workflow
+echo -n "Checking cross-platform CI workflow..."
+if [ -f "$PROJECT_ROOT/.github/workflows/cross-platform.yml" ]; then
+    log_ok "Cross-platform CI workflow exists"
+else
+    log_warn "Cross-platform CI workflow missing"
+fi
+
 # Check 6: Documentation
 echo -n "Checking documentation..."
 if [ -f "$PROJECT_ROOT/docs/ci_gating.md" ]; then
