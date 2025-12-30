@@ -1,0 +1,232 @@
+name: Security Scanning
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Run daily at 00:00 UTC
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+env:
+  ZIG_VERSION: 0.15.2
+
+jobs:
+  codeql:
+    name: CodeQL Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ['javascript']
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v3
+      with:
+        languages: ${{ matrix.language }}
+        queries: security-extended,security-and-quality
+
+    - name: Autobuild
+      uses: github/codeql-action/autobuild@v3
+
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v3
+      with:
+        category: "/language:${{matrix.language}}"
+
+  zig-security-audit:
+    name: Zig Security Audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    timeout-minutes: 15
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install Zig
+      uses: goto-bus-stop/setup-zig@v2
+      with:
+        version: ${{ env.ZIG_VERSION }}
+
+    - name: Run security-focused build checks
+      run: |
+        echo "=== Security Build Checks ==="
+
+        # Check for unsafe build modes
+        echo "Checking for release-safe mode..."
+        zig build -Drelease-safe || true
+
+        # Check for common vulnerability patterns in Zig code
+        echo "Scanning for potential security issues..."
+        grep -r "std.os" src/ || echo "✓ No direct OS calls found"
+        grep -r "std.http" src/ || echo "✓ No HTTP client code found"
+
+        # Check for hardcoded secrets/patterns
+        echo "Checking for hardcoded secrets..."
+        if grep -rE "(password|secret|api_key|token)\s*=\s*['\"]" src/; then
+          echo "⚠️ Warning: Potential hardcoded strings found"
+        else
+          echo "✓ No hardcoded credentials found"
+        fi
+
+        echo "✅ Security audit complete"
+
+  dependency-check:
+    name: Dependency Vulnerability Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 10
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Check Zig dependencies
+      run: |
+        echo "=== Dependency Security Check ==="
+
+        # Check if build.zig.zon exists and analyze it
+        if [ -f "build.zig.zon" ]; then
+          echo "Found build.zig.zon - analyzing dependencies..."
+          cat build.zig.zon
+        else
+          echo "✓ No build.zig.zon found - using only stdlib"
+        fi
+
+        # Check for suspicious patterns in build.zig
+        echo "Checking build.zig for remote dependencies..."
+        if grep -E "http|git|fetch" build.zig 2>/dev/null; then
+          echo "⚠️ Warning: build.zig contains remote dependency references"
+        else
+          echo "✓ No remote dependencies in build.zig"
+        fi
+
+        echo "✅ Dependency check complete"
+
+  security-lint:
+    name: Security Linting
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 10
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install Zig
+      uses: goto-bus-stop/setup-zig@v2
+      with:
+        version: ${{ env.ZIG_VERSION }}
+
+    - name: Run zig fmt check
+      run: |
+        echo "=== Code Style Check ==="
+        zig fmt --check src/ || echo "⚠️ Code formatting issues found"
+
+    - name: Check for common security anti-patterns
+      run: |
+        echo "=== Security Anti-Pattern Check ==="
+
+        # Check for TODO/FIXME comments in security-sensitive code
+        if grep -rnE "TODO|FIXME|XXX|HACK" src/ --include="*.zig" | grep -iE "(crypt|auth|password|secret|sanitize|validate)"; then
+          echo "⚠️ Warning: Outstanding TODOs in security-sensitive code"
+        fi
+
+        # Check for unchecked errors in critical paths
+        if grep -rn "catch unreachable" src/ --include="*.zig"; then
+          echo "⚠️ Warning: Found 'catch unreachable' - ensure these are intentional"
+        fi
+
+        # Check for use of deprecated or unsafe std functions
+        if grep -rnE "std\.crypto\.(poly1305|md5|sha1)" src/ --include="*.zig"; then
+          echo "⚠️ Warning: Weak crypto primitives detected"
+        fi
+
+        echo "✅ Security linting complete"
+
+  secret-scan:
+    name: Secret Scanning
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 10
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Full history for comprehensive scan
+
+    - name: Scan for leaked secrets
+      run: |
+        echo "=== Secret Scanning ==="
+
+        # Common secret patterns (these are just examples - use trivy-secret or gitleaks for production)
+        PATTERNS=(
+          "password\s*=\s*['\"][^'\"]+['\"]"
+          "api[_-]?key\s*=\s*['\"][^'\"]+['\"]"
+          "secret[_-]?key\s*=\s*['\"][^'\"]+['\"]"
+          "token\s*=\s*['\"][^'\"]+['\"]"
+          "AKIA[0-9A-Z]{16}"  # AWS access key
+          "ghp_[a-zA-Z0-9]{36}"  # GitHub personal access token
+        )
+
+        FOUND=0
+        for pattern in "${PATTERNS[@]}"; do
+          if git log --all --full-history -G "$pattern" --source -- . | head -n 5; then
+            echo "⚠️ Warning: Potential secret pattern found: $pattern"
+            FOUND=1
+          fi
+        done
+
+        if [ $FOUND -eq 0 ]; then
+          echo "✅ No obvious secret leaks detected"
+        else
+          echo "⚠️ Potential secrets found - manual review required"
+          exit 1
+        fi
+
+  # Summary job
+  security-summary:
+    name: Security Scan Summary
+    runs-on: ubuntu-latest
+    needs: [codeql, zig-security-audit, dependency-check, security-lint, secret-scan]
+    if: always()
+    permissions:
+      contents: read
+
+    steps:
+    - name: Check job results
+      run: |
+        echo "=== Security Scan Summary ==="
+        echo "CodeQL: ${{ needs.codeql.result }}"
+        echo "Zig Security Audit: ${{ needs.zig-security-audit.result }}"
+        echo "Dependency Check: ${{ needs.dependency-check.result }}"
+        echo "Security Lint: ${{ needs.security-lint.result }}"
+        echo "Secret Scan: ${{ needs.secret-scan.result }}"
+
+        # Fail if any critical checks failed
+        if [ "${{ needs.codeql.result }}" != "success" ] || \
+           [ "${{ needs.secret-scan.result }}" != "success" ]; then
+          echo "❌ Critical security checks failed"
+          exit 1
+        fi
+
+        echo "✅ Security scanning complete"

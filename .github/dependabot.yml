@@ -1,0 +1,20 @@
+version: 2
+updates:
+  # Check for GitHub Actions updates weekly
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
+      - "security"
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+
+  # Note: Zig uses zig build which doesn't have traditional package management
+  # Once build.zig.zon is used for dependencies, we'll need to monitor
+  # the Zig package registry manually or use a custom solution
