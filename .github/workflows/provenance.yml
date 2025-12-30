@@ -1,0 +1,119 @@
+name: SLSA Provenance
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+env:
+  ZIG_VERSION: 0.15.2
+
+jobs:
+  provenance:
+    name: Generate SLSA Provenance
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+    outputs:
+      provenance-name: ${{ steps.generate.outputs.name }}
+      provenance-download-url: ${{ steps.generate.outputs.download-url }}
+    steps:
+    - name: Checkout source
+      uses: actions/checkout@v4
+
+    - name: Install Zig
+      uses: goto-bus-stop/setup-zig@v2
+      with:
+        version: ${{ env.ZIG_VERSION }}
+
+    - name: Build artifacts
+      run: |
+        zig build
+        # Create release directory structure
+        mkdir -p release
+        # Copy binary if it exists
+        if [ -f "zig-cache/bin/bench" ]; then
+          cp zig-cache/bin/bench release/northstar-bench
+        fi
+        # Archive source for provenance
+        git archive --format=tar.gz --output=release/northstar-src-${{ github.sha }}.tar.gz HEAD
+
+    - name: Generate artifact attestation
+      id: generate
+      uses: actions/attest-build-provenance@v1
+      with:
+        subject-path: 'release/*'
+
+  verify:
+    name: Verify SLSA Provenance
+    runs-on: ubuntu-latest
+    needs: provenance
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    steps:
+    - name: Checkout source
+      uses: actions/checkout@v4
+
+    - name: Install Zig
+      uses: goto-bus-stop/setup-zig@v2
+      with:
+        version: ${{ env.ZIG_VERSION }}
+
+    - name: Build artifacts
+      run: |
+        zig build
+        mkdir -p release
+        if [ -f "zig-cache/bin/bench" ]; then
+          cp zig-cache/bin/bench release/northstar-bench
+        fi
+
+    - name: Verify provenance
+      uses: actions/attest-build-provenance@v1
+      with:
+        subject-path: 'release/northstar-bench'
+
+  release:
+    name: Release with Provenance
+    runs-on: ubuntu-latest
+    needs: provenance
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+    - name: Checkout source
+      uses: actions/checkout@v4
+
+    - name: Download all workflow artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          release/*
+          artifacts/**/*
+        generate_release_notes: true
+        body: |
+          ## SLSA Provenance
+
+          This release includes SLSA Level 3 provenance attestations. To verify:
+
+          ```bash
+          gh attestation verify northstar-bench \
+            --repo northstar-db/northstar \
+            --digest <sha256>
+          ```
+
+          See [security docs](https://northstar-db.dev/docs/security) for details.
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

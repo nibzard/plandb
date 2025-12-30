@@ -1,0 +1,41 @@
+# SLSA Provenance Configuration for NorthstarDB
+# This file defines the provenance generation policy for build artifacts
+
+version: 1
+policy:
+  # Provenance level to generate
+  level: 3
+
+  # Artifacts to attest
+  artifacts:
+    - path: zig-cache/bin/bench
+      name: northstar-bench
+      description: "NorthstarDB benchmark harness binary"
+    - path: release/northstar-src-*.tar.gz
+      name: northstar-source
+      description: "NorthstarDB source archive"
+
+  # Build requirements
+  build:
+    # Required builder identity
+    builder:
+      type: "github-actions"
+      owner: "niko"
+      repo: "plandb"
+
+    # Required dependencies
+    dependencies:
+      - name: "zig"
+        version: "0.15.2"
+        type: "compiler"
+
+  # Allowed source repositories
+  sources:
+    - uri: "https://github.com/niko/plandb"
+      branch: ["main", "release/*"]
+
+  # Signing requirements
+  signing:
+    method: "sigstore"
+    key_type: "ecdsa"
+    digest: "sha256"

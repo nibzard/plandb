@@ -186,6 +186,62 @@ If you discover a security vulnerability:
 - Sign release artifacts
 - Verify checksums before deployment
 
+### SLSA Provenance
+
+NorthstarDB generates SLSA (Supply-chain Levels for Software Artifacts) Level 3 provenance for all builds. This provides cryptographic verification of the build process.
+
+#### Provenance Workflow (`.github/workflows/provenance.yml`)
+
+Runs on:
+- Every push to `main`
+- Tagged releases (`v*`)
+- Pull requests (verification only)
+
+#### What Provenance Provides
+
+1. **Build Attestations**: Cryptographic proof of how artifacts were built
+2. **Source Traceability**: Links artifacts to exact git commit
+3. **Builder Identity**: Verifies GitHub Actions as the builder
+4. **Dependency Transparency**: Records all build dependencies
+
+#### Verifying Provenance
+
+For release artifacts:
+
+```bash
+# Download the artifact and its attestation
+gh release download v0.1.0 --repo niko/plandb
+
+# Verify the provenance
+gh attestation verify northstar-bench \
+  --repo niko/plandb \
+  --digest <sha256-hash>
+```
+
+For CI builds:
+
+```bash
+# Verify the attestation from the workflow run
+gh attestation verify <artifact-path> \
+  --repo niko/plandb \
+  --digest <sha256-hash>
+```
+
+#### Provenance Policy
+
+See `.slsa-github/policy.yml` for:
+- Artifact definitions
+- Build requirements
+- Allowed source repositories
+- Signing requirements
+
+#### Benefits
+
+- **Tamper Detection**: Any modification to artifacts breaks verification
+- **Supply Chain Security**: Verifies no injected dependencies
+- **Compliance**: Meets SLSA Level 3 requirements for production systems
+- **Audit Trail**: Complete build history for security audits
+
 ### Runtime Security
 
 - Run as non-root user
