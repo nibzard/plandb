@@ -35,7 +35,7 @@ jobs:
         ./zig-out/bin/bench run --suite hardening --repeats 3
 
     - name: Upload hardening results
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v6
       if: always()
       with:
         name: hardening-results-${{ github.run_number }}
@@ -81,7 +81,7 @@ jobs:
         ./zig-out/bin/bench run --suite macro --repeats 3
 
     - name: Upload macrobench results
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v6
       if: always()
       with:
         name: macrobench-results-${{ github.run_number }}
