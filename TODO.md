@@ -2196,7 +2196,7 @@ This is a **non-critical** benchmark (`.critical = false`) that demonstrates adv
 **Next Steps - v0.1.0 Release & Beyond**:
 
 ### Immediate (v0.1.0)
-- [ ] Tag v0.1.0 release
+- [x] Tag v0.1.0 release
 - [ ] Create GitHub release with changelog
 - [ ] Publish to crates.io / package registry if applicable
 
