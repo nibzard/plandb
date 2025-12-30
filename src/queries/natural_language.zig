@@ -431,11 +431,28 @@ pub const NLToQueryConverter = struct {
                 .numeric_value = null,
                 .range = null,
             },
-            .time_range => ScopeFilter{
-                .filter_type = .time_range,
-                .string_value = null,
-                .numeric_value = null,
-                .range = null, // TODO: parse min,max from value
+            .time_range => blk: {
+                // Parse min,max from value object
+                var range: ?ScopeFilter.ValueRange = null;
+                if (value_value != null and value_value.? == .object) {
+                    const range_obj = value_value.?.object;
+                    const min_val = range_obj.get("min");
+                    const max_val = range_obj.get("max");
+                    if (min_val != null and min_val.? == .number and
+                        max_val != null and max_val.? == .number)
+                    {
+                        range = ScopeFilter.ValueRange{
+                            .min = min_val.?.number,
+                            .max = max_val.?.number,
+                        };
+                    }
+                }
+                break :blk ScopeFilter{
+                    .filter_type = .time_range,
+                    .string_value = null,
+                    .numeric_value = null,
+                    .range = range,
+                };
             },
         };
     }

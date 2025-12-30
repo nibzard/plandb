@@ -380,10 +380,10 @@ pub const QueryPlanner = struct {
         try steps.append(step);
 
         var cartridge_reqs = std.array_list.Managed(CartridgeRequirement).init(self.allocator);
-        try cartridge_reqs-append(.{
+        try cartridge_reqs.append(.{
             .cartridge_type = .topic_index,
             .access_pattern = .read_only,
-        }));
+        });
 
         const plan = try self.allocator.create(QueryPlan);
         plan.* = QueryPlan{
@@ -424,10 +424,142 @@ pub const QueryPlanner = struct {
     }
 
     fn extractPlanFromResult(self: *Self, data: llm_types.Value) !?QueryPlan {
+        // Extract plan from LLM response JSON
+        // Expected format: { "query_type": "...", "steps": [...], "confidence": 0.8 }
+        if (data != .object) return null;
+
+        const obj = data.object;
+
+        // Get query type
+        const query_type_val = obj.get("query_type") orelse return null;
+        if (query_type_val != .string) return null;
+        const query_type = std.meta.stringToEnum(QueryPlan.QueryType, query_type_val.string) orelse return null;
+
+        // Get confidence
+        var confidence: f32 = 0.5;
+        if (obj.get("confidence")) |conf_val| {
+            if (conf_val == .float or conf_val == .integer) {
+                const num = if (conf_val == .float) conf_val.float else @as(f64, @floatFromInt(conf_val.integer));
+                confidence = @floatCast(num);
+            }
+        }
+
+        // Get steps array
+        const steps_val = obj.get("steps") orelse return null;
+        if (steps_val != .array) return null;
+
+        var steps = std.array_list.Managed(ExecutionStep).init(self.allocator);
+        errdefer steps.deinit();
+
+        for (steps_val.array.items) |step_val| {
+            if (step_val != .object) return null;
+            const step_obj = step_val.object;
+
+            const step = try self.extractExecutionStep(step_obj) orelse return null;
+            try steps.append(step);
+        }
+
+        // Build cartridge requirements based on steps
+        var cartridge_reqs = std.array_list.Managed(CartridgeRequirement).init(self.allocator);
+        errdefer cartridge_reqs.deinit();
+
+        for (steps.items) |*step| {
+            const req = CartridgeRequirement{
+                .cartridge_type = step.target_cartridge,
+                .access_pattern = .read_only,
+            };
+            try cartridge_reqs.append(req);
+        }
+
+        const plan = try self.allocator.create(QueryPlan);
+        plan.* = QueryPlan{
+            .query_type = query_type,
+            .steps = try steps.toOwnedSlice(),
+            .estimated_cost = @floatFromInt(steps.items.len),
+            .requires_cartridges = try cartridge_reqs.toOwnedSlice(),
+            .confidence = confidence,
+        };
+
+        return plan;
+    }
+
+    fn extractExecutionStep(self: *Self, step_obj: std.json.ObjectMap) !?ExecutionStep {
         _ = self;
-        _ = data;
-        // TODO: Implement full LLM result extraction
-        return null;
+        // Get operation
+        const op_val = step_obj.get("operation") orelse return null;
+        if (op_val != .string) return null;
+        const operation = std.meta.stringToEnum(ExecutionStep.Operation, op_val.string) orelse return null;
+
+        // Get target cartridge
+        const cart_val = step_obj.get("target_cartridge") orelse return null;
+        if (cart_val != .string) return null;
+        const target_cartridge = std.meta.stringToEnum(CartridgeType, cart_val.string) orelse return null;
+
+        // Get dependencies (optional)
+        var deps_list = std.array_list.Managed(usize).init(self.allocator);
+        defer deps_list.deinit();
+
+        if (step_obj.get("dependencies")) |deps_val| {
+            if (deps_val == .array) {
+                for (deps_val.array.items) |dep_val| {
+                    if (dep_val == .integer) {
+                        try deps_list.append(@intCast(dep_val.integer));
+                    }
+                }
+            }
+        }
+
+        // Build step parameters (simplified - full impl would parse from JSON)
+        const params = try self.buildStepParameters(operation, target_cartridge);
+        errdefer params.deinit(self.allocator);
+
+        return ExecutionStep{
+            .operation = operation,
+            .target_cartridge = target_cartridge,
+            .parameters = params,
+            .dependencies = try deps_list.toOwnedSlice(),
+        };
+    }
+
+    fn buildStepParameters(self: *Self, op: ExecutionStep.Operation, cart: CartridgeType) !ExecutionStep.StepParameters {
+        _ = cart;
+        return switch (op) {
+            .search_topics => .{ .search_topics = .{
+                .query = .{
+                    .terms = &.{},
+                    .operators = &.{},
+                    .filters = &.{},
+                    .limit = 100,
+                    .min_confidence = 0.0,
+                },
+                .use_inverted_index = true,
+                .max_results = 100,
+            }},
+            .lookup_entity => .{ .lookup_entity = .{
+                .entity_id = null,
+                .entity_type = null,
+                .filters = &.{},
+            }},
+            .traverse_relationships => .{ .traverse_relationships = .{
+                .start_entity = &.{},
+                .relationship_types = &.{},
+                .max_depth = 1,
+                .direction = .outgoing,
+            }},
+            .filter_results => .{ .filter_results = .{
+                .source_step = 0,
+                .filter_func = .by_confidence,
+            }},
+            .merge_results => .{ .merge_results = .{
+                .source_steps = &.{},
+                .merge_strategy = .union,
+            }},
+            .rank_results => .{ .rank_results = .{
+                .source_step = 0,
+                .ranking_method = .relevance,
+                .max_results = 100,
+            }},
+        };
     }
 };
 
