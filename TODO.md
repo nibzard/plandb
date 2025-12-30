@@ -2197,7 +2197,11 @@ This is a **non-critical** benchmark (`.critical = false`) that demonstrates adv
 
 ### Immediate (v0.1.0)
 - [x] Tag v0.1.0 release
-- [ ] Create GitHub release with changelog
+- [x] Create GitHub release with changelog
+  - **COMPLETED**: Created v0.1.0 release at https://github.com/nibzard/plandb/releases/tag/v0.1.0
+  - **COMPLETED**: Included comprehensive CHANGELOG.md with all features
+  - **DATE**: 2025-12-30
+  - **STATUS**: v0.1.0 successfully released
 - [ ] Publish to crates.io / package registry if applicable
 
 ### Phase 10.1: Production Hardening
