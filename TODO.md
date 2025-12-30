@@ -3,6 +3,14 @@
 Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · 🟢 P3 (low)
 
 **Completed 2025-12-30:**
+- [ ✅ ] 🟢 Implement stability check in benchmark compare module
+  - **COMPLETED**: Implemented checkStability() in src/bench/compare.zig
+  - **COMPLETED**: Uses pre-computed stability.is_stable flag from Results.stability metadata
+  - **COMPLETED**: Single-repeat benchmarks (repeat_count <= 1) are stable by definition
+  - **COMPLETED**: Multi-repeat benchmarks without stability metadata are marked unstable
+  - **FILES MODIFIED**: src/bench/compare.zig
+  - **COMMIT**: 363460c
+  - **STATUS**: Regression detection now properly considers result stability
 - [ ✅ ] 🔴 Migrate to Zig 0.15.2 API changes
   - **COMPLETED**: Fixed ArrayList API migration (removed deprecated second parameter)
   - **COMPLETED**: Fixed File.writer() API migration (use writer() directly, not writer().*)
