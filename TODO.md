@@ -18,9 +18,9 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **IMPLEMENTATION**: Function moves remaining entries to end of payload after deletion
   - **IMPLEMENTATION**: Clears entry data area and rewrites entries in backward layout
   - **IMPLEMENTATION**: Updates slot offsets to point to new compacted locations
-  - **STATUS**: Function implemented but not yet enabled (added TODO in removeEntry)
-  - **COMMIT**: fceef4d
-  - **NOTES**: Future work - enable compaction call and update payload_len calculation
+  - **ENABLED 2025-12-30**: Compaction call now active in removeEntry() after delete operation
+  - **COMMIT**: fceef4d (implementation), d532e02 (documentation)
+  - **NOTES**: Compaction runs automatically after each entry removal to reclaim space
 
 ---
 

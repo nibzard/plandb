@@ -13,6 +13,18 @@ const _property_based_tests = @import("property_based.zig");
 const _validator = @import("validator.zig");
 const _fuzz = @import("fuzz.zig");
 const plugin_cli = @import("plugins/cli.zig");
+const _replication_tests = @import("replication/test.zig");
+
+test {
+    _ = _ref_model_tests;
+    _ = _db_tests;
+    _ = _property_based_tests;
+    _ = _validator;
+    _ = _fuzz;
+    _ = _replication_tests;
+
+    @import("std").testing.refAllDecls(@This());
+}
 
 pub fn main() !void {
     const gpa = std.heap.page_allocator;
