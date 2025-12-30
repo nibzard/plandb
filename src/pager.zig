@@ -1507,8 +1507,8 @@ pub const PageAllocator = struct {
 
     // Rebuild freelist by finding pages NOT reachable from committed root
     fn rebuildFreelist(self: *Self) !void {
-        // Get file size to determine total pages
-        const file_size = try self.pager.file.getEndPos();
+        // Get storage size to determine total pages
+        const file_size = try self.pager.storage.getEndPos();
         const total_pages = file_size / self.pager.page_size;
 
         // Mark all pages (except reserved meta pages) as potentially free initially
@@ -1628,7 +1628,7 @@ pub const PageAllocator = struct {
         const new_page_id = self.last_allocated_page;
         self.last_allocated_page += 1;
 
-        // Extend file by writing a zeroed page
+        // Extend storage by writing a zeroed page
         var zero_page: [DEFAULT_PAGE_SIZE]u8 = std.mem.zeroes([DEFAULT_PAGE_SIZE]u8);
 
         // Create a valid header for the new page
@@ -1643,8 +1643,16 @@ pub const PageAllocator = struct {
         header.header_crc32c = header.calculateHeaderChecksum();
         try header.encode(zero_page[0..PageHeader.SIZE]);
 
-        const offset = new_page_id * pager.page_size;
-        _ = try pager.file.pwriteAll(&zero_page, offset);
+        // Write to storage (file or memory)
+        switch (pager.storage) {
+            .file => |*f| {
+                const offset = new_page_id * pager.page_size;
+                _ = try f.pwriteAll(&zero_page, offset);
+            },
+            .memory => |*m| {
+                try m.pwriteAll(pager.allocator, new_page_id, &zero_page);
+            },
+        }
 
         return new_page_id;
     }
@@ -1684,9 +1692,76 @@ pub const PageAllocator = struct {
 
 const page_cache = @import("page_cache.zig");
 
+// Storage backend for Pager
+const Storage = union(enum) {
+    file: std.fs.File,
+    memory: MemoryStorage,
+
+    fn close(self: *Storage, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .file => |*f| f.close(),
+            .memory => |*m| m.deinit(allocator),
+        }
+    }
+
+    fn getEndPos(self: *const Storage) !u64 {
+        switch (self.*) {
+            .file => |*f| return f.getEndPos(),
+            .memory => |*m| return m.size(),
+        }
+    }
+};
+
+// In-memory storage for database pages
+const MemoryStorage = struct {
+    pages: std.ArrayList(u8),
+    page_size: u16,
+
+    fn init(allocator: std.mem.Allocator, page_size: u16) MemoryStorage {
+        return .{
+            .pages = std.ArrayList(u8).initCapacity(allocator, 0) catch unreachable,
+            .page_size = page_size,
+        };
+    }
+
+    fn deinit(self: *MemoryStorage, allocator: std.mem.Allocator) void {
+        self.pages.deinit(allocator);
+    }
+
+    fn size(self: *const MemoryStorage) u64 {
+        return @intCast(self.pages.items.len);
+    }
+
+    fn write(self: *MemoryStorage, allocator: std.mem.Allocator, page_id: u64, buffer: []const u8) !void {
+        const offset = @as(usize, @intCast(page_id * self.page_size));
+        const required_len = offset + buffer.len;
+        if (self.pages.items.len < required_len) {
+            try self.pages.resize(allocator, required_len);
+        }
+        @memcpy(self.pages.items[offset..][0..buffer.len], buffer);
+    }
+
+    fn read(self: *const MemoryStorage, page_id: u64, buffer: []u8) !usize {
+        const offset = @as(usize, @intCast(page_id * self.page_size));
+        if (offset + buffer.len > self.pages.items.len) {
+            return error.UnexpectedEOF;
+        }
+        @memcpy(buffer, self.pages.items[offset..][0..buffer.len]);
+        return buffer.len;
+    }
+
+    fn preadAll(self: *const MemoryStorage, page_id: u64, buffer: []u8) !usize {
+        return self.read(page_id, buffer);
+    }
+
+    fn pwriteAll(self: *MemoryStorage, allocator: std.mem.Allocator, page_id: u64, buffer: []const u8) !void {
+        try self.write(allocator, page_id, buffer);
+    }
+};
+
 // Pager represents the storage layer with file handles and state
 pub const Pager = struct {
-    file: std.fs.File,
+    storage: Storage,
     page_size: u16,
     current_meta: MetaState,
     allocator: std.mem.Allocator,
@@ -1695,10 +1770,9 @@ pub const Pager = struct {
 
     const Self = @This();
 
-    // Create a new empty database file
+    // Create a new empty database file or in-memory database
     pub fn create(path: []const u8, allocator: std.mem.Allocator) !Self {
-        const file = try std.fs.cwd().createFile(path, .{ .truncate = true, .read = true });
-        errdefer file.close();
+        const is_memory = std.mem.eql(u8, path, ":memory:");
 
         // Create initial meta pages
         var buffer_a: [DEFAULT_PAGE_SIZE]u8 = undefined;
@@ -1715,15 +1789,30 @@ pub const Pager = struct {
         try encodeMetaPage(META_A_PAGE_ID, meta, &buffer_a);
         try encodeMetaPage(META_B_PAGE_ID, meta, &buffer_b);
 
-        // Write both meta pages
-        _ = try file.pwriteAll(&buffer_a, 0);
-        _ = try file.pwriteAll(&buffer_b, DEFAULT_PAGE_SIZE);
+        var storage: Storage = undefined;
+
+        if (is_memory) {
+            // In-memory database
+            var mem_storage = MemoryStorage.init(allocator, DEFAULT_PAGE_SIZE);
+            try mem_storage.write(allocator, META_A_PAGE_ID, &buffer_a);
+            try mem_storage.write(allocator, META_B_PAGE_ID, &buffer_b);
+            storage = Storage{ .memory = mem_storage };
+        } else {
+            // File-based database
+            const file = try std.fs.cwd().createFile(path, .{ .truncate = true, .read = true });
+            errdefer file.close();
+
+            // Write both meta pages
+            _ = try file.pwriteAll(&buffer_a, 0);
+            _ = try file.pwriteAll(&buffer_b, DEFAULT_PAGE_SIZE);
+            storage = Storage{ .file = file };
+        }
 
         // Parse the meta page we just wrote
         const meta_state = try decodeMetaPage(&buffer_a, META_A_PAGE_ID);
 
         var pager = Self{
-            .file = file,
+            .storage = storage,
             .page_size = DEFAULT_PAGE_SIZE,
             .current_meta = meta_state,
             .allocator = allocator,
@@ -1743,7 +1832,15 @@ pub const Pager = struct {
     }
 
     // Open database file with recovery: choose highest valid meta, else Corrupt
+    // For :memory: databases, creates a new empty in-memory database
     pub fn open(path: []const u8, allocator: std.mem.Allocator) !Self {
+        const is_memory = std.mem.eql(u8, path, ":memory:");
+
+        if (is_memory) {
+            // :memory: creates a new empty database (like SQLite)
+            return create(path, allocator);
+        }
+
         const file = try std.fs.cwd().openFile(path, .{ .mode = .read_write });
         defer file.close();
 
@@ -1787,7 +1884,7 @@ pub const Pager = struct {
         const persistent_file = try std.fs.cwd().openFile(path, .{ .mode = .read_write });
 
         var pager = Self{
-            .file = persistent_file,
+            .storage = Storage{ .file = persistent_file },
             .page_size = best_meta.meta.page_size,
             .current_meta = best_meta,
             .allocator = allocator,
@@ -1806,7 +1903,7 @@ pub const Pager = struct {
         return pager;
     }
 
-    // Close the pager and release file handle
+    // Close the pager and release file handle or in-memory storage
     pub fn close(self: *Self) void {
         if (self.page_allocator) |*alloc| {
             alloc.deinit();
@@ -1815,31 +1912,41 @@ pub const Pager = struct {
             cache.deinit();
             self.allocator.destroy(cache);
         }
-        self.file.close();
+        self.storage.close(self.allocator);
     }
 
-    // Read a page from the file with checksums and bounds checks
+    // Read a page from storage with checksums and bounds checks
     pub fn readPage(self: *Self, page_id: u64, buffer: []u8) !void {
         // Bounds check: ensure buffer is large enough for page
         if (buffer.len < self.page_size) return error.BufferTooSmall;
 
         // Bounds check: ensure page_id is within reasonable range
-        const file_size = try self.file.getEndPos();
+        const file_size = try self.storage.getEndPos();
         const max_page_id = file_size / self.page_size;
         if (page_id >= max_page_id) {
             return error.PageOutOfBounds;
         }
 
-        // Calculate file offset with overflow check
-        const offset = page_id * self.page_size;
-        if (offset != page_id * self.page_size) { // Check for overflow
-            return error.IntegerOverflow;
-        }
+        // Read page from storage
+        switch (self.storage) {
+            .file => |*f| {
+                // Calculate file offset with overflow check
+                const offset = page_id * self.page_size;
+                if (offset != page_id * self.page_size) { // Check for overflow
+                    return error.IntegerOverflow;
+                }
 
-        // Read page from file
-        const bytes_read = try self.file.preadAll(buffer, offset);
-        if (bytes_read < self.page_size) {
-            return error.UnexpectedEOF;
+                const bytes_read = try f.preadAll(buffer, offset);
+                if (bytes_read < self.page_size) {
+                    return error.UnexpectedEOF;
+                }
+            },
+            .memory => |*m| {
+                const bytes_read = try m.preadAll(page_id, buffer);
+                if (bytes_read < self.page_size) {
+                    return error.UnexpectedEOF;
+                }
+            },
         }
 
         // Validate page structure and checksums
@@ -1877,7 +1984,7 @@ pub const Pager = struct {
         }
     }
 
-    // Write a page to the file with checksums and bounds checks
+    // Write a page to storage with checksums and bounds checks
     pub fn writePage(self: *Self, page_id: u64, buffer: []const u8) !void {
         // Bounds check: ensure buffer is large enough for page
         if (buffer.len < self.page_size) return error.BufferTooSmall;
@@ -1894,20 +2001,27 @@ pub const Pager = struct {
             return error.PageIdMismatch;
         }
 
-        // Calculate file offset with overflow check
-        const offset = page_id * self.page_size;
-        if (offset != page_id * self.page_size) { // Check for overflow
-            return error.IntegerOverflow;
-        }
+        // Write page to storage
+        switch (self.storage) {
+            .file => |*f| {
+                // Calculate file offset with overflow check
+                const offset = page_id * self.page_size;
+                if (offset != page_id * self.page_size) { // Check for overflow
+                    return error.IntegerOverflow;
+                }
 
-        // Ensure we're not trying to write beyond reasonable file size
-        const file_size = try self.file.getEndPos();
-        if (offset > file_size) {
-            return error.WriteBeyondFile;
-        }
+                // Ensure we're not trying to write beyond reasonable file size
+                const file_size = try f.getEndPos();
+                if (offset > file_size) {
+                    return error.WriteBeyondFile;
+                }
 
-        // Write page to file
-        try self.file.pwriteAll(buffer, offset);
+                try f.pwriteAll(buffer, offset);
+            },
+            .memory => |*m| {
+                try m.pwriteAll(self.allocator, page_id, buffer);
+            },
+        }
 
         // Invalidate cached copy if exists (data has changed)
         if (self.cache) |cache| {
@@ -1963,9 +2077,12 @@ pub const Pager = struct {
         return null;
     }
 
-    // Sync file to ensure durability
+    // Sync storage to ensure durability (no-op for in-memory)
     pub fn sync(self: *Self) !void {
-        try self.file.sync();
+        switch (self.storage) {
+            .file => |*f| try f.sync(),
+            .memory => {}, // In-memory storage doesn't need syncing
+        }
     }
 
     // Fsync ordering for two-phase commit: ensure WAL is synced before DB
