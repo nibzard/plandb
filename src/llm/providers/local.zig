@@ -13,13 +13,19 @@ pub const LocalProvider = struct {
     model: []const u8,
     timeout_ms: u32,
     http_client: std.http.Client,
+    tls_config: TlsConfig,
 
     const Self = @This();
+
+    pub const TlsConfig = struct {
+        validate_certificates: bool = true,
+    };
 
     pub const Config = struct {
         base_url: []const u8 = "http://localhost:11434",
         model: []const u8 = "llama3.2",
         timeout_ms: u32 = 120000, // Local models may be slower
+        tls: TlsConfig = .{},
     };
 
     pub fn init(allocator: std.mem.Allocator, config: Config) !Self {
@@ -29,6 +35,7 @@ pub const LocalProvider = struct {
             .model = try allocator.dupe(u8, config.model),
             .timeout_ms = config.timeout_ms,
             .http_client = std.http.Client{ .allocator = allocator },
+            .tls_config = config.tls,
         };
     }
 
@@ -304,6 +311,12 @@ pub const LocalProvider = struct {
         payload: types.Value,
         allocator: std.mem.Allocator
     ) ![]const u8 {
+        // Warn if TLS certificate validation is disabled (CWE-295)
+        // Only warn for HTTPS endpoints - localhost uses HTTP
+        if (std.mem.startsWith(u8, self.base_url, "https://") and !self.tls_config.validate_certificates) {
+            std.log.warn("SECURITY WARNING: TLS certificate validation is DISABLED for Local provider. This should NEVER be used in production.", .{});
+        }
+
         const payload_str = try std.json.stringifyAlloc(allocator, payload, .{});
         defer allocator.free(payload_str);
 
@@ -316,6 +329,7 @@ pub const LocalProvider = struct {
         var header_buffer: [1]std.http.Header = undefined;
         header_buffer[0] = .{ .name = "Content-Type", .value = "application/json" };
 
+        // Note: Zig's std.http.Client performs TLS certificate validation by default for HTTPS
         var request = try self.http_client.request(.POST, uri, .{
             .extra_headers = &header_buffer,
         });

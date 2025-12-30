@@ -81,6 +81,11 @@ pub fn createProvider(
     // Validate base_url for security (SSRF protection, HTTPS enforcement)
     try validateEndpointUrl(config.base_url);
 
+    // Log TLS validation setting (CWE-295)
+    if (std.mem.startsWith(u8, config.base_url, "https://") and !config.tls.validate_certificates) {
+        std.log.warn("SECURITY WARNING: TLS certificate validation DISABLED for provider '{s}'. This is a SECURITY RISK and should NEVER be used in production.", .{provider_type});
+    }
+
     if (std.mem.eql(u8, provider_type, "openai")) {
         const openai_config = OpenAIProvider.Config{
             .api_key = try allocator.dupe(u8, config.api_key),
@@ -88,6 +93,7 @@ pub fn createProvider(
             .base_url = try allocator.dupe(u8, config.base_url),
             .timeout_ms = config.timeout_ms,
             .max_retries = config.max_retries,
+            .tls = .{ .validate_certificates = config.tls.validate_certificates },
         };
         const provider = try OpenAIProvider.init(allocator, openai_config);
         return LLMProvider{ .openai = provider };
@@ -98,6 +104,7 @@ pub fn createProvider(
             .base_url = try allocator.dupe(u8, config.base_url),
             .timeout_ms = config.timeout_ms,
             .max_retries = config.max_retries,
+            .tls = .{ .validate_certificates = config.tls.validate_certificates },
         };
         const provider = try AnthropicProvider.init(allocator, anthropic_config);
         return LLMProvider{ .anthropic = provider };
@@ -106,6 +113,7 @@ pub fn createProvider(
             .base_url = try allocator.dupe(u8, config.base_url),
             .model = try allocator.dupe(u8, config.model),
             .timeout_ms = config.timeout_ms,
+            .tls = .{ .validate_certificates = config.tls.validate_certificates },
         };
         const provider = try LocalProvider.init(allocator, local_config);
         return LLMProvider{ .local = provider };

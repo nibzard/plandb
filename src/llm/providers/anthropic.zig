@@ -15,8 +15,13 @@ pub const AnthropicProvider = struct {
     timeout_ms: u32,
     max_retries: u32,
     http_client: std.http.Client,
+    tls_config: TlsConfig,
 
     const Self = @This();
+
+    pub const TlsConfig = struct {
+        validate_certificates: bool = true,
+    };
 
     pub const Config = struct {
         api_key: []const u8,
@@ -24,6 +29,7 @@ pub const AnthropicProvider = struct {
         base_url: []const u8 = "https://api.anthropic.com",
         timeout_ms: u32 = 30000,
         max_retries: u32 = 3,
+        tls: TlsConfig = .{},
     };
 
     pub fn init(allocator: std.mem.Allocator, config: Config) !Self {
@@ -35,6 +41,7 @@ pub const AnthropicProvider = struct {
             .timeout_ms = config.timeout_ms,
             .max_retries = config.max_retries,
             .http_client = std.http.Client{ .allocator = allocator },
+            .tls_config = config.tls,
         };
     }
 
@@ -305,6 +312,11 @@ pub const AnthropicProvider = struct {
         payload: types.Value,
         allocator: std.mem.Allocator
     ) ![]const u8 {
+        // Warn if TLS certificate validation is disabled (CWE-295)
+        if (!self.tls_config.validate_certificates) {
+            std.log.warn("SECURITY WARNING: TLS certificate validation is DISABLED for Anthropic provider. This should NEVER be used in production.", .{});
+        }
+
         const payload_str = try std.json.stringifyAlloc(allocator, payload, .{});
         defer allocator.free(payload_str);
 
@@ -319,6 +331,7 @@ pub const AnthropicProvider = struct {
         header_buffer[1] = .{ .name = "x-api-key", .value = self.api_key };
         header_buffer[2] = .{ .name = "anthropic-version", .value = "2023-06-01" };
 
+        // Note: Zig's std.http.Client performs TLS certificate validation by default for HTTPS
         var request = try self.http_client.request(.POST, uri, .{
             .extra_headers = &header_buffer,
         });
