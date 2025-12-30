@@ -433,12 +433,21 @@ pub const AISecurityManager = struct {
     }
 
     fn generateSessionToken(self: *Self) ![]const u8 {
-        const token_len = 32;
+        // Generate 16 cryptographically secure random bytes (128-bit entropy)
+        // Encoded as hex for a 32-character token
+        const random_bytes_len = 16;
+        const token_len = 32; // hex encoding doubles the length
+
+        var random_bytes: [random_bytes_len]u8 = undefined;
+        std.crypto.random.bytes(&random_bytes);
+
         const token = try self.allocator.alloc(u8, token_len);
 
-        var i: usize = 0;
-        while (i < token_len) : (i += 1) {
-            token[i] = 'a' + @as(u8, @intCast(@rem(std.time.nanoTimestamp(), 26)));
+        // Encode as hex
+        const hex_chars = "0123456789abcdef";
+        for (random_bytes, 0..) |byte, i| {
+            token[i * 2] = hex_chars[byte >> 4];
+            token[i * 2 + 1] = hex_chars[byte & 0x0f];
         }
 
         return token;
