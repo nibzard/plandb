@@ -171,6 +171,81 @@ pub const JSONSchema = struct {
 
         return .{ .object = final_obj };
     }
+
+    /// Validate a value against this schema
+    pub fn validate(self: *const JSONSchema, value: types.Value) !void {
+        switch (self.type) {
+            .string => {
+                if (value != .string) return error.TypeMismatch;
+                // Check enum values if present
+                if (self.enum_values) |enums| {
+                    var found = false;
+                    for (enums.items) |enum_val| {
+                        if (enum_val == .string and std.mem.eql(u8, enum_val.string, value.string)) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) return error.InvalidEnumValue;
+                }
+            },
+            .number => {
+                if (value != .float) return error.TypeMismatch;
+                if (self.enum_values) |enums| {
+                    var found = false;
+                    for (enums.items) |enum_val| {
+                        if (enum_val == .float and enum_val.float == value.float) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) return error.InvalidEnumValue;
+                }
+            },
+            .integer => {
+                if (value != .float) return error.TypeMismatch;
+                // Check if it's actually an integer (no fractional part)
+                if (value.float != @floor(value.float)) return error.TypeMismatch;
+            },
+            .boolean => {
+                if (value != .bool) return error.TypeMismatch;
+            },
+            .null => {
+                if (value != .null) return error.TypeMismatch;
+            },
+            .array => {
+                if (value != .array) return error.TypeMismatch;
+                // Validate each item against items schema if present
+                if (self.items) |items_schema| {
+                    for (value.array.items) |item| {
+                        try items_schema.validate(item);
+                    }
+                }
+            },
+            .object => {
+                if (value != .object) return error.TypeMismatch;
+                // Check required fields
+                if (self.required) |required| {
+                    for (required.items) |field| {
+                        if (value.object.get(field) == null) {
+                            return error.MissingRequiredField;
+                        }
+                    }
+                }
+                // Validate properties against schema
+                if (self.properties) |props| {
+                    var it = props.iterator();
+                    while (it.next()) |entry| {
+                        const prop_name = entry.key_ptr.*;
+                        const prop_schema = entry.value_ptr.*;
+                        if (value.object.get(prop_name)) |prop_value| {
+                            try prop_schema.validate(prop_value);
+                        }
+                    }
+                }
+            },
+        }
+    }
 };
 
 /// Function schema definition
@@ -280,4 +355,64 @@ test "function_schema_to_openai_format" {
     // Note: json.object deinit skipped - testing allocator reclaims memory
 
     try std.testing.expect(json == .object);
+}
+
+test "json_schema_validate_string" {
+    var schema = JSONSchema.init(.string);
+    defer schema.deinit(std.testing.allocator);
+
+    // Valid string
+    try schema.validate(.{ .string = "hello" });
+
+    // Invalid type
+    try std.testing.expectError(error.TypeMismatch, schema.validate(.{ .float = 42 }));
+}
+
+test "json_schema_validate_integer" {
+    var schema = JSONSchema.init(.integer);
+    defer schema.deinit(std.testing.allocator);
+
+    // Valid integer
+    try schema.validate(.{ .float = 42 });
+
+    // Invalid: fractional number
+    try std.testing.expectError(error.TypeMismatch, schema.validate(.{ .float = 42.5 }));
+
+    // Invalid: wrong type
+    try std.testing.expectError(error.TypeMismatch, schema.validate(.{ .string = "42" }));
+}
+
+test "json_schema_validate_object_with_required" {
+    var schema = JSONSchema.init(.object);
+    defer schema.deinit(std.testing.allocator);
+
+    try schema.addRequired(std.testing.allocator, "name");
+
+    var valid_obj = std.json.ObjectMap.init(std.testing.allocator);
+    defer valid_obj.deinit();
+    try valid_obj.put(try std.testing.allocator.dupe(u8, "name"), .{ .string = "test" });
+
+    try schema.validate(.{ .object = valid_obj });
+
+    // Missing required field
+    var invalid_obj = std.json.ObjectMap.init(std.testing.allocator);
+    defer invalid_obj.deinit();
+
+    try std.testing.expectError(error.MissingRequiredField, schema.validate(.{ .object = invalid_obj }));
+}
+
+test "json_schema_validate_enum" {
+    var schema = JSONSchema.init(.string);
+    defer schema.deinit(std.testing.allocator);
+
+    schema.enum_values = std.ArrayListUnmanaged(types.Value){};
+    try schema.enum_values.?.append(std.testing.allocator, .{ .string = "red" });
+    try schema.enum_values.?.append(std.testing.allocator, .{ .string = "green" });
+    try schema.enum_values.?.append(std.testing.allocator, .{ .string = "blue" });
+
+    // Valid enum value
+    try schema.validate(.{ .string = "red" });
+
+    // Invalid enum value
+    try std.testing.expectError(error.InvalidEnumValue, schema.validate(.{ .string = "yellow" }));
 }

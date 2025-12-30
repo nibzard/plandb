@@ -265,6 +265,13 @@ pub const PluginManager = struct {
         params: llm.Value
     ) !llm.FunctionResult {
         const schema = try self.find_function_schema(function_name);
+
+        // Validate parameters against schema before calling function
+        schema.parameters.validate(params) catch |err| {
+            std.log.err("Parameter validation failed for function '{s}': {}", .{ function_name, err });
+            return error.InvalidParameters;
+        };
+
         return self.llm_provider.call_function(schema, params, self.allocator);
     }
 
