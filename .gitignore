@@ -35,6 +35,8 @@ bench/output/
 # Test artifacts
 test/
 test_output*/
+*.wal
+*.db
 
 # Build artifacts
 *.o
