@@ -336,7 +336,6 @@ pub const BtreeLeafPayload = struct {
         // Entries are stored backwards from the end of payload_bytes.
         // We need to find the minimum slot offset (the entry closest to slot array)
         // and place the new entry before it.
-        const slot_array_end = BtreeNodeHeader.SIZE + Self.getSlotArraySize(node_header.key_count);
         var entry_offset_from_payload_start: u16 = undefined;
 
         if (node_header.key_count > 0) {
@@ -349,8 +348,10 @@ pub const BtreeLeafPayload = struct {
                     min_slot_offset = offset;
                 }
             }
-            // Check if new entry fits before the earliest existing entry
-            if (min_slot_offset < slot_array_end + total_entry_size) return error.LeafFull;
+            // CRITICAL: Use NEW slot array size (after adding key) for bounds check
+            // to prevent entry from overlapping with expanded slot array
+            const new_slot_array_end = BtreeNodeHeader.SIZE + Self.getSlotArraySize(node_header.key_count + 1);
+            if (min_slot_offset < new_slot_array_end + total_entry_size) return error.LeafFull;
             // Place new entry before the earliest existing entry
             entry_offset_from_payload_start = @intCast(min_slot_offset - total_entry_size);
         } else {
@@ -2971,25 +2972,47 @@ pub fn createBtreePage(page_id: u64, level: u16, key_count: u16, right_sibling: 
 pub fn createEmptyBtreeLeaf(page_id: u64, txn_id: u64, right_sibling: u64, buffer: []u8) !void {
     if (buffer.len < DEFAULT_PAGE_SIZE) return error.BufferTooSmall;
 
-    // Create node header for empty leaf
+    // CRITICAL: Use full payload size for empty leaves created during splits
+    // to prevent "LeafFull" errors when adding entries
+    const max_payload_size = DEFAULT_PAGE_SIZE - PageHeader.SIZE - BtreeNodeHeader.SIZE;
+
+    // Build payload directly in buffer for maximum space
+    // Payload = node_header + zeros for slot array + entry data area
+    const payload_start = PageHeader.SIZE;
+    const payload_end = payload_start + BtreeNodeHeader.SIZE + max_payload_size;
+
+    // Create and encode node header directly in buffer
     const node_header = BtreeNodeHeader{
-        .level = 0, // Leaf
+        .level = 0,
         .key_count = 0,
         .right_sibling = right_sibling,
     };
-
     var node_data: [BtreeNodeHeader.SIZE]u8 = undefined;
     try node_header.encode(&node_data);
+    @memcpy(buffer[payload_start..payload_start + BtreeNodeHeader.SIZE], &node_data);
 
-    // For empty leaf, we need to reserve space for potential slot array
-    // Allocate initial payload with node header + empty slot array space
-    const initial_slot_space = 64; // Space for ~32 slots initially
-    var payload: [BtreeNodeHeader.SIZE + initial_slot_space]u8 = undefined;
-    @memcpy(payload[0..BtreeNodeHeader.SIZE], &node_data);
-    @memset(payload[BtreeNodeHeader.SIZE..], 0);
+    // Zero out the rest of the payload space (slot array + entry area)
+    @memset(buffer[payload_start + BtreeNodeHeader.SIZE..payload_end], 0);
 
-    // Create page with node header and initial slot array space
-    try createBtreePage(page_id, 0, 0, right_sibling, txn_id, &payload, buffer);
+    // Create page header
+    var header = PageHeader{
+        .page_id = page_id,
+        .page_type = .btree_leaf,
+        .txn_id = txn_id,
+        .payload_len = @intCast(BtreeNodeHeader.SIZE + max_payload_size),
+        .header_crc32c = 0,
+        .page_crc32c = 0,
+    };
+
+    // Encode header first
+    try header.encode(buffer[0..PageHeader.SIZE]);
+
+    // Calculate page checksum (with page_crc32c field still 0)
+    const page_data = buffer[0 .. PageHeader.SIZE + header.payload_len];
+    header.page_crc32c = calculatePageChecksum(page_data);
+
+    // Re-encode header with page checksum
+    try header.encode(buffer[0..PageHeader.SIZE]);
 }
 
 // Create an empty B+tree internal node page
