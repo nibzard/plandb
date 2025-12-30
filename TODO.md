@@ -3,6 +3,18 @@
 Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · 🟢 P3 (low)
 
 **Completed 2025-12-30:**
+- [ ✅ ] 🟡 Generate Missing CI Baselines for Critical Benchmarks
+  - **COMPLETED**: Generated 14 new CI baseline files for regression detection across Suites B, C, D, and Hardening
+  - **Suite B (B+tree Core)**: 3 baselines (point_get_hot_1m, build_sequential_insert_1m, range_scan_1k_rows_hot)
+  - **Suite C (MVSS Snapshots)**: 3 baselines (snapshot_open_close, readers_256_point_get_hot, writer_commits_with_readers_128)
+  - **Suite D (Commit Stream)**: 2 baselines (append_commit_record, replay_into_memtable)
+  - **Hardening Tests**: 6 baselines (torn_write_header_detection, torn_write_payload_detection, short_write_missing_trailer, mixed_valid_corrupt_records, invalid_magic_number, clean_recovery_to_txn_id)
+  - **NOTES**: All baselines generated with 1 repeat due to Debug build performance constraints (50k operations + fsync per benchmark takes ~60-90s per run)
+  - **STATUS**: All critical benchmarks now have CI baselines for regression detection; Pager baselines already existed
+  - **FILES ADDED**: 14 JSON baseline files in bench/baselines/ci/
+  - **COMMIT**: f611fbb
+  - **DISCOVERY**: write_new_page_16k_no_sync benchmark doesn't exist - all 5 Pager benchmarks already have baselines
+  - **FUTURE IMPROVEMENT**: Refresh baselines with more repeats in Release mode or on faster hardware
 - [ ✅ ] 🟢 Phase 2: Observability Cartridges (from PLAN-REVIEW-OBSERVABILITY.md)
   - **COMPLETED**: ObservabilityCartridge with metric ingestion, regression detection, and correlation
   - **COMPLETED**: perf_analyzer plugin with on_benchmark_complete hook
