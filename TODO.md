@@ -11,6 +11,16 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **FILES**: examples/integration/ai_living_db.zig, examples/integration/build.zig, examples/integration/README.md
   - **COMMIT**: 04f3a2c
   - **STATUS**: Working demo showcasing all Phase 0 AI intelligence features
+- [ ✅ ] 🟡 Add real LLM integration example stub
+  - **COMPLETED**: Created examples/integration/ai_living_db_real.zig demonstrating real LLM integration structure
+  - **COMPLETED**: Includes RealLLMIntegration struct with OpenAI API call scaffolding
+  - **COMPLETED**: Shows complete entity extraction flow with JSON schema validation
+  - **COMPLETED**: Demonstrates chat payload building and response parsing patterns
+  - **BLOCKED**: Zig 0.15.2 HTTP API migration needs completion before actual API calls work
+  - **BLOCKED**: Existing src/llm/providers/*.zig code also needs same HTTP API migration
+  - **FILES**: examples/integration/ai_living_db_real.zig
+  - **STATUS**: Stub implementation demonstrating architecture, awaiting HTTP API migration
+  - **NOTE**: See https://github.com/ziglang/zig/issues/18906 for HTTP API changes
 - [ ✅ ] 🟢 Implement stability check in benchmark compare module
   - **COMPLETED**: Implemented checkStability() in src/bench/compare.zig
   - **COMPLETED**: Uses pre-computed stability.is_stable flag from Results.stability metadata
