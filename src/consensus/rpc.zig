@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const raft = @import("raft.zig");
+const txn = @import("../txn.zig");
 
 /// RequestVote RPC arguments
 pub const RequestVoteArgs = struct {
@@ -124,6 +125,149 @@ pub const AppendEntriesArgs = struct {
         return 8 * 5 + 4; // 5 u64 + 1 u32
     }
 };
+
+/// Serialize LogEntry to byte stream for network transport
+pub fn serializeLogEntry(entry: raft.LogEntry, writer: anytype) !void {
+    try writer.writeInt(u64, entry.term, .little);
+    try writer.writeInt(u64, entry.index, .little);
+
+    // Serialize command type
+    const cmd_type: u8 = switch (entry.command) {
+        .normal => 0,
+    };
+    try writer.writeByte(cmd_type);
+
+    // Serialize commit record
+    const record = switch (entry.command) {
+        .normal => |r| r,
+    };
+    try writer.writeInt(u64, record.txn_id, .little);
+    try writer.writeInt(u64, record.root_page_id, .little);
+    try writer.writeInt(u32, @intCast(record.mutations.len), .little);
+    try writer.writeInt(u32, record.checksum, .little);
+
+    // Serialize mutations
+    for (record.mutations) |mutation| {
+        switch (mutation) {
+            .put => |p| {
+                try writer.writeByte(0); // op_type = Put
+                try writer.writeInt(u16, @intCast(p.key.len), .little);
+                try writer.writeInt(u32, @intCast(p.value.len), .little);
+                try writer.writeAll(p.key);
+                try writer.writeAll(p.value);
+            },
+            .delete => |d| {
+                try writer.writeByte(1); // op_type = Delete
+                try writer.writeInt(u16, @intCast(d.key.len), .little);
+                try writer.writeInt(u32, 0, .little);
+                try writer.writeAll(d.key);
+            },
+        }
+    }
+}
+
+/// Deserialize LogEntry from byte stream
+pub fn deserializeLogEntry(reader: anytype, allocator: std.mem.Allocator) !raft.LogEntry {
+    const term = try reader.readInt(u64, .little);
+    const index = try reader.readInt(u64, .little);
+    const cmd_type = try reader.readByte();
+
+    if (cmd_type != 0) return error.UnsupportedCommandType;
+
+    // Deserialize commit record
+    const txn_id = try reader.readInt(u64, .little);
+    const root_page_id = try reader.readInt(u64, .little);
+    const mutation_count = try reader.readInt(u32, .little);
+    const checksum = try reader.readInt(u32, .little);
+
+    // Deserialize mutations
+    var mutations = try std.ArrayList(txn.Mutation).initCapacity(allocator, mutation_count);
+    errdefer {
+        for (mutations.items) |m| {
+            switch (m) {
+                .put => |p| {
+                    allocator.free(p.key);
+                    allocator.free(p.value);
+                },
+                .delete => |d| allocator.free(d.key),
+            }
+        }
+        mutations.deinit();
+    }
+
+    var i: u32 = 0;
+    while (i < mutation_count) : (i += 1) {
+        const op_type = try reader.readByte();
+        const key_len = try reader.readInt(u16, .little);
+        const val_len = try reader.readInt(u32, .little);
+
+        const key = try allocator.alloc(u8, key_len);
+        errdefer allocator.free(key);
+        const bytes_read = try reader.readAll(key);
+        if (bytes_read != key_len) return error.IncompleteKey;
+
+        if (op_type == 0) {
+            // Put
+            const value = try allocator.alloc(u8, val_len);
+            errdefer allocator.free(value);
+            const val_bytes_read = try reader.readAll(value);
+            if (val_bytes_read != val_len) return error.IncompleteValue;
+
+            try mutations.append(allocator, txn.Mutation{ .put = .{ .key = key, .value = value } });
+        } else {
+            // Delete
+            try mutations.append(allocator, txn.Mutation{ .delete = .{ .key = key } });
+        }
+    }
+
+    const record = txn.CommitRecord{
+        .txn_id = txn_id,
+        .root_page_id = root_page_id,
+        .mutations = mutations.toOwnedSlice(allocator),
+        .checksum = checksum,
+    };
+
+    return raft.LogEntry{
+        .term = term,
+        .index = index,
+        .command = .{ .normal = record },
+    };
+}
+
+/// Serialize array of LogEntry to byte stream
+pub fn serializeLogEntries(entries: []const raft.LogEntry, writer: anytype) !void {
+    for (entries) |entry| {
+        try serializeLogEntry(entry, writer);
+    }
+}
+
+/// Deserialize array of LogEntry from byte stream
+pub fn deserializeLogEntries(reader: anytype, allocator: std.mem.Allocator, count: u32) ![]raft.LogEntry {
+    const entries = try allocator.alloc(raft.LogEntry, count);
+    errdefer {
+        for (entries) |*e| {
+            if (e.command == .normal) {
+                allocator.free(e.command.normal.mutations);
+                for (e.command.normal.mutations) |m| {
+                    switch (m) {
+                        .put => |p| {
+                            allocator.free(p.key);
+                            allocator.free(p.value);
+                        },
+                        .delete => |d| allocator.free(d.key),
+                    }
+                }
+            }
+        }
+        allocator.free(entries);
+    }
+
+    for (0..count) |i| {
+        entries[i] = try deserializeLogEntry(reader, allocator);
+    }
+
+    return entries;
+}
 
 /// AppendEntries RPC reply
 pub const AppendEntriesReply = struct {
@@ -363,8 +507,6 @@ pub const RaftRpcHandler = struct {
 
     /// Handle AppendEntries RPC
     fn handleAppendEntries(self: *Self, args: AppendEntriesArgs, entries_data: []const u8) !AppendEntriesReply {
-        _ = entries_data; // TODO: Parse entries from data
-
         // If term < current_term, reject
         if (args.term < self.raft_impl.persistent.current_term) {
             return AppendEntriesReply{
@@ -414,20 +556,48 @@ pub const RaftRpcHandler = struct {
             }
         }
 
-        // TODO: Append entries, update commit index
-        if (args.leader_commit > self.raft_impl.follower_state.commit_index) {
-            self.raft_impl.follower_state.commit_index = @min(
-                args.leader_commit,
-                self.raft_impl.persistent.lastLogIndex(),
-            );
+        // Parse entries from data
+        var entries: []raft.LogEntry = &[_]raft.LogEntry{};
+        if (args.entry_count > 0) {
+            var fbs = std.io.fixedBufferStream(entries_data);
+            const parsed = deserializeLogEntries(fbs.reader(), self.allocator, args.entry_count) catch |err| {
+                std.log.warn("Failed to deserialize log entries: {}", .{err});
+                return AppendEntriesReply{
+                    .term = self.raft_impl.persistent.current_term,
+                    .success = false,
+                };
+            };
+            defer {
+                for (parsed) |*e| {
+                    if (e.command == .normal) {
+                        self.allocator.free(e.command.normal.mutations);
+                        for (e.command.normal.mutations) |m| {
+                            switch (m) {
+                                .put => |p| {
+                                    self.allocator.free(p.key);
+                                    self.allocator.free(p.value);
+                                },
+                                .delete => |d| self.allocator.free(d.key),
+                            }
+                        }
+                    }
+                }
+                self.allocator.free(parsed);
+            }
+            entries = parsed;
         }
 
-        try self.raft_impl.applyCommittedEntries();
-
-        return AppendEntriesReply{
-            .term = self.raft_impl.persistent.current_term,
-            .success = true,
+        // Build Raft AppendEntries args with entries
+        const raft_args = raft.AppendEntriesArgs{
+            .term = args.term,
+            .leader_id = args.leader_id,
+            .prev_log_index = args.prev_log_index,
+            .prev_log_term = args.prev_log_term,
+            .entries = entries,
+            .leader_commit = args.leader_commit,
         };
+
+        return try self.raft_impl.handleAppendEntries(raft_args);
     }
 
     /// Handle InstallSnapshot RPC

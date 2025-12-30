@@ -372,3 +372,352 @@ fn timestampMs() u64 {
     const ns = std.time.nanoTimestamp();
     return @intCast(@abs(ns) / 1_000_000);
 }
+
+// ==================== Phase 2: Log Replication Tests ====================
+
+test "Raft Phase 2 - leader append entries to local log" {
+    const allocator = std.testing.allocator;
+    const peers = [_]config.NodeInfo{
+        config.NodeInfo.init(2, "node2:7234"),
+        config.NodeInfo.init(3, "node3:7234"),
+    };
+
+    const cfg = config.RaftConfig{
+        .node_id = 1,
+        .peers = &peers,
+        .rpc_listen_address = "0.0.0.0:7234",
+    };
+
+    var raft_instance = try raft.Raft.init(allocator, cfg);
+    defer raft_instance.deinit();
+
+    // Become leader
+    try raft_instance.becomeCandidate();
+    try raft_instance.becomeLeader();
+
+    // Propose entries
+    for (0..5) |i| {
+        const record = txn.CommitRecord{
+            .txn_id = @intCast(i + 1),
+            .root_page_id = @intCast(i + 10),
+            .mutations = &[_]txn.Mutation{},
+            .checksum = 0,
+        };
+
+        const index = try raft_instance.propose(record);
+        try std.testing.expectEqual(@as(u64, i + 1), index);
+    }
+
+    // Verify all entries in log
+    try std.testing.expectEqual(@as(usize, 5), raft_instance.persistent.log.items.len);
+    try std.testing.expectEqual(@as(u64, 5), raft_instance.persistent.lastLogIndex());
+}
+
+test "Raft Phase 2 - majority commit propagation" {
+    const allocator = std.testing.allocator;
+    var cluster = try TestCluster.init(allocator, 3);
+    defer cluster.deinit();
+
+    // Elect leader
+    _ = try cluster.simulateElection();
+
+    // Leader proposes entry
+    const record = txn.CommitRecord{
+        .txn_id = 1,
+        .root_page_id = 2,
+        .mutations = &[_]txn.Mutation{},
+        .checksum = 0,
+    };
+
+    _ = try cluster.nodes[0].raft.propose(record);
+
+    // Get the entry from leader's log
+    const entry = cluster.nodes[0].raft.persistent.getEntry(1).?;
+    try std.testing.expectEqual(@as(u64, 1), entry.index);
+
+    // Simulate replication to follower 1 (majority achieved: leader + 1 follower)
+    const args = raft.AppendEntriesArgs{
+        .term = 1,
+        .leader_id = 1,
+        .prev_log_index = 0,
+        .prev_log_term = 0,
+        .entries = &[_]raft.LogEntry{entry},
+        .leader_commit = 0,
+    };
+
+    const reply = try cluster.nodes[1].raft.handleAppendEntries(args);
+    try std.testing.expect(reply.success);
+
+    // Update match index on leader
+    const leader_state = cluster.nodes[0].raft.leader_state.?;
+    try leader_state.match_index.put(2, 1);
+
+    // Update commit index - should be committed with majority
+    try cluster.nodes[0].raft.updateCommitIndex();
+
+    // Entry should be committed (majority: leader + 1 follower = 2 out of 3)
+    try std.testing.expectEqual(@as(u64, 1), leader_state.commit_index);
+}
+
+test "Raft Phase 2 - majority commit with multiple entries" {
+    const allocator = std.testing.allocator;
+    var cluster = try TestCluster.init(allocator, 3);
+    defer cluster.deinit();
+
+    // Elect leader
+    _ = try cluster.simulateElection();
+
+    // Propose multiple entries
+    const entry_count = 5;
+    var entries: [entry_count]raft.LogEntry = undefined;
+
+    for (0..entry_count) |i| {
+        const record = txn.CommitRecord{
+            .txn_id = @intCast(i + 1),
+            .root_page_id = @intCast(i + 10),
+            .mutations = &[_]txn.Mutation{},
+            .checksum = 0,
+        };
+
+        _ = try cluster.nodes[0].raft.propose(record);
+        entries[i] = cluster.nodes[0].raft.persistent.getEntry(@intCast(i + 1)).?;
+    }
+
+    // Simulate gradual replication
+    const leader_state = cluster.nodes[0].raft.leader_state.?;
+
+    // Replicate first 3 entries to follower 1
+    for (0..3) |i| {
+        const args = raft.AppendEntriesArgs{
+            .term = 1,
+            .leader_id = 1,
+            .prev_log_index = @intCast(i),
+            .prev_log_term = if (i == 0) 0 else 1,
+            .entries = &[_]raft.LogEntry{entries[i]},
+            .leader_commit = 0,
+        };
+
+        _ = try cluster.nodes[1].raft.handleAppendEntries(args);
+        try leader_state.match_index.put(2, @intCast(i + 1));
+    }
+
+    // Update commit index - should commit up to index 3 (leader + 1 follower majority)
+    try cluster.nodes[0].raft.updateCommitIndex();
+
+    try std.testing.expectEqual(@as(u64, 3), leader_state.commit_index);
+}
+
+test "Raft Phase 2 - log conflict resolution with backtracking" {
+    const allocator = std.testing.allocator;
+    var cluster = try TestCluster.init(allocator, 3);
+    defer cluster.deinit();
+
+    // Elect leader
+    _ = try cluster.simulateElection();
+
+    // Follower has diverging log
+    for (0..3) |i| {
+        const record = txn.CommitRecord{
+            .txn_id = @as(u64, 100) + @as(u64, @intCast(i)), // Different transaction IDs
+            .root_page_id = 2,
+            .mutations = &[_]txn.Mutation{},
+            .checksum = 0,
+        };
+
+        try cluster.nodes[1].raft.persistent.appendEntry(
+            raft.LogEntry.fromCommitRecord(1, @intCast(i + 1), record),
+        );
+    }
+
+    // Leader proposes conflicting entry at index 2
+    const leader_record = txn.CommitRecord{
+        .txn_id = 1,
+        .root_page_id = 2,
+        .mutations = &[_]txn.Mutation{},
+        .checksum = 0,
+    };
+
+    _ = try cluster.nodes[0].raft.propose(leader_record);
+    const new_entry = cluster.nodes[0].raft.persistent.getEntry(1).?;
+
+    // Leader sends AppendEntries starting from index 1
+    const args = raft.AppendEntriesArgs{
+        .term = 1,
+        .leader_id = 1,
+        .prev_log_index = 0,
+        .prev_log_term = 0,
+        .entries = &[_]raft.LogEntry{new_entry},
+        .leader_commit = 0,
+    };
+
+    const reply = try cluster.nodes[1].raft.handleAppendEntries(args);
+    try std.testing.expect(reply.success);
+
+    // Follower log should be truncated and new entry appended
+    try std.testing.expectEqual(@as(usize, 1), cluster.nodes[1].raft.persistent.log.items.len);
+    try std.testing.expectEqual(@as(u64, 1), cluster.nodes[1].raft.persistent.log.items[0].index);
+    try std.testing.expectEqual(@as(u64, 1), cluster.nodes[1].raft.persistent.log.items[0].txn_id);
+}
+
+test "Raft Phase 2 - commit index propagation on follower" {
+    const allocator = std.testing.allocator;
+    var cluster = try TestCluster.init(allocator, 3);
+    defer cluster.deinit();
+
+    // Elect leader
+    _ = try cluster.simulateElection();
+
+    // Propose entry
+    const record = txn.CommitRecord{
+        .txn_id = 1,
+        .root_page_id = 2,
+        .mutations = &[_]txn.Mutation{},
+        .checksum = 0,
+    };
+
+    _ = try cluster.nodes[0].raft.propose(record);
+
+    // Get the entry from leader's log
+    const entry = cluster.nodes[0].raft.persistent.getEntry(1).?;
+
+    // Simulate replication with leader_commit set
+    const args = raft.AppendEntriesArgs{
+        .term = 1,
+        .leader_id = 1,
+        .prev_log_index = 0,
+        .prev_log_term = 0,
+        .entries = &[_]raft.LogEntry{entry},
+        .leader_commit = 1, // Leader says entry 1 is committed
+    };
+
+    _ = try cluster.nodes[1].raft.handleAppendEntries(args);
+
+    // Follower's commit index should be updated
+    try std.testing.expectEqual(@as(u64, 1), cluster.nodes[1].raft.follower_state.commit_index);
+}
+
+test "Raft Phase 2 - state machine application (last_applied)" {
+    const allocator = std.testing.allocator;
+    const peers = [_]config.NodeInfo{
+        config.NodeInfo.init(2, "node2:7234"),
+        config.NodeInfo.init(3, "node3:7234"),
+    };
+
+    const cfg = config.RaftConfig{
+        .node_id = 1,
+        .peers = &peers,
+        .rpc_listen_address = "0.0.0.0:7234",
+    };
+
+    var raft_instance = try raft.Raft.init(allocator, cfg);
+    defer raft_instance.deinit();
+
+    // Track applied entries using pointer to capture mutable variable
+    const applied_count_ptr = try allocator.create(u64);
+    applied_count_ptr.* = 0;
+    defer allocator.destroy(applied_count_ptr);
+
+    // Wrap the callback to capture the pointer
+    raft_instance.on_apply_entry = struct {
+        fn wrapper(entry: raft.LogEntry) !void {
+            _ = entry;
+            applied_count_ptr.* += 1;
+        }
+    }.wrapper;
+
+    // Become leader
+    try raft_instance.becomeCandidate();
+    try raft_instance.becomeLeader();
+
+    // Propose entry
+    const record = txn.CommitRecord{
+        .txn_id = 1,
+        .root_page_id = 2,
+        .mutations = &[_]txn.Mutation{},
+        .checksum = 0,
+    };
+
+    _ = try raft_instance.propose(record);
+
+    // Commit the entry
+    const leader_state = raft_instance.leader_state.?;
+    try leader_state.match_index.put(2, 1);
+    try raft_instance.updateCommitIndex();
+
+    // Entry should be applied
+    try std.testing.expectEqual(@as(u64, 1), leader_state.last_applied);
+    try std.testing.expectEqual(@as(u64, 1), applied_count_ptr.*);
+}
+
+test "Raft Phase 2 - log replication with conflict and recovery" {
+    const allocator = std.testing.allocator;
+    var cluster = try TestCluster.init(allocator, 3);
+    defer cluster.deinit();
+
+    // Elect leader
+    _ = try cluster.simulateElection();
+
+    // Follower has log from old term with conflicting entry
+    const old_record = txn.CommitRecord{
+        .txn_id = 999,
+        .root_page_id = 2,
+        .mutations = &[_]txn.Mutation{},
+        .checksum = 0,
+    };
+
+    try cluster.nodes[1].raft.persistent.appendEntry(
+        raft.LogEntry.fromCommitRecord(1, 1, old_record),
+    );
+
+    // Leader proposes entry in new term
+    const new_record = txn.CommitRecord{
+        .txn_id = 1,
+        .root_page_id = 2,
+        .mutations = &[_]txn.Mutation{},
+        .checksum = 0,
+    };
+
+    _ = try cluster.nodes[0].raft.propose(new_record);
+    const entry = cluster.nodes[0].raft.persistent.getEntry(1).?;
+
+    // Send AppendEntries - follower should detect conflict at index 1
+    const args = raft.AppendEntriesArgs{
+        .term = 2,
+        .leader_id = 1,
+        .prev_log_index = 0,
+        .prev_log_term = 0,
+        .entries = &[_]raft.LogEntry{entry},
+        .leader_commit = 0,
+    };
+
+    const reply = try cluster.nodes[1].raft.handleAppendEntries(args);
+    try std.testing.expect(!reply.success); // Should fail due to term mismatch
+    try std.testing.expect(reply.conflict_index != null);
+
+    // Leader should backtrack and retry with correct prev_log_term
+    const args2 = raft.AppendEntriesArgs{
+        .term = 2,
+        .leader_id = 1,
+        .prev_log_index = 1,
+        .prev_log_term = 1, // Now match follower's term
+        .entries = &[_]raft.LogEntry{}, // Empty to confirm match
+        .leader_commit = 0,
+    };
+
+    _ = try cluster.nodes[1].raft.handleAppendEntries(args2);
+
+    // Now truncate follower's log and send new entry
+    cluster.nodes[1].raft.persistent.truncateFrom(1);
+
+    const args3 = raft.AppendEntriesArgs{
+        .term = 2,
+        .leader_id = 1,
+        .prev_log_index = 0,
+        .prev_log_term = 0,
+        .entries = &[_]raft.LogEntry{entry},
+        .leader_commit = 0,
+    };
+
+    const reply3 = try cluster.nodes[1].raft.handleAppendEntries(args3);
+    try std.testing.expect(reply3.success);
+}
