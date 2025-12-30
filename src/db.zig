@@ -599,6 +599,8 @@ pub const WriteTxn = struct {
         defer {
             // Release writer lock regardless of outcome
             self.db.writer_active = false;
+            // Clean up transaction context to free allocated memory
+            self.txn_ctx.deinit();
         }
 
         // If file-based, use two-phase commit
@@ -620,6 +622,7 @@ pub const WriteTxn = struct {
         self.db.writer_active = false;
 
         self.txn_ctx.abort();
+        self.txn_ctx.deinit(); // Clean up allocated memory
         self.inner.abort();
     }
 
