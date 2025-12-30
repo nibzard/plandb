@@ -275,6 +275,7 @@ pub const PluginFixtures = struct {
             .on_agent_operation = null,
             .on_review_request = null,
             .on_perf_sample = null,
+            .on_benchmark_complete = null,
         };
     }
 
@@ -302,6 +303,7 @@ pub const PluginFixtures = struct {
             .on_agent_operation = null,
             .on_review_request = null,
             .on_perf_sample = null,
+            .on_benchmark_complete = null,
         };
     }
 
@@ -325,6 +327,7 @@ pub const PluginFixtures = struct {
             .on_agent_operation = null,
             .on_review_request = null,
             .on_perf_sample = null,
+            .on_benchmark_complete = null,
         };
     }
 
@@ -349,6 +352,7 @@ pub const PluginFixtures = struct {
             .on_agent_operation = null,
             .on_review_request = null,
             .on_perf_sample = null,
+            .on_benchmark_complete = null,
         };
     }
 

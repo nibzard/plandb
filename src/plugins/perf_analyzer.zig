@@ -86,6 +86,64 @@ fn on_perf_sample(allocator: std.mem.Allocator, ctx: manager.PerfSampleContext) 
     // This hook can be used for additional processing or filtering
 }
 
+/// Hook: on_benchmark_complete - analyze benchmark completion and detect regressions
+fn on_benchmark_complete(allocator: std.mem.Allocator, ctx: manager.BenchmarkCompleteContext) anyerror!void {
+    _ = allocator;
+
+    // Record benchmark metrics to event manager if available
+    if (ctx.event_manager) |em| {
+        // Create dimensions for the metric
+        var dimensions = std.StringHashMap([]const u8).init(allocator);
+        defer {
+            var it = dimensions.iterator();
+            while (it.next()) |entry| {
+                allocator.free(entry.key_ptr.*);
+                allocator.free(entry.value_ptr.*);
+            }
+            dimensions.deinit();
+        }
+
+        try dimensions.put("benchmark", ctx.benchmark_name);
+        try dimensions.put("profile", ctx.profile_name);
+        try dimensions.put("repeat_index", try std.fmt.allocPrint(allocator, "{d}", .{ctx.repeat_index}));
+        try dimensions.put("repeat_count", try std.fmt.allocPrint(allocator, "{d}", .{ctx.repeat_count}));
+
+        // Construct commit range from git info
+        const commit_range = try std.fmt.allocPrint(allocator, "{s}..", .{ctx.git_sha});
+        defer allocator.free(commit_range);
+
+        // Record ops/sec metric
+        try em.recordPerfSample(
+            "benchmark_ops_per_sec",
+            ctx.ops_per_sec,
+            "ops/sec",
+            dimensions,
+            commit_range,
+            &[_]u64{},
+        );
+
+        // Record p99 latency metric
+        try em.recordPerfSample(
+            "benchmark_p99_latency_ns",
+            @as(f64, @floatFromInt(ctx.p99_latency_ns)),
+            "ns",
+            dimensions,
+            commit_range,
+            &[_]u64{},
+        );
+
+        // Record throughput metric
+        try em.recordPerfSample(
+            "benchmark_throughput",
+            ctx.ops_per_sec,
+            "ops/sec",
+            dimensions,
+            commit_range,
+            &[_]u64{},
+        );
+    }
+}
+
 // ==================== Plugin State ====================
 
 /// Performance analyzer plugin state
@@ -266,6 +324,7 @@ pub fn createPlugin() manager.Plugin {
         .on_agent_operation = on_agent_operation,
         .on_review_request = null,
         .on_perf_sample = on_perf_sample,
+        .on_benchmark_complete = on_benchmark_complete,
     };
 }
 
@@ -312,6 +371,7 @@ test "PerfAnalyzerPlugin create plugin export" {
     try std.testing.expect(plugin.on_commit != null);
     try std.testing.expect(plugin.on_agent_operation != null);
     try std.testing.expect(plugin.on_perf_sample != null);
+    try std.testing.expect(plugin.on_benchmark_complete != null);
 }
 
 test "PerfAnalyzerState multiple operations" {

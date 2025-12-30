@@ -340,6 +340,8 @@ pub const Plugin = struct {
     on_agent_operation: ?*const fn(allocator: std.mem.Allocator, ctx: AgentOperationContext) anyerror!void,
     on_review_request: ?*const fn(allocator: std.mem.Allocator, ctx: ReviewContext) anyerror!PluginResult,
     on_perf_sample: ?*const fn(allocator: std.mem.Allocator, ctx: PerfSampleContext) anyerror!void,
+    // Phase 2: Benchmark completion hook for observability
+    on_benchmark_complete: ?*const fn(allocator: std.mem.Allocator, ctx: BenchmarkCompleteContext) anyerror!void,
 
     pub fn init(self: *Plugin, allocator: std.mem.Allocator, config: PluginConfig) !void {
         _ = allocator;
@@ -680,6 +682,35 @@ pub const PerfSampleContext = struct {
     }
 };
 
+/// Phase 2: Benchmark completion context for on_benchmark_complete hook
+pub const BenchmarkCompleteContext = struct {
+    benchmark_name: []const u8,
+    ops_per_sec: f64,
+    p50_latency_ns: u64,
+    p95_latency_ns: u64,
+    p99_latency_ns: u64,
+    max_latency_ns: u64,
+    repeat_index: u32,
+    repeat_count: u32,
+    duration_ns: u64,
+    bytes_read: u64,
+    bytes_written: u64,
+    fsync_count: u64,
+    alloc_count: u64,
+    alloc_bytes: u64,
+    git_sha: []const u8,
+    git_branch: []const u8,
+    profile_name: []const u8,
+    event_manager: ?*events.EventManager,
+
+    pub fn deinit(self: *BenchmarkCompleteContext, allocator: std.mem.Allocator) void {
+        allocator.free(self.benchmark_name);
+        allocator.free(self.git_sha);
+        allocator.free(self.git_branch);
+        allocator.free(self.profile_name);
+    }
+};
+
 /// Maintenance task returned by on_schedule hooks
 pub const MaintenanceTask = struct {
     task_name: []const u8,
@@ -732,6 +763,7 @@ test "plugin_registration" {
         .on_agent_operation = null,
         .on_review_request = null,
         .on_perf_sample = null,
+        .on_benchmark_complete = null,
     };
 
     try manager.register_plugin(test_plugin);
@@ -797,6 +829,7 @@ test "execute_on_commit_hooks_with_plugin" {
         .on_agent_operation = null,
         .on_review_request = null,
         .on_perf_sample = null,
+        .on_benchmark_complete = null,
     };
 
     try manager.register_plugin(test_plugin);
@@ -948,6 +981,7 @@ test "async_execution_multiple_plugins" {
         .on_agent_operation = null,
         .on_review_request = null,
         .on_perf_sample = null,
+        .on_benchmark_complete = null,
     };
 
     const plugin2 = Plugin{
@@ -971,6 +1005,7 @@ test "async_execution_multiple_plugins" {
         .on_agent_operation = null,
         .on_review_request = null,
         .on_perf_sample = null,
+        .on_benchmark_complete = null,
     };
 
     try manager.register_plugin(plugin1);
@@ -1026,6 +1061,7 @@ test "async_execution_with_performance_isolation_disabled" {
         .on_agent_operation = null,
         .on_review_request = null,
         .on_perf_sample = null,
+        .on_benchmark_complete = null,
     };
 
     try manager.register_plugin(test_plugin);
