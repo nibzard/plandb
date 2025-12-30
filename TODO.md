@@ -2,6 +2,50 @@
 
 Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · 🟢 P3 (low)
 
+**Completed 2025-12-29:**
+- [ ✅ ] 🔴 Fix snapshot state handling for file-based databases
+  - **COMPLETED**: Fixed beginReadLatest() and beginReadAt() to use empty SnapshotState for file-based DBs
+  - **COMPLETED**: Previous implementation incorrectly tried to access global txn state for file databases
+  - **FILES MODIFIED**: src/db.zig
+  - **COMMIT**: 99a6231
+  - **STATUS**: Snapshot operations now correctly handle file-based databases without global state
+- [ 🐛 ] 🔴 B+tree bug: keys lost after leaf splits (PARTIAL FIX)
+  - **REPRODUCED**: Created test_split_bug.zig demonstrating key loss after split operations
+  - **IDENTIFIED ROOT CAUSE**: Two critical bugs in splitLeafNode() in src/pager.zig:
+    1. Memory corruption: defer block freed uninitialized owned_entries entries
+    2. Aliasing bug: node_header.key_count modified during split before copying original_key_count
+  - **FIXED 2025-12-29**: Initialize owned_entries to empty slices before populating (commit 67a8d42)
+  - **FIXED 2025-12-29**: Save original_key_count before modifying node_header.key_count
+  - **STATUS**: Right leaves now populate correctly during splits, but keys still missing after commit/read
+  - **REMAINING ISSUE**: Data loss persists (e.g., c1-c6 missing) - needs further investigation into commit/replay path
+  - **FILES MODIFIED**: src/pager.zig
+  - **TEST EVIDENCE**: test_split_bug.zig shows right leaf now has correct entries, but committed data incomplete
+  - **PRIORITY**: P0 - data loss bug affecting correctness
+- [ 🔍 ] 🔴 B+tree slot array bounds bug investigation (IN PROGRESS - Requires design decision)
+  - **ROOT CAUSE IDENTIFIED**: In src/pager.zig, addEntry() and appendEntry() check entry fit using CURRENT slot array size, not NEW slot array size after adding key
+  - **THE BUG**: When adding 6th entry to leaf with 5 entries:
+    - Current slot array size = 5 * 2 = 10 bytes
+    - Slot array end = 48 + 10 = 58
+    - Min slot offset = 75
+    - Check: 75 < 58 + 17 = 75. False, continue.
+    - Entry placed at 75 - 17 = 58
+    - After add: slot array size = 6 * 2 = 12 bytes
+    - New slot array end = 48 + 12 = 60
+    - Entry at offset 58 < 60: SLOT ARRAY CORRUPTION!
+  - **ATTEMPTED FIX**: Change check to use key_count + 1 instead of key_count:
+    ```zig
+    const new_slot_array_end = BtreeNodeHeader.SIZE + Self.getSlotArraySize(node_header.key_count + 1);
+    if (min_slot_offset < new_slot_array_end + total_entry_size) return error.LeafFull;
+    ```
+  - **NEW ISSUE**: Fix causes splits at 5 keys instead of 6, exposes different bug where empty leaves created during splits have insufficient payload space (112 bytes instead of full 4032 bytes)
+  - **RECOMMENDED SOLUTION**:
+    1. Fix bounds check in addEntry() and appendEntry()
+    2. Increase initial payload size in createEmptyBtreeLeaf() to use full buffer size
+    3. Requires changing from stack-allocated payload to buffer-based payload
+  - **DESIGN DECISION NEEDED**: Payload allocation strategy for split-created leaves
+  - **FILES AFFECTED**: src/pager.zig (addEntry, appendEntry, createEmptyBtreeLeaf, splitLeafNode)
+  - **PRIORITY**: P0 - memory corruption and incorrect split behavior
+
 **Completed 2025-12-28:**
 - [ ✅ ] 🔴 Implement Phase 1: Review & Observability
   - **COMPLETED**: Event append + storage primitive (append-only, bounded payloads)

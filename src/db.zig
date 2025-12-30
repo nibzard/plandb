@@ -134,6 +134,7 @@ pub const Db = struct {
         if (self.snapshot_registry) |*registry| {
             const latest_txn_id = registry.getCurrentTxnId();
             const latest_root = registry.getLatestSnapshot();
+            std.log.debug("beginReadLatest: txn_id={}, root_page_id={}", .{latest_txn_id, latest_root});
 
             // For file-based DBs, model snapshot is empty (data is in B+tree)
             // Create an empty snapshot state
