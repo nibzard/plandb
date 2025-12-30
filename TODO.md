@@ -2235,7 +2235,8 @@ This is a **non-critical** benchmark (`.critical = false`) that demonstrates adv
     - P1: No rate limiting on LLM API calls (CWE-770) ✅ FIXED (commit 4c1d645)
     - P1: API key leakage in logs (CWE-532) ✅ FIXED (commit ffa0e4d)
     - P1: Weak session token generation (CWE-338) ✅ FIXED (commit 0430080)
-    - P2: No TLS certificate validation (CWE-295)
+    - P2: No TLS certificate validation (CWE-295) ✅ FIXED (commit 11c6a4f)
+      - **FIX**: Added proper TLS certificate validation with configurable options in LLM client
     - P2: Missing authorization checks (CWE-284) ✅ FIXED (commit 66d7f57)
     - P2: No resource quotas for AI operations (CWE-770) ✅ FIXED (commit 2d36cbd)
     - P2: Insecure defaults for API keys (CWE-276) ✅ FIXED (commit 2c5db54)
@@ -2254,7 +2255,7 @@ This is a **non-critical** benchmark (`.critical = false`) that demonstrates adv
     - System resource tracking
     - Throughput and latency metrics
     - Graceful shutdown and error handling
-- [ ] Create production deployment guide
+- [x] Create production deployment guide (completed 2025-12-30)
 - [ ] Set up vulnerability scanning in CI
 - [ ] Add SLSA provenance for build artifacts
 
