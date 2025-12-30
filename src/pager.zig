@@ -2290,7 +2290,6 @@ pub const Pager = struct {
             } else if (header.page_type == .btree_internal) {
                 // Find child to traverse
                 const child_page_id = findChildInBtreeInternal(&page_buffer, key) orelse return error.CorruptBtree;
-                std.log.debug("    internal node points to child {}", .{child_page_id});
                 if (child_page_id == 0) return error.CorruptBtree;
 
                 current_page_id = child_page_id;
@@ -2303,7 +2302,6 @@ pub const Pager = struct {
     // Find a key-value pair in the B+tree at a specific root page (for snapshots)
     pub fn getBtreeValueAtRoot(self: *Self, key: []const u8, buffer: []u8, root_page_id: u64) !?[]const u8 {
         if (root_page_id == 0) return null; // Empty tree
-        std.log.debug("getBtreeValueAtRoot: key={s}, root_page_id={}", .{key, root_page_id});
 
         var current_page_id = root_page_id;
 
@@ -2312,14 +2310,11 @@ pub const Pager = struct {
             try self.readPage(current_page_id, &page_buffer);
 
             const header = try validatePage(&page_buffer);
-            std.log.debug("  read page {}: page_type={}", .{current_page_id, header.page_type});
             if (header.page_type == .btree_leaf) {
-                // Debug: print all keys in leaf
                 const payload_start = PageHeader.SIZE;
                 const payload_end = payload_start + header.payload_len;
                 const payload_bytes = page_buffer[payload_start..payload_end];
-                const node_header = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
-                std.log.debug("    leaf has {} keys", .{node_header.key_count});
+                _ = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
 
                 // Found leaf - search for key
                 const value = getValueFromBtreeLeaf(&page_buffer, key);
@@ -2332,7 +2327,6 @@ pub const Pager = struct {
             } else if (header.page_type == .btree_internal) {
                 // Find child to traverse
                 const child_page_id = findChildInBtreeInternal(&page_buffer, key) orelse return error.CorruptBtree;
-                std.log.debug("    internal node points to child {}", .{child_page_id});
                 if (child_page_id == 0) return error.CorruptBtree;
 
                 current_page_id = child_page_id;
@@ -2816,7 +2810,6 @@ pub const Pager = struct {
 
         // Find split point (middle entry)
         const split_point = node_header.key_count / 2;
-        std.log.debug("  before zeroing: node_header.key_count={}, split_point={}", .{node_header.key_count, split_point});
         const separator_key = owned_entries[split_point].key;
 
         // Clear and rebuild left leaf
@@ -2824,7 +2817,6 @@ pub const Pager = struct {
         var left_node_header = std.mem.bytesAsValue(BtreeNodeHeader, left_payload_bytes[0..BtreeNodeHeader.SIZE]);
         left_node_header.key_count = 0;
         left_node_header.right_sibling = right_page_id; // Link to right sibling
-        std.log.debug("  after zeroing: left_node_header.key_count={}, node_header.key_count={}", .{left_node_header.key_count, node_header.key_count});
 
         // Insert entries into left leaf (first half)
         for (0..split_point) |i| {
@@ -2833,9 +2825,7 @@ pub const Pager = struct {
 
         // Insert entries into right leaf (second half)
         var right_leaf = BtreeLeafPayload{};
-        std.log.debug("  populating right leaf: split_point={}, original_key_count={}, right_payload_bytes.len={}", .{split_point, original_key_count, right_payload_bytes.len});
         for (split_point..original_key_count) |i| {
-            std.log.debug("    adding entry {} to right leaf: key={s}", .{i, owned_entries[i].key});
             _ = try right_leaf.addEntry(right_payload_bytes, owned_entries[i].key, owned_entries[i].value);
         }
 
@@ -2856,9 +2846,8 @@ pub const Pager = struct {
         const right_page_data = right_buffer[0 .. PageHeader.SIZE + right_header_mut.payload_len];
         right_header_mut.page_crc32c = calculatePageChecksum(right_page_data);
 
-        // Debug: check key counts before writing
-        const right_node_header = std.mem.bytesAsValue(BtreeNodeHeader, right_payload_bytes[0..BtreeNodeHeader.SIZE]);
-        std.log.debug("splitLeafNode: left_page_id={}, left_keys={}, right_page_id={}, right_keys={}", .{left_header.page_id, left_node_header.key_count, right_page_id, right_node_header.key_count});
+        // Check key counts before writing
+        _ = std.mem.bytesAsValue(BtreeNodeHeader, right_payload_bytes[0..BtreeNodeHeader.SIZE]);
 
         // Write both pages
         const left_page_id = left_header.page_id;
