@@ -2313,8 +2313,10 @@ This is a **non-critical** benchmark (`.critical = false`) that demonstrates adv
   - **FILES MODIFIED**: .github/workflows/cross-platform.yml, scripts/manage_baselines.sh, scripts/verify_ci_setup.sh
 
 ### Phase 10.3: Distributed Features
-- [ ] Multi-region replication design
-- [ ] Raft consensus integration
+- [x] Multi-region replication design
+  - **IMPLEMENTATION**: Created spec/replication_v1.md with complete protocol design including primary-replica topology, consistency model, failure modes, and implementation phases
+- [x] Raft consensus integration
+  - **IMPLEMENTATION**: Created spec/raft_v1.md with complete Raft consensus design including leader election, log replication, safety, and configuration changes
 - [ ] Distributed transaction coordination
 - [ ] Leader election and failover
 
