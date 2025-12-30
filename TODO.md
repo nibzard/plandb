@@ -13,6 +13,24 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **CHECKSUMS**: Correctly recalculated in splitLeafNode() (lines 2778-2785 in pager.zig)
   - **PREVIOUS FIXES**: Memory corruption and slot array bounds resolved (commits 67a8d42, ef0cd72)
   - **STATUS**: B+tree split logic working correctly, TODO entry was outdated
+- [ ✅ ] 🟢 MAINTENANCE: Fix Zig 0.13+ compatibility in Phase 10.4 autonomy modules
+  - **COMPLETED 2025-12-30**: Fixed compilation errors from Zig 0.13+ stricter type checking
+  - **ISSUE**: Phase 10.4 autonomy code used deprecated APIs and patterns incompatible with Zig 0.13+
+  - **FIXES APPLIED**:
+    - Integer division: Replaced `/` with `@divFloor()` for ns-to-ms conversions (stricter integer division)
+    - ArrayList patterns: Updated ArrayList to ArrayListUnmanaged, fixed init/deinit patterns
+    - Error handling: Added `try` to `toOwnedSlice()` calls (now returns error union)
+    - Const pointers: Fixed const pointer mismatches in function calls (entry.value_ptr handling)
+    - Sleep API: Replaced `std.time.sleep` with `std.Thread.sleep` (now takes nanoseconds)
+    - JSON handling: Fixed JSON Value access patterns for non-optional types
+    - Plugin initialization: Updated Plugin struct initialization patterns
+  - **FILES MODIFIED**:
+    - src/autonomy/archival.zig, src/autonomy/patterns.zig, src/autonomy/temporal_retention.zig, src/autonomy/tiered_storage.zig
+    - src/bench/load_test.zig, src/cartridges/pending_tasks.zig, src/cartridges/temporal.zig
+    - src/plugins/debug.zig, src/plugins/packaging.zig, src/plugins/security.zig, src/plugins/testing.zig
+    - src/replication/protocol.zig, src/replication/publisher.zig
+  - **COMMIT**: db8e63e
+  - **STATUS**: All Phase 10.4 autonomy modules now compile with Zig 0.13+, project builds cleanly
 - [ ✅ ] 🟡 Entry Data Area Compaction - B+tree Delete Optimization
   - **COMPLETED 2025-12-30**: Added BtreeLeafPayload.compactEntryDataArea() function
   - **IMPLEMENTATION**: Function moves remaining entries to end of payload after deletion
@@ -2343,6 +2361,23 @@ This is a **non-critical** benchmark (`.critical = false`) that demonstrates adv
   - **IMPLEMENTATION**: Created spec/dist_transactions_v1.md with complete 2PC protocol design including concurrency control, deadlock detection, and failure recovery
 - [x] Leader election and failover
   - **IMPLEMENTATION**: Created spec/leader_election_v1.md with complete leader election, failover detection, and split-brain prevention design
+- [x] Basic replication foundation (Phase 10.3.1)
+  - **COMPLETED 2025-12-30**: Implemented core replication infrastructure per spec/replication_v1.md
+  - **IMPLEMENTED**:
+    - src/replication/protocol.zig - Replication protocol message types (Message, MessageType, Handshake, Data, Ack)
+    - src/replication/config.zig - Replication configuration types (ReplicationConfig, ReplicaInfo, PublisherConfig, SubscriberConfig)
+    - src/replication/publisher.zig - Publisher for streaming commit records to replicas
+    - src/replication/subscriber.zig - Subscriber for receiving and applying commit records
+    - src/replication/index.zig - Module index
+    - src/replication/test.zig - Integration tests
+  - **CAPABILITIES**:
+    - Protocol defines message types for handshake, data replication, and acknowledgments
+    - Config supports primary-replica topology with role-based configuration
+    - Publisher streams commit log entries to connected replicas
+    - Subscriber receives and applies changes from primary
+    - Validation of configuration parameters and replica information
+  - **TESTS**: All 4 config tests passing (basic config, replica info, publisher config, subscriber config)
+  - **FILES**: src/replication/protocol.zig, src/replication/config.zig, src/replication/publisher.zig, src/replication/subscriber.zig, src/replication/index.zig, src/replication/test.zig (all new)
 
 ### Phase 10.4: Advanced AI Features
 - [x] Multi-model orchestration optimization
