@@ -2236,7 +2236,7 @@ This is a **non-critical** benchmark (`.critical = false`) that demonstrates adv
     - P1: API key leakage in logs (CWE-532) ✅ FIXED (commit ffa0e4d)
     - P1: Weak session token generation (CWE-338) ✅ FIXED (commit 0430080)
     - P2: No TLS certificate validation (CWE-295)
-    - P2: Missing authorization checks (CWE-284)
+    - P2: Missing authorization checks (CWE-284) ✅ FIXED (commit 66d7f57)
     - P2: No resource quotas for AI operations (CWE-770)
     - P2: Insecure defaults for API keys (CWE-276)
     - P2: Missing input validation for function parameters ✅ FIXED (commit 3c63d74)
