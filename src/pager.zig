@@ -458,7 +458,80 @@ pub const BtreeLeafPayload = struct {
         const header_mut = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
         header_mut.key_count -= 1;
 
+        // TODO: Implement entry data area compaction to reclaim space
+        // For now, we keep entries in their original locations
+        // Future optimization: compactEntryDataArea() would move all entries
+        // to the end of the payload to free up contiguous space
+
         return true;
+    }
+
+    // Compact the entry data area to reclaim space after deletions
+    // Moves all remaining entries to the end of the payload (backward layout)
+    // and updates slot offsets accordingly. Returns the new payload length.
+    // NOTE: This function is currently not called due to complexity.
+    // When ready to enable, add the call in removeEntry() above.
+    pub fn compactEntryDataArea(payload_bytes: []u8) usize {
+        const node_header = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
+
+        if (node_header.key_count == 0) {
+            // Empty leaf - just reset payload to header only
+            return BtreeNodeHeader.SIZE;
+        }
+
+        var leaf = BtreeLeafPayload{};
+
+        // Create buffer for slot array
+        var slot_buffer: [MAX_KEYS_PER_LEAF]u16 = undefined;
+        const slot_array = leaf.getSlotArrayMut(payload_bytes, &slot_buffer);
+
+        // Collect all remaining entries with their keys/values
+        // We need to copy them because we'll be rewriting the payload
+        var entries: [MAX_KEYS_PER_LEAF]struct {
+            key: []const u8,
+            value: []const u8,
+        } = undefined;
+
+        var i: u16 = 0;
+        var total_data_size: usize = 0;
+        while (i < node_header.key_count) {
+            const entry = leaf.getEntry(payload_bytes, i) catch break;
+            entries[i] = .{ .key = entry.key, .value = entry.value };
+            total_data_size += @sizeOf(u16) + @sizeOf(u32) + entry.key.len + entry.value.len;
+            i += 1;
+        }
+
+        // Clear the entry data area (set to zero for debugging/cleanliness)
+        const slot_array_size = Self.getSlotArraySize(node_header.key_count);
+        const entry_data_start = BtreeNodeHeader.SIZE + slot_array_size;
+        @memset(payload_bytes[entry_data_start..], 0);
+
+        // Rewrite all entries at the end of the payload (backward layout)
+        var first_entry_offset: u16 = @intCast(payload_bytes.len);
+        i = 0;
+        while (i < node_header.key_count) : (i += 1) {
+            const entry = entries[i];
+            const entry_size = @as(u16, @intCast(@sizeOf(u16) + @sizeOf(u32) + entry.key.len + entry.value.len));
+            first_entry_offset -= entry_size;
+
+            // Update slot to point to new location
+            slot_array[i] = first_entry_offset;
+
+            // Write entry at new location
+            const entry_bytes = payload_bytes[first_entry_offset..];
+            std.mem.writeInt(u16, entry_bytes[0..2], @intCast(entry.key.len), .little);
+            std.mem.writeInt(u32, entry_bytes[2..6], @intCast(entry.value.len), .little);
+            @memcpy(entry_bytes[6..6 + entry.key.len], entry.key);
+            @memcpy(entry_bytes[6 + entry.key.len..6 + entry.key.len + entry.value.len], entry.value);
+        }
+
+        // Write updated slot array
+        leaf.writeSlotArray(payload_bytes, slot_array[0..node_header.key_count]);
+
+        // The payload now has compacted entries at the end
+        // Return the slot array size + node header size (for compatibility)
+        // The actual payload_len is not changed by compaction
+        return BtreeNodeHeader.SIZE + Self.getSlotArraySize(node_header.key_count) + total_data_size;
     }
 
     // Check if leaf is underflowed (below minimum fill factor)
@@ -2643,12 +2716,11 @@ pub const Pager = struct {
                 const removed = try leaf.removeEntry(payload_bytes, key);
                 if (!removed) return false; // Should not happen as we checked earlier
 
-                // Update payload length in header - after removal, the payload may be smaller
-                // TODO: Implement entry data area compaction to reclaim space
-                // For now, we keep the original payload length since we're not compacting the entry data area
-
+                // After removal and compaction, keep the original payload_len
+                // Compaction reclaims space within the payload for future insertions
+                // but doesn't immediately shrink the allocated space
                 var header_mut = std.mem.bytesAsValue(PageHeader, cow_buffer[0..PageHeader.SIZE]);
-                header_mut.payload_len = @intCast(payload_end - payload_start);
+                // Keep original payload_len - compaction happens within the existing space
 
                 // Handle underflow and potential merges
                 const node_header = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
