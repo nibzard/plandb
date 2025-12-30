@@ -12,6 +12,15 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **FILES MODIFIED**: src/db.zig, src/hardening.zig, src/pager.zig, src/events/index.zig, src/plugins/manager.zig, src/bench/runner.zig
   - **COMMIT**: Most recent commit covers these changes
   - **STATUS**: All API migrations complete, project builds and tests pass with Zig 0.15.2
+- [ ✅ ] 🟡 Implement time_range parsing and LLM result extraction
+  - **COMPLETED**: Implemented time_range parsing in src/queries/natural_language.zig
+  - **COMPLETED**: Parses min/max from value object to populate ScopeFilter.ValueRange
+  - **COMPLETED**: Implemented LLM result extraction in src/queries/planner.zig
+  - **COMPLETED**: Added extractPlanFromResult, extractExecutionStep, buildStepParameters functions
+  - **COMPLETED**: Fixed syntax error in planner.zig (cartridge_reqs-append typo)
+  - **FILES MODIFIED**: src/queries/natural_language.zig, src/queries/planner.zig
+  - **COMMIT**: b7ada39
+  - **STATUS**: Query planning infrastructure complete
 
 **Completed 2025-12-29:**
 - [ ✅ ] 🔴 Fix snapshot state handling for file-based databases
