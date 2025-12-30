@@ -8,6 +8,87 @@ const client = @import("../llm/client.zig");
 const txn = @import("../txn.zig");
 const events = @import("../events/index.zig");
 
+/// Resource tracker for AI operation quotas
+pub const ResourceTracker = struct {
+    allocator: std.mem.Allocator,
+    budget_per_hour: f64,
+    tokens_used_this_hour: u64,
+    hour_start: i128,
+    request_count_this_hour: u64,
+    max_requests_per_hour: u64 = 1000,
+
+    const Self = @This();
+
+    pub fn init(allocator: std.mem.Allocator, budget_per_hour: f64) Self {
+        const now = std.time.nanoTimestamp();
+        return Self{
+            .allocator = allocator,
+            .budget_per_hour = budget_per_hour,
+            .tokens_used_this_hour = 0,
+            .hour_start = now,
+            .request_count_this_hour = 0,
+        };
+    }
+
+    pub fn checkQuota(self: *Self) !void {
+        const now = std.time.nanoTimestamp();
+        const hour_ns: i128 = 3_600_000_000_000; // 1 hour in nanoseconds
+
+        // Reset counters if hour has passed
+        if (now - self.hour_start > hour_ns) {
+            self.tokens_used_this_hour = 0;
+            self.request_count_this_hour = 0;
+            self.hour_start = now;
+        }
+
+        // Check request count quota
+        if (self.request_count_this_hour >= self.max_requests_per_hour) {
+            return error.RequestLimitExceeded;
+        }
+
+        // TODO: Check cost budget against token usage
+        // For now, just check request limits
+    }
+
+    pub fn recordUsage(self: *Self, tokens: u32) !void {
+        const now = std.time.nanoTimestamp();
+        const hour_ns: i128 = 3_600_000_000_000;
+
+        // Reset counters if hour has passed
+        if (now - self.hour_start > hour_ns) {
+            self.tokens_used_this_hour = 0;
+            self.request_count_this_hour = 0;
+            self.hour_start = now;
+        }
+
+        self.tokens_used_this_hour += tokens;
+        self.request_count_this_hour += 1;
+    }
+
+    pub fn getUsage(self: *const Self) ResourceUsage {
+        const now = std.time.nanoTimestamp();
+        const hour_ns: i128 = 3_600_000_000_000;
+        const elapsed_ns = now - self.hour_start;
+        _ = hour_ns;
+        const elapsed_minutes = @as(f64, @floatFromInt(elapsed_ns)) / 60_000_000_000.0;
+
+        return ResourceUsage{
+            .tokens_used = self.tokens_used_this_hour,
+            .requests_made = self.request_count_this_hour,
+            .budget_remaining = self.budget_per_hour, // TODO: Calculate based on actual cost
+            .hour_progress_minutes = elapsed_minutes,
+        };
+    }
+};
+
+/// Resource usage statistics
+pub const ResourceUsage = struct {
+    tokens_used: u64,
+    requests_made: u64,
+    budget_remaining: f64,
+    hour_progress_minutes: f64,
+};
+
 pub const PluginManager = struct {
     allocator: std.mem.Allocator,
     plugins: std.StringHashMap(Plugin),
@@ -15,6 +96,7 @@ pub const PluginManager = struct {
     function_registry: std.StringHashMap(FunctionSchema),
     config: PluginConfig,
     event_manager: ?*events.EventManager, // Phase 1: Event manager for observability
+    resource_tracker: ResourceTracker,
 
     const Self = @This();
 
@@ -29,6 +111,7 @@ pub const PluginManager = struct {
             .function_registry = std.StringHashMap(FunctionSchema).init(allocator),
             .config = config,
             .event_manager = null, // Optional, set via attachEventManager
+            .resource_tracker = ResourceTracker.init(allocator, config.cost_budget_per_hour),
         };
     }
 
@@ -272,7 +355,25 @@ pub const PluginManager = struct {
             return error.InvalidParameters;
         };
 
-        return self.llm_provider.call_function(schema, params, self.allocator);
+        // Check resource quotas before calling
+        self.resource_tracker.checkQuota() catch |err| {
+            std.log.err("Resource quota exceeded for function '{s}': {}", .{ function_name, err });
+            return error.ResourceQuotaExceeded;
+        };
+
+        const result = try self.llm_provider.call_function(schema, params, self.allocator);
+
+        // Track resource usage (estimate from tokens used)
+        if (result.tokens_used) |tokens| {
+            try self.resource_tracker.recordUsage(tokens.total_tokens);
+        }
+
+        return result;
+    }
+
+    /// Get current resource usage statistics
+    pub fn getResourceUsage(self: *const Self) ResourceUsage {
+        return self.resource_tracker.getUsage();
     }
 
     fn find_function_schema(self: *Self, function_name: []const u8) !FunctionSchema {
