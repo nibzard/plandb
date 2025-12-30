@@ -1,6 +1,6 @@
 # AI Integration Example - Living Database
 
-End-to-end demonstration of NorthstarDB's AI intelligence layer with mock LLM for deterministic testing.
+End-to-end demonstration of NorthstarDB's AI intelligence layer with mock and real LLM options.
 
 ## Overview
 
@@ -12,12 +12,28 @@ This example validates the complete AI workflow:
 
 ## Running
 
+### Mock LLM Example (No API Key Required)
 ```bash
-# From project root
-zig run examples/integration/ai_living_db.zig
+cd examples/integration
+zig build run
+```
 
-# Run tests
+### Real LLM Example (Requires API Key)
+```bash
+cd examples/integration
+OPENAI_API_KEY=sk-... zig build run-real
+# Optionally specify model: OPENAI_MODEL=gpt-4o-mini zig build run-real
+```
+
+**Note**: The real LLM example (`ai_living_db_real.zig`) is currently a stub that demonstrates the structure. Actual OpenAI API integration requires updating the HTTP client code to Zig 0.15.2 API. See the code for details on this blocker.
+
+### Tests
+```bash
+# Mock LLM tests
 zig test examples/integration/ai_living_db.zig
+
+# Real LLM tests
+zig test examples/integration/ai_living_db_real.zig
 ```
 
 ## What It Demonstrates
@@ -28,13 +44,14 @@ zig test examples/integration/ai_living_db.zig
 - Attaches plugin manager to database
 
 ### Step 2: Commit Sample Data
-- Writes 5 sample key-value pairs
+- Writes sample key-value pairs
 - Triggers on_commit hooks for each
 - Demonstrates plugin execution lifecycle
 
 ### Step 3: LLM Entity Extraction
 - Reads all committed data
-- Simulates LLM function calling (mock, no API)
+- **Mock**: Simulates LLM function calling (no API)
+- **Real**: Would call OpenAI API for entity extraction (stubbed pending Zig 0.15.2 HTTP migration)
 - Stores extracted entities in cartridge format
 
 ### Step 4: Natural Language Query
@@ -52,7 +69,7 @@ zig test examples/integration/ai_living_db.zig
 - Reports performance metrics
 - Confirms living database status
 
-## Expected Output
+## Expected Output (Mock LLM)
 
 ```
 ==============================
@@ -61,22 +78,20 @@ zig test examples/integration/ai_living_db.zig
 ==============================
 
 ============================================================
-STEP 1: Initializing AI Plugin System
+STEP 1: Initializing Living Database
 ============================================================
-  Plugin system initialized
-  Registered plugins: entity_extractor
-  Plugin manager attached to database
+  Database initialized successfully
+  Ready for AI-powered operations
 
 ============================================================
 STEP 2: Committing Sample Data
 ============================================================
   Committed [1]: doc:architecture = "NorthstarDB is an embedded..."
-  Plugins executed: 1, Success: true
   ...
   Committed 5 key-value pairs
 
 ============================================================
-STEP 3: LLM-Based Entity Extraction
+STEP 3: LLM-Based Entity Extraction (Mock)
 ============================================================
   Extracted: NorthstarDB (Technology) confidence=0.95
   Extracted: Zig (Language) confidence=1.00
@@ -90,39 +105,19 @@ STEP 3: LLM-Based Entity Extraction
 ============================================================
 STEP 4: Natural Language Query Processing
 ============================================================
-
-  Query 1: "What database is written in Zig?"
-    Found 5 results:
-      - cartridge:entity:Technology:NorthstarDB: {"name":"NorthstarDB"...}
-      ...
+  ...
 
 ============================================================
 STEP 5: Autonomous Optimization Detection
 ============================================================
   Detected 3 optimization opportunities:
     [1] Create entity name index for faster lookups
-        Pattern: frequent_entity_lookups
-        Confidence: 0.92
     ...
 
 ============================================================
 STEP 6: Validation & Performance Metrics
 ============================================================
-  Database State:
-    Total entities stored: 25
-    LLM calls made: 5
-
-  Integrity Checks:
-    [PASS] All entities stored with confidence >= 0.7
-    [PASS] Plugin hooks executed successfully
-    [PASS] Semantic query system operational
-    [PASS] Autonomous optimization detection active
-
-  Living Database Status: ACTIVE
-
-==============================
-  Demo Complete!
-==============================
+  Living Database Status: ACTIVE (Mock LLM)
 ```
 
 ## Architecture
@@ -139,8 +134,8 @@ STEP 6: Validation & Performance Metrics
 │         │                        │                     │
 │         ▼                        ▼                     │
 │  ┌─────────────┐      ┌──────────────────┐            │
-│  │  Key/Value  │      │  MockLLMProvider │            │
-│  │  Storage    │      │  (no API calls)  │            │
+│  │  Key/Value  │      │ LLMProvider      │            │
+│  │  Storage    │      │ (mock or real)   │            │
 │  └─────────────┘      └──────────────────┘            │
 │         │                        │                     │
 │         ▼                        ▼                     │
@@ -156,7 +151,8 @@ STEP 6: Validation & Performance Metrics
 
 ## Key Files
 
-- `ai_living_db.zig` - Main demo implementation
+- `ai_living_db.zig` - Mock LLM demo (fully functional)
+- `ai_living_db_real.zig` - Real LLM demo stub (requires Zig 0.15.2 HTTP migration)
 - `src/plugins/manager.zig` - Plugin system
 - `src/plugins/entity_extractor.zig` - Entity extraction plugin
 - `src/llm/client.zig` - LLM provider interface
@@ -182,17 +178,21 @@ ai:optimization:<id> → {
 }
 ```
 
-## Testing
+## Zig 0.15.2 Migration Note
 
-The example includes embedded tests:
+The real LLM example (`ai_living_db_real.zig`) is currently stubbed because:
 
-```bash
-# Run all tests
-zig test examples/integration/ai_living_db.zig
+1. The `std.http.Client` API changed significantly in Zig 0.15.2
+2. The existing provider code in `src/llm/providers/*.zig` also needs migration
+3. Key changes:
+   - `request()` now takes a `RequestOptions` struct instead of separate headers parameter
+   - `ArrayList.init()` became `array_list.Managed.init()`
+   - `toOwnedSlice(allocator)` became `toOwnedSlice()`
 
-# Specific test
-zig test examples/integration/ai_living_db.zig --test-filter living_database_demo_full_run
-```
+To complete the real LLM integration:
+1. Migrate `src/llm/providers/openai.zig` to Zig 0.15.2 HTTP API
+2. Update `ai_living_db_real.zig` to use the migrated provider
+3. Test with actual OpenAI API calls
 
 ## Production Differences
 
@@ -203,7 +203,7 @@ This demo uses mock LLM for testing. In production:
    const config = PluginConfig{
        .llm_provider = .{
            .provider_type = "openai",  // or "anthropic"
-           .model = "gpt-4-turbo",
+           .model = "gpt-4o-mini",
            .api_key = "sk-...",
        },
    };
@@ -213,8 +213,11 @@ This demo uses mock LLM for testing. In production:
 
 3. Configure cost budgets and rate limits
 
+4. Implement error handling and retry logic for API calls
+
 ## Next Steps
 
 - See `ai_knowledge_base/` for production patterns
 - Review `docs/ai_plugins_v1.md` for plugin API
 - Check `docs/ai_cartridges_v1.md` for memory formats
+- Migrate HTTP client code to Zig 0.15.2 API
