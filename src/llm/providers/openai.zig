@@ -417,7 +417,10 @@ pub const OpenAIProvider = struct {
             var reader_buffer: [1024]u8 = undefined;
             const body_reader = try response.reader(&reader_buffer).readAllArrayList(&error_body, error_buffer[0..]);
             _ = body_reader;
-            std.log.err("OpenAI API returned status {d}: {s}", .{ @intFromEnum(request.response.status), error_body.items });
+            // Redact potential API keys from error logs
+            const redacted_error = redactSensitiveData(allocator, error_body.items);
+            defer allocator.free(redacted_error);
+            std.log.err("OpenAI API returned status {d}: {s}", .{ @intFromEnum(request.response.status), redacted_error });
             return error.HttpError;
         }
 
@@ -596,6 +599,109 @@ pub const OpenAIProvider = struct {
         allocator.free(self.base_url);
     }
 };
+
+/// Redact sensitive data (API keys, tokens, etc.) from log messages
+fn redactSensitiveData(allocator: std.mem.Allocator, data: []const u8) []const u8 {
+    // Common API key patterns to redact
+    const patterns = [_][]const u8{
+        "sk-",       // OpenAI/Stripe
+        "AIza",      // Google API
+        "AKIA",      // AWS
+        "Bearer ",   // Bearer tokens
+        "api_key=",  // URL param
+        "key=",      // Generic key param
+        "token=",    // Generic token param
+    };
+
+    var result = data;
+    var owned = false;
+
+    for (patterns) |pattern| {
+        var start: usize = 0;
+        while (std.mem.indexOfPos(u8, result, start, pattern)) |idx| {
+            // Found a pattern - find the end of the sensitive value
+            var value_end = idx + pattern.len;
+            const max_value_len = 100; // Limit redaction length
+
+            // For API keys like sk-, they're typically alphanumeric and underscores
+            // Redact up to max_value_len characters or until we hit a non-key character
+            while (value_end < result.len and value_end - idx < max_value_len) : (value_end += 1) {
+                const c = result[value_end];
+                if (!(std.ascii.isAlphanumeric(c) or c == '_' or c == '-' or c == '.')) {
+                    break;
+                }
+            }
+
+            // Build redacted string
+            const redacted = std.fmt.allocPrint(
+                allocator,
+                "{s}[REDACTED]",
+                .{result[0..idx + pattern.len]}
+            ) catch {
+                if (owned) allocator.free(result);
+                // On error, return original data
+                return allocator.dupe(u8, data) catch data;
+            };
+
+            const remaining = if (value_end < result.len)
+                allocator.dupe(u8, result[value_end..]) catch ""
+            else
+                "";
+
+            const new_result = std.fmt.allocPrint(
+                allocator,
+                "{s}{s}",
+                .{ redacted, remaining }
+            ) catch {
+                allocator.free(redacted);
+                if (owned) allocator.free(result);
+                return allocator.dupe(u8, data) catch data;
+            };
+
+            if (owned) allocator.free(result);
+            allocator.free(redacted);
+            if (remaining.len > 0) allocator.free(remaining);
+
+            result = new_result;
+            owned = true;
+            start = idx + 10; // Skip past [REDACTED] marker
+        }
+    }
+
+    return result;
+}
+
+test "redactSensitiveData redacts_api_keys" {
+    // Test OpenAI API key redaction
+    const input1 = "Error: Invalid API key sk-abc123def456 for request";
+    const output1 = redactSensitiveData(std.testing.allocator, input1);
+    defer std.testing.allocator.free(output1);
+
+    try std.testing.expectEqualStrings("Error: Invalid API key sk-[REDACTED] for request", output1);
+
+    // Test Google API key redaction
+    const input2 = "Failed with key AIzaSyBdZxY1234567890";
+    const output2 = redactSensitiveData(std.testing.allocator, input2);
+    defer std.testing.allocator.free(output2);
+
+    try std.testing.expectEqualStrings("Failed with key AIza[REDACTED]", output2);
+
+    // Test Bearer token redaction
+    const input3 = "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9";
+    const output3 = redactSensitiveData(std.testing.allocator, input3);
+    defer std.testing.allocator.free(output3);
+
+    try std.testing.expectEqualStrings("Authorization: Bearer [REDACTED]", output3);
+}
+
+test "redactSensitiveData preserves_safe_data" {
+    // Test that non-sensitive data is preserved
+    const input = "Error: Request timeout for request_id_12345";
+    const output = redactSensitiveData(std.testing.allocator, input);
+    defer std.testing.allocator.free(output);
+
+    try std.testing.expectEqualStrings(input, output);
+}
 
 test "openai_provider_initialization" {
     const config = OpenAIProvider.Config{
