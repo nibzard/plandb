@@ -268,6 +268,7 @@ pub const PluginFixtures = struct {
                     };
                 }
             }.hook,
+            .on_commit_streaming = null,
             .on_query = null,
             .on_schedule = null,
             .get_functions = null,
@@ -296,6 +297,7 @@ pub const PluginFixtures = struct {
                     };
                 }
             }.hook,
+            .on_commit_streaming = null,
             .on_query = null,
             .on_schedule = null,
             .get_functions = null,
@@ -314,6 +316,7 @@ pub const PluginFixtures = struct {
             .name = "function_provider",
             .version = "0.1.0-test",
             .on_commit = null,
+            .on_commit_streaming = null,
             .on_query = null,
             .on_schedule = null,
             .get_functions = struct {
@@ -345,6 +348,7 @@ pub const PluginFixtures = struct {
                     return error.TestPluginFailure;
                 }
             }.hook,
+            .on_commit_streaming = null,
             .on_query = null,
             .on_schedule = null,
             .get_functions = null,

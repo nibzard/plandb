@@ -1407,6 +1407,7 @@ test "plugin_hooks_called_during_commit" {
                 };
             }
         }.hook,
+        .on_commit_streaming = null,
         .on_query = null,
         .on_schedule = null,
         .get_functions = null,
@@ -1414,6 +1415,7 @@ test "plugin_hooks_called_during_commit" {
         .on_agent_operation = null,
         .on_review_request = null,
         .on_perf_sample = null,
+        .on_benchmark_complete = null,
     };
 
     // Create plugin manager
@@ -1468,6 +1470,7 @@ test "plugin_hook_error_does_not_prevent_commit" {
                 return error.PluginFailed;
             }
         }.hook,
+        .on_commit_streaming = null,
         .on_query = null,
         .on_schedule = null,
         .get_functions = null,
@@ -1475,6 +1478,7 @@ test "plugin_hook_error_does_not_prevent_commit" {
         .on_agent_operation = null,
         .on_review_request = null,
         .on_perf_sample = null,
+        .on_benchmark_complete = null,
     };
 
     const plugin_config = plugins.PluginConfig{
@@ -1594,6 +1598,7 @@ test "plugin_hooks_multiple_plugins" {
                         };
                     }
                 }.hook,
+                .on_commit_streaming = null,
                 .on_query = null,
                 .on_schedule = null,
                 .get_functions = null,
@@ -1601,6 +1606,7 @@ test "plugin_hooks_multiple_plugins" {
                 .on_agent_operation = null,
                 .on_review_request = null,
                 .on_perf_sample = null,
+                .on_benchmark_complete = null,
             };
         }
     };

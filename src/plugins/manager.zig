@@ -1056,6 +1056,7 @@ test "execute_on_commit_hooks_with_error" {
         .on_agent_operation = null,
         .on_review_request = null,
         .on_perf_sample = null,
+        .on_benchmark_complete = null,
     };
 
     try manager.register_plugin(failing_plugin);
