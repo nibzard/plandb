@@ -458,19 +458,18 @@ pub const BtreeLeafPayload = struct {
         const header_mut = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
         header_mut.key_count -= 1;
 
-        // TODO: Implement entry data area compaction to reclaim space
-        // For now, we keep entries in their original locations
-        // Future optimization: compactEntryDataArea() would move all entries
-        // to the end of the payload to free up contiguous space
+        // Compact entry data area to reclaim space for future insertions
+        // This moves entries to the end of the payload, freeing contiguous space
+        _ = Self.compactEntryDataArea(payload_bytes);
 
         return true;
     }
 
-    // Compact the entry data area to reclaim space after deletions
+    // Compact the entry data area to reclaim space after deletions.
     // Moves all remaining entries to the end of the payload (backward layout)
     // and updates slot offsets accordingly. Returns the new payload length.
-    // NOTE: This function is currently not called due to complexity.
-    // When ready to enable, add the call in removeEntry() above.
+    // Note: The caller keeps the original payload_len - this reorganizes
+    // data within the existing payload to free contiguous space for insertions.
     pub fn compactEntryDataArea(payload_bytes: []u8) usize {
         const node_header = std.mem.bytesAsValue(BtreeNodeHeader, payload_bytes[0..BtreeNodeHeader.SIZE]);
 
