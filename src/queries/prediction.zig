@@ -353,7 +353,7 @@ pub const ProactiveBuilder = struct {
 
         var i: usize = 0;
         while (i < self.build_queue.items.len and built < limit) : (i += 1) {
-            const action = self.build_queue.items[i];
+            _ = self.build_queue.items[i];
 
             // Check if already exists (simplified)
             const should_build = true;

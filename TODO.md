@@ -2324,8 +2324,21 @@ This is a **non-critical** benchmark (`.critical = false`) that demonstrates adv
 
 ### Phase 10.4: Advanced AI Features
 - [ ] Multi-model orchestration optimization
-- [ ] Custom plugin development framework
-- [ ] Real-time streaming entity extraction
+- [x] Custom plugin development framework
+  - **IMPLEMENTATION**: Created plugin scaffolding system (src/plugins/sdk.zig) with 6 templates, packaging format (src/plugins/packaging.zig), security/sandboxing (src/plugins/security.zig), and extended CLI with scaffold/package/install/uninstall/docs/verify commands (commit: 2421205)
+- [x] Real-time streaming entity extraction
+  - **COMPLETED 2025-12-30**: Real-time streaming entity extraction during commit
+  - **IMPLEMENTED**:
+    - Added StreamingCommitContext and StreamingPluginResult to plugin manager
+    - Added on_commit_streaming hook for real-time processing during commit
+    - Implemented streaming extraction in entity_extractor.zig
+    - Added incremental cartridge updates in entity.zig
+    - Tests for streaming functionality
+  - **CAPABILITIES**:
+    - Entity extraction runs during commit before WAL fsync
+    - Lower latency from commit → queryable
+    - Callback-based incremental entity reporting
+    - Backpressure support for rate limiting
 - [ ] Predictive query optimization
 
 **BLOCKERS**: None

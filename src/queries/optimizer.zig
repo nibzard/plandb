@@ -6,10 +6,6 @@
 const std = @import("std");
 const mem = std.mem;
 
-const TopicQuery = @import("topic_based.zig").TopicQuery;
-const EntityId = @import("../cartridges/structured_memory.zig").EntityId;
-const EntityType = @import("../cartridges/structured_memory.zig").EntityType;
-
 /// Access pattern statistics
 pub const AccessPattern = struct {
     pattern_type: PatternType,
@@ -223,7 +219,7 @@ pub const QueryOptimizer = struct {
 
         // Check cache for similar queries
         const cache_key = try self.buildCacheKey(plan);
-        if (self.cache.get(cache_key)) |cached| {
+        if (self.cache.get(cache_key)) |_| {
             try improvements.append(.{
                 .suggestion_type = .use_cache,
                 .description = try self.allocator.dupe(u8, "Use cached query result"),
@@ -245,7 +241,7 @@ pub const QueryOptimizer = struct {
         var total_cost: f64 = 0;
 
         for (plan.steps) |*step| {
-            var optimized_step = QueryPlan.PlanStep{
+            const optimized_step = QueryPlan.PlanStep{
                 .operation = try self.allocator.dupe(u8, step.operation),
                 .target = try self.allocator.dupe(u8, step.target),
                 .cost = step.cost * 0.8, // Assume 20% improvement from optimizations
@@ -318,7 +314,6 @@ pub const QueryOptimizer = struct {
     }
 
     fn analyzeForCaching(self: *Self, plan: *const QueryPlan, improvements: *std.ArrayList(OptimizationSuggestion)) !void {
-        _ = self;
         // Simple queries benefit from caching
         if (plan.steps.len == 1 and plan.estimated_cost < 10) {
             try improvements.*.append(.{
@@ -330,6 +325,7 @@ pub const QueryOptimizer = struct {
     }
 
     fn analyzeForIndexing(self: *Self, plan: *const QueryPlan, improvements: *std.ArrayList(OptimizationSuggestion)) !void {
+        _ = self;
         _ = plan;
         _ = improvements;
         // Check if queries would benefit from additional indexes
@@ -356,6 +352,7 @@ pub const QueryOptimizer = struct {
     }
 
     fn analyzeForBatching(self: *Self, plan: *const QueryPlan, improvements: *std.ArrayList(OptimizationSuggestion)) !void {
+        _ = self;
         _ = plan;
         _ = improvements;
         // Check for opportunities to batch operations
@@ -574,7 +571,7 @@ test "QueryOptimizer optimize simple plan" {
     var optimizer = QueryOptimizer.init(std.testing.allocator, &stats);
     defer optimizer.deinit();
 
-    var steps = try std.testing.allocator.create(QueryPlan.PlanStep);
+    const steps = try std.testing.allocator.create(QueryPlan.PlanStep);
     steps.* = .{
         .operation = try std.testing.allocator.dupe(u8, "search"),
         .target = try std.testing.allocator.dupe(u8, "topic_index"),
@@ -607,7 +604,7 @@ test "QueryOptimizer getRecommendations" {
     }
 
     // Should return some recommendations (even if empty list)
-    _ = recommendations;
+    try std.testing.expect(true);
 }
 
 test "OptimizationResult deinit" {
@@ -617,7 +614,7 @@ test "OptimizationResult deinit" {
     var optimizer = QueryOptimizer.init(std.testing.allocator, &stats);
     defer optimizer.deinit();
 
-    var steps = try std.testing.allocator.create(QueryPlan.PlanStep);
+    const steps = try std.testing.allocator.create(QueryPlan.PlanStep);
     steps.* = .{
         .operation = try std.testing.allocator.dupe(u8, "search"),
         .target = try std.testing.allocator.dupe(u8, "topic_index"),
