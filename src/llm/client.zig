@@ -78,6 +78,9 @@ pub fn createProvider(
     provider_type: []const u8,
     config: types.ProviderConfig
 ) !LLMProvider {
+    // Validate base_url for security (SSRF protection, HTTPS enforcement)
+    try validateEndpointUrl(config.base_url);
+
     if (std.mem.eql(u8, provider_type, "openai")) {
         const openai_config = OpenAIProvider.Config{
             .api_key = try allocator.dupe(u8, config.api_key),
@@ -108,6 +111,55 @@ pub fn createProvider(
         return LLMProvider{ .local = provider };
     } else {
         return error.InvalidProviderType;
+    }
+}
+
+/// Validate endpoint URL for security (SSRF protection)
+fn validateEndpointUrl(url: []const u8) !void {
+    // Must use HTTPS (unless localhost for development)
+    if (!std.mem.startsWith(u8, url, "https://") and !std.mem.startsWith(u8, url, "http://localhost")) {
+        if (std.mem.startsWith(u8, url, "http://")) {
+            return error.HttpNotAllowed;
+        }
+        return error.InvalidUrlScheme;
+    }
+
+    // Block private/internal IP ranges (basic SSRF protection)
+    const blocked_patterns = [_][]const u8{
+        "127.0.0.1",
+        "localhost",
+        "0.0.0.0",
+        "::1",
+        "169.254.", // Link-local
+        "10.",      // Private Class A
+        "192.168.", // Private Class C
+        "172.16.",  // Private Class B (first range)
+        "172.17.",
+        "172.18.",
+        "172.19.",
+        "172.20.",
+        "172.21.",
+        "172.22.",
+        "172.23.",
+        "172.24.",
+        "172.25.",
+        "172.26.",
+        "172.27.",
+        "172.28.",
+        "172.29.",
+        "172.30.",
+        "172.31.",
+    };
+
+    for (blocked_patterns) |pattern| {
+        if (std.mem.indexOf(u8, url, pattern) != null) {
+            // Allow localhost for development
+            if (!std.mem.eql(u8, pattern, "localhost") and
+                !std.mem.eql(u8, pattern, "127.0.0.1") and
+                !std.mem.eql(u8, pattern, "::1")) {
+                return error.PrivateAddressNotAllowed;
+            }
+        }
     }
 }
 
@@ -160,4 +212,31 @@ test "provider_name" {
     try std.testing.expectEqualStrings("local", local_provider.name());
     try std.testing.expectEqualStrings("openai", openai_provider.name());
     try std.testing.expectEqualStrings("anthropic", anthropic_provider.name());
+}
+
+test "validateEndpointUrl accepts_https" {
+    try validateEndpointUrl("https://api.openai.com/v1");
+    try validateEndpointUrl("https://api.anthropic.com/v1");
+}
+
+test "validateEndpointUrl accepts_localhost" {
+    try validateEndpointUrl("http://localhost:8080");
+    try validateEndpointUrl("http://localhost/v1");
+}
+
+test "validateEndpointUrl rejects_http_non_localhost" {
+    try std.testing.expectError(error.HttpNotAllowed, validateEndpointUrl("http://api.example.com/v1"));
+    try std.testing.expectError(error.HttpNotAllowed, validateEndpointUrl("http://192.1.1.1/v1"));
+}
+
+test "validateEndpointUrl rejects_private_ips" {
+    try std.testing.expectError(error.PrivateAddressNotAllowed, validateEndpointUrl("https://10.0.0.1/v1"));
+    try std.testing.expectError(error.PrivateAddressNotAllowed, validateEndpointUrl("https://192.168.1.1/v1"));
+    try std.testing.expectError(error.PrivateAddressNotAllowed, validateEndpointUrl("https://172.16.0.1/v1"));
+    try std.testing.expectError(error.PrivateAddressNotAllowed, validateEndpointUrl("https://169.254.1.1/v1"));
+}
+
+test "validateEndpointUrl rejects_invalid_scheme" {
+    try std.testing.expectError(error.InvalidUrlScheme, validateEndpointUrl("ftp://api.example.com"));
+    try std.testing.expectError(error.InvalidUrlScheme, validateEndpointUrl("://api.example.com"));
 }
