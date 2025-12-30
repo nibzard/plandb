@@ -6,10 +6,12 @@
 //! - State transitions (Follower -> Candidate -> Leader)
 //! - Leader election
 //! - Log replication
+//! - Snapshotting (Phase 3)
 
 const std = @import("std");
 const txn = @import("../txn.zig");
 const config = @import("config.zig");
+const snapshot_mod = @import("snapshot.zig");
 
 /// Raft state machine role
 pub const RaftState = enum {
@@ -146,11 +148,16 @@ pub const Raft = struct {
     election_deadline_ms: u64 = 0,
     rng: std.Random.DefaultPrng,
 
+    // Snapshot manager (Phase 3)
+    snapshot_manager: snapshot_mod.SnapshotManager,
+
     // RPC handler callbacks
     on_send_request_vote: ?*const fn (peer_id: u64, args: RequestVoteArgs) anyerror!RequestVoteReply = null,
     on_send_append_entries: ?*const fn (peer_id: u64, args: AppendEntriesArgs) anyerror!AppendEntriesReply = null,
+    on_send_install_snapshot: ?*const fn (peer_id: u64, args: InstallSnapshotArgs) anyerror!InstallSnapshotReply = null,
     on_apply_entry: ?*const fn (entry: LogEntry) anyerror!void = null,
     on_state_change: ?*const fn (old_role: RaftState, new_role: RaftState) void = null,
+    on_install_snapshot: ?*const fn (snap: snapshot_mod.Snapshot) anyerror!void = null,
 
     const Self = @This();
 
@@ -167,6 +174,7 @@ pub const Raft = struct {
             .votes_received = std.AutoHashMap(u64, void).init(allocator),
             .rng = rng,
             .election_deadline_ms = timestampMs() + config.randomElectionTimeout(cfg, &rng),
+            .snapshot_manager = snapshot_mod.SnapshotManager.init(allocator),
         };
     }
 
@@ -177,6 +185,7 @@ pub const Raft = struct {
         }
         self.persistent.deinit();
         self.votes_received.deinit();
+        self.snapshot_manager.deinit();
     }
 
     /// Reset election timeout with randomized value
@@ -389,11 +398,48 @@ pub const Raft = struct {
         // Send AppendEntries to all followers
         for (self.config.peers) |peer| {
             const next_idx = leader_state.next_index.get(peer.id) orelse 1;
+
+            // Check if follower is too far behind - send snapshot instead
+            if (self.snapshot_manager.getSnapshot()) |snap| {
+                if (next_idx <= snap.last_included_index) {
+                    // Follower needs snapshot
+                    if (self.on_send_install_snapshot) |cb| {
+                        const snap_size = snap.size();
+                        const buffer = try self.allocator.alloc(u8, snap_size);
+                        defer self.allocator.free(buffer);
+
+                        var fbs = std.io.fixedBufferStream(buffer);
+                        try snap.serialize(fbs.writer());
+
+                        const snap_args = InstallSnapshotArgs{
+                            .term = self.persistent.current_term,
+                            .leader_id = self.config.node_id,
+                            .last_included_index = snap.last_included_index,
+                            .last_included_term = snap.last_included_term,
+                            .snapshot = buffer,
+                        };
+
+                        const reply = cb(peer.id, snap_args) catch |err| {
+                            std.log.warn("InstallSnapshot to peer {} failed: {}", .{ peer.id, err });
+                            continue;
+                        };
+
+                        if (reply.term > self.persistent.current_term) {
+                            try self.becomeFollower(reply.term);
+                            return;
+                        }
+
+                        // Update next_index after successful snapshot
+                        try leader_state.next_index.put(peer.id, snap.last_included_index + 1);
+                        try leader_state.match_index.put(peer.id, snap.last_included_index);
+                        continue;
+                    }
+                }
+            }
+
             const prev_idx = if (next_idx > 1) next_idx - 1 else 0;
-            const prev_term = if (prev_idx > 0)
-                self.persistent.getEntry(prev_idx).?.term
-            else
-                0;
+            const prev_entry = self.persistent.getEntry(prev_idx);
+            const prev_term = if (prev_entry) |e| e.term else 0;
 
             // Collect entries to send
             var entries = std.ArrayList(LogEntry).init(self.allocator);
@@ -591,6 +637,168 @@ pub const Raft = struct {
             .term = self.persistent.current_term,
             .success = true,
         };
+    }
+
+    // ==================== Phase 3: Snapshotting ====================
+
+    /// Check if snapshot is needed (log exceeds threshold)
+    pub fn needsSnapshot(self: *const Self) bool {
+        if (self.persistent.log.items.len < 100) return false; // Minimum threshold
+        return self.persistent.log.items.len >= self.config.snapshot_entry_threshold;
+    }
+
+    /// Create snapshot from current state (leader only)
+    pub fn createSnapshot(self: *Self, last_committed_txn_id: u64, root_page_id: u64) !void {
+        if (self.role != .leader) return error.NotLeader;
+
+        const last_applied = if (self.role == .leader)
+            self.leader_state.?.last_applied
+        else
+            self.follower_state.last_applied;
+
+        if (last_applied == 0) return; // No entries applied yet
+
+        const last_entry = self.persistent.getEntry(last_applied) orelse return;
+
+        try self.snapshot_manager.createSnapshot(
+            last_entry.index,
+            last_entry.term,
+            last_committed_txn_id,
+            root_page_id,
+        );
+    }
+
+    /// Truncate log up to snapshot index (after snapshot is persisted)
+    pub fn truncateLogAfterSnapshot(self: *Self) !void {
+        const snap_meta = self.snapshot_manager.getMetadata();
+        if (snap_meta.last_included_index == 0) return;
+
+        // Truncate log entries up to and including snapshot index
+        const truncate_count = @as(usize, @intCast(snap_meta.last_included_index));
+        if (truncate_count >= self.persistent.log.items.len) {
+            // Keep dummy entry at index 0
+            self.persistent.log.shrinkRetainingCapacity(0);
+        } else {
+            // Remove entries from beginning
+            const remaining = self.persistent.log.items[truncate_count..];
+            // Create new list with remaining entries
+            var new_log = std.ArrayList(LogEntry).init(self.allocator);
+            for (remaining) |entry| {
+                try new_log.append(entry);
+            }
+            self.persistent.log.deinit();
+            self.persistent.log = new_log;
+        }
+
+        // Adjust leader's next_index if needed
+        if (self.role == .leader and self.leader_state != null) {
+            for (self.config.peers) |peer| {
+                const next_idx = self.leader_state.?.next_index.get(peer.id) orelse continue;
+                if (next_idx <= snap_meta.last_included_index) {
+                    try self.leader_state.?.next_index.put(peer.id, snap_meta.last_included_index + 1);
+                }
+            }
+        }
+    }
+
+    /// Handle InstallSnapshot RPC from leader
+    pub fn handleInstallSnapshot(self: *Self, args: InstallSnapshotArgs) !InstallSnapshotReply {
+        // If term < current_term, reject
+        if (args.term < self.persistent.current_term) {
+            return InstallSnapshotReply{
+                .term = self.persistent.current_term,
+            };
+        }
+
+        // If term > current_term, become follower
+        if (args.term > self.persistent.current_term) {
+            try self.becomeFollower(args.term);
+        }
+
+        // Update known leader
+        self.current_leader_id = args.leader_id;
+
+        // Reset election timeout
+        self.resetElectionTimeout();
+
+        // Deserialize snapshot
+        var fbs = std.io.fixedBufferStream(args.snapshot);
+        const snap = try snapshot_mod.Snapshot.deserialize(fbs.reader(), self.allocator);
+        defer snap.deinit(self.allocator);
+
+        // Check if we already have a more recent snapshot
+        if (self.snapshot_manager.hasSnapshotCovering(snap.last_included_index)) {
+            return InstallSnapshotReply{
+                .term = self.persistent.current_term,
+            };
+        }
+
+        // Install snapshot
+        try self.snapshot_manager.restoreFromSnapshot(snap);
+
+        // Truncate log up to snapshot index
+        if (snap.last_included_index > 0) {
+            const truncate_idx = @as(usize, @intCast(snap.last_included_index));
+            if (truncate_idx < self.persistent.log.items.len) {
+                self.persistent.truncateFrom(snap.last_included_index);
+            }
+        }
+
+        // Update commit index and last_applied
+        const commit_idx = if (self.role == .leader)
+            &self.leader_state.?.commit_index
+        else
+            &self.follower_state.commit_index;
+
+        const last_applied = if (self.role == .leader)
+            &self.leader_state.?.last_applied
+        else
+            &self.follower_state.last_applied;
+
+        if (snap.last_included_index > commit_idx.*) {
+            commit_idx.* = snap.last_included_index;
+        }
+        if (snap.last_included_index > last_applied.*) {
+            last_applied.* = snap.last_included_index;
+        }
+
+        // Notify callback to apply snapshot to state machine
+        if (self.on_install_snapshot) |cb| {
+            try cb(snap);
+        }
+
+        return InstallSnapshotReply{
+            .term = self.persistent.current_term,
+        };
+    }
+
+    /// Send InstallSnapshot to lagging follower (leader only)
+    pub fn sendSnapshotToFollower(self: *Self, peer_id: u64) !InstallSnapshotReply {
+        if (self.role != .leader) return error.NotLeader;
+
+        const snap = self.snapshot_manager.getSnapshot() orelse return error.NoSnapshot;
+
+        // Serialize snapshot
+        const snap_size = snap.size();
+        const buffer = try self.allocator.alloc(u8, snap_size);
+        defer self.allocator.free(buffer);
+
+        var fbs = std.io.fixedBufferStream(buffer);
+        try snap.serialize(fbs.writer());
+
+        const args = InstallSnapshotArgs{
+            .term = self.persistent.current_term,
+            .leader_id = self.config.node_id,
+            .last_included_index = snap.last_included_index,
+            .last_included_term = snap.last_included_term,
+            .snapshot = buffer,
+        };
+
+        if (self.on_send_install_snapshot) |cb| {
+            return cb(peer_id, args);
+        }
+
+        return error.NoInstallSnapshotCallback;
     }
 };
 

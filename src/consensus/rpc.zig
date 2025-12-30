@@ -338,6 +338,11 @@ pub const InstallSnapshotArgs = struct {
         try writer.writeInt(u64, self.snapshot_size, .little);
     }
 
+    /// Calculate header size
+    pub fn headerSize() usize {
+        return 8 * 5; // 5 u64 fields
+    }
+
     /// Deserialize from byte stream
     pub fn deserializeHeader(reader: anytype) !Self {
         const term = try reader.readInt(u64, .little);
@@ -602,25 +607,16 @@ pub const RaftRpcHandler = struct {
 
     /// Handle InstallSnapshot RPC
     fn handleInstallSnapshot(self: *Self, args: InstallSnapshotArgs, snapshot_data: []const u8) !InstallSnapshotReply {
-        _ = snapshot_data; // TODO: Process snapshot data
-
-        // If term < current_term, reject
-        if (args.term < self.raft_impl.persistent.current_term) {
-            return InstallSnapshotReply{
-                .term = self.raft_impl.persistent.current_term,
-            };
-        }
-
-        // If term > current_term, become follower
-        if (args.term > self.raft_impl.persistent.current_term) {
-            try self.raft_impl.becomeFollower(args.term);
-        }
-
-        // TODO: Install snapshot, truncate log
-        // For now, just reply with current term
-        return InstallSnapshotReply{
-            .term = self.raft_impl.persistent.current_term,
+        // Create InstallSnapshotArgs with full snapshot data
+        const full_args = raft.InstallSnapshotArgs{
+            .term = args.term,
+            .leader_id = args.leader_id,
+            .last_included_index = args.last_included_index,
+            .last_included_term = args.last_included_term,
+            .snapshot = snapshot_data,
         };
+
+        return try self.raft_impl.handleInstallSnapshot(full_args);
     }
 };
 

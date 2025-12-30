@@ -721,3 +721,272 @@ test "Raft Phase 2 - log replication with conflict and recovery" {
     const reply3 = try cluster.nodes[1].raft.handleAppendEntries(args3);
     try std.testing.expect(reply3.success);
 }
+
+// ==================== Phase 3: Snapshotting Tests ====================
+
+test "Raft Phase 3 - snapshot creation" {
+    const allocator = std.testing.allocator;
+    const peers = [_]config.NodeInfo{
+        config.NodeInfo.init(2, "node2:7234"),
+        config.NodeInfo.init(3, "node3:7234"),
+    };
+
+    const cfg = config.RaftConfig{
+        .node_id = 1,
+        .peers = &peers,
+        .rpc_listen_address = "0.0.0.0:7234",
+        .snapshot_entry_threshold = 1000,
+    };
+
+    var raft_instance = try raft.Raft.init(allocator, cfg);
+    defer raft_instance.deinit();
+
+    // Become leader
+    try raft_instance.becomeCandidate();
+    try raft_instance.becomeLeader();
+
+    // Propose and apply entries
+    for (0..10) |i| {
+        const record = txn.CommitRecord{
+            .txn_id = @intCast(i + 1),
+            .root_page_id = @intCast(i + 10),
+            .mutations = &[_]txn.Mutation{},
+            .checksum = 0,
+        };
+
+        _ = try raft_instance.propose(record);
+
+        // Mark as committed and applied
+        const leader_state = raft_instance.leader_state.?;
+        for (raft_instance.config.peers) |peer| {
+            try leader_state.match_index.put(peer.id, @intCast(i + 1));
+        }
+        try raft_instance.updateCommitIndex();
+        try raft_instance.applyCommittedEntries();
+    }
+
+    // Create snapshot
+    try raft_instance.createSnapshot(10, 100);
+
+    // Verify snapshot exists
+    const snap = raft_instance.snapshot_manager.getSnapshot();
+    try std.testing.expect(snap != null);
+    try std.testing.expectEqual(@as(u64, 10), snap.?.last_included_index);
+    try std.testing.expectEqual(@as(u64, 1), snap.?.last_included_term);
+}
+
+test "Raft Phase 3 - log truncation after snapshot" {
+    const allocator = std.testing.allocator;
+    const peers = [_]config.NodeInfo{
+        config.NodeInfo.init(2, "node2:7234"),
+        config.NodeInfo.init(3, "node3:7234"),
+    };
+
+    const cfg = config.RaftConfig{
+        .node_id = 1,
+        .peers = &peers,
+        .rpc_listen_address = "0.0.0.0:7234",
+        .snapshot_entry_threshold = 1000,
+    };
+
+    var raft_instance = try raft.Raft.init(allocator, cfg);
+    defer raft_instance.deinit();
+
+    // Become leader
+    try raft_instance.becomeCandidate();
+    try raft_instance.becomeLeader();
+
+    // Add entries to log
+    for (0..20) |i| {
+        const record = txn.CommitRecord{
+            .txn_id = @intCast(i + 1),
+            .root_page_id = @intCast(i + 10),
+            .mutations = &[_]txn.Mutation{},
+            .checksum = 0,
+        };
+
+        _ = try raft_instance.propose(record);
+    }
+
+    try std.testing.expectEqual(@as(usize, 20), raft_instance.persistent.log.items.len);
+
+    // Create snapshot covering first 10 entries
+    try raft_instance.createSnapshot(10, 100);
+
+    // Truncate log
+    try raft_instance.truncateLogAfterSnapshot();
+
+    // Log should be truncated
+    try std.testing.expectEqual(@as(usize, 10), raft_instance.persistent.log.items.len);
+    try std.testing.expectEqual(@as(u64, 20), raft_instance.persistent.lastLogIndex());
+}
+
+test "Raft Phase 3 - InstallSnapshot RPC" {
+    const allocator = std.testing.allocator;
+    const peers = [_]config.NodeInfo{
+        config.NodeInfo.init(2, "node2:7234"),
+        config.NodeInfo.init(3, "node3:7234"),
+    };
+
+    const cfg = config.RaftConfig{
+        .node_id = 1,
+        .peers = &peers,
+        .rpc_listen_address = "0.0.0.0:7234",
+        .snapshot_entry_threshold = 1000,
+    };
+
+    var leader = try raft.Raft.init(allocator, cfg);
+    defer leader.deinit();
+
+    const follower_cfg = config.RaftConfig{
+        .node_id = 2,
+        .peers = &[_]config.NodeInfo{
+            config.NodeInfo.init(1, "node1:7234"),
+            config.NodeInfo.init(3, "node3:7234"),
+        },
+        .rpc_listen_address = "0.0.0.0:7234",
+        .snapshot_entry_threshold = 1000,
+    };
+
+    var follower = try raft.Raft.init(allocator, follower_cfg);
+    defer follower.deinit();
+
+    // Become leader
+    try leader.becomeCandidate();
+    try leader.becomeLeader();
+
+    // Create snapshot
+    try leader.createSnapshot(10, 100);
+
+    const snap = leader.snapshot_manager.getSnapshot().?;
+
+    // Serialize snapshot
+    const snap_size = snap.size();
+    const buffer = try allocator.alloc(u8, snap_size);
+    defer allocator.free(buffer);
+
+    var fbs = std.io.fixedBufferStream(buffer);
+    try snap.serialize(fbs.writer());
+
+    // Send InstallSnapshot to follower
+    const args = raft.InstallSnapshotArgs{
+        .term = leader.persistent.current_term,
+        .leader_id = 1,
+        .last_included_index = snap.last_included_index,
+        .last_included_term = snap.last_included_term,
+        .snapshot = buffer,
+    };
+
+    const reply = try follower.handleInstallSnapshot(args);
+    try std.testing.expectEqual(leader.persistent.current_term, reply.term);
+
+    // Follower should have installed snapshot
+    const follower_snap = follower.snapshot_manager.getSnapshot();
+    try std.testing.expect(follower_snap != null);
+    try std.testing.expectEqual(@as(u64, 10), follower_snap.?.last_included_index);
+}
+
+test "Raft Phase 3 - leader sends snapshot to lagging follower" {
+    const allocator = std.testing.allocator;
+    var cluster = try TestCluster.init(allocator, 3);
+    defer cluster.deinit();
+
+    // Elect leader
+    _ = try cluster.simulateElection();
+
+    // Leader creates entries
+    for (0..100) |i| {
+        const record = txn.CommitRecord{
+            .txn_id = @intCast(i + 1),
+            .root_page_id = @intCast(i + 10),
+            .mutations = &[_]txn.Mutation{},
+            .checksum = 0,
+        };
+
+        _ = try cluster.nodes[0].raft.propose(record);
+    }
+
+    // Leader creates snapshot
+    try cluster.nodes[0].raft.createSnapshot(50, 500);
+
+    // Follower is behind (only has first 10 entries)
+    for (0..10) |i| {
+        const record = txn.CommitRecord{
+            .txn_id = @intCast(i + 1),
+            .root_page_id = @intCast(i + 10),
+            .mutations = &[_]txn.Mutation{},
+            .checksum = 0,
+        };
+
+        try cluster.nodes[1].raft.persistent.appendEntry(
+            raft.LogEntry.fromCommitRecord(1, @intCast(i + 1), record),
+        );
+    }
+
+    // Set follower's next_index to point before snapshot
+    const leader_state = cluster.nodes[0].raft.leader_state.?;
+    try leader_state.next_index.put(2, 5); // Behind snapshot
+
+    // In leaderLoop, should send snapshot to follower
+    const snap = cluster.nodes[0].raft.snapshot_manager.getSnapshot().?;
+    try std.testing.expect(snap != null);
+    try std.testing.expect(leader_state.next_index.get(2).? <= snap.last_included_index);
+}
+
+test "Raft Phase 3 - needsSnapshot check" {
+    const allocator = std.testing.allocator;
+    const peers = [_]config.NodeInfo{
+        config.NodeInfo.init(2, "node2:7234"),
+        config.NodeInfo.init(3, "node3:7234"),
+    };
+
+    const cfg = config.RaftConfig{
+        .node_id = 1,
+        .peers = &peers,
+        .rpc_listen_address = "0.0.0.0:7234",
+        .snapshot_entry_threshold = 500,
+    };
+
+    var raft_instance = try raft.Raft.init(allocator, cfg);
+    defer raft_instance.deinit();
+
+    // Small log - no snapshot needed
+    try std.testing.expect(!raft_instance.needsSnapshot());
+
+    // Become leader and add entries
+    try raft_instance.becomeCandidate();
+    try raft_instance.becomeLeader();
+
+    for (0..600) |i| {
+        const record = txn.CommitRecord{
+            .txn_id = @intCast(i + 1),
+            .root_page_id = @intCast(i + 10),
+            .mutations = &[_]txn.Mutation{},
+            .checksum = 0,
+        };
+
+        _ = try raft_instance.propose(record);
+    }
+
+    // Large log - snapshot needed
+    try std.testing.expect(raft_instance.needsSnapshot());
+}
+
+test "Raft Phase 3 - snapshot covers index check" {
+    const allocator = std.testing.allocator;
+
+    const snap = try raft.snapshot_mod.Snapshot.create(
+        allocator,
+        100,
+        2,
+        50,
+        12345,
+        &[_]u8{},
+    );
+    defer snap.deinit(allocator);
+
+    try std.testing.expect(snap.covers(50));
+    try std.testing.expect(snap.covers(100));
+    try std.testing.expect(!snap.covers(101));
+    try std.testing.expect(!snap.covers(200));
+}
