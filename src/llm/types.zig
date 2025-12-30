@@ -7,6 +7,40 @@ const std = @import("std");
 
 pub const Value = std.json.Value;
 
+/// Clone a JSON value (public wrapper)
+pub fn cloneValue(value: Value, allocator: std.mem.Allocator) !Value {
+    return cloneJson(value, allocator);
+}
+
+/// Check if two JSON values are equal
+pub fn jsonEquals(a: Value, b: Value) bool {
+    return switch (a) {
+        .null => b == .null,
+        .bool => |v| b == .bool and b.bool == v,
+        .integer => |v| b == .integer and b.integer == v,
+        .float => |v| b == .float and b.float == v,
+        .string => |v| b == .string and std.mem.eql(u8, v, b.string),
+        .array => |arr| blk: {
+            if (b != .array) break :blk false;
+            if (arr.items.len != b.array.items.len) break :blk false;
+            for (arr.items, b.array.items) |item_a, item_b| {
+                if (!jsonEquals(item_a, item_b)) break :blk false;
+            }
+            break :blk true;
+        },
+        .object => |obj| blk: {
+            if (b != .object) break :blk false;
+            if (obj.map.count() != b.object.map.count()) break :blk false;
+            var it = obj.map.iterator();
+            while (it.next()) |entry| {
+                const b_value = b.object.map.get(entry.key_ptr.*) orelse break :blk false;
+                if (!jsonEquals(entry.value_ptr.*, b_value)) break :blk false;
+            }
+            break :blk true;
+        },
+    };
+}
+
 /// Error types for LLM operations
 pub const LLMError = error{
     // Provider errors
@@ -50,7 +84,58 @@ pub const FunctionResult = struct {
         allocator.free(self.model);
         if (self.tokens_used) |tokens| tokens.deinit(allocator);
     }
+
+    pub fn clone(self: *const FunctionResult, allocator: std.mem.Allocator) !FunctionResult {
+        const tokens_clone = if (self.tokens_used) |tokens| blk: {
+            break :blk TokenUsage{
+                .prompt_tokens = tokens.prompt_tokens,
+                .completion_tokens = tokens.completion_tokens,
+                .total_tokens = tokens.total_tokens,
+            };
+        } else null;
+
+        // Clone JSON value
+        const arguments_clone = try cloneJson(self.arguments, allocator);
+
+        return FunctionResult{
+            .function_name = try allocator.dupe(u8, self.function_name),
+            .arguments = arguments_clone,
+            .raw_response = try allocator.dupe(u8, self.raw_response),
+            .provider = try allocator.dupe(u8, self.provider),
+            .model = try allocator.dupe(u8, self.model),
+            .tokens_used = tokens_clone,
+        };
+    }
 };
+
+/// Clone a JSON value recursively
+fn cloneJson(value: Value, allocator: std.mem.Allocator) !Value {
+    return switch (value) {
+        .null => Value.null,
+        .bool => |b| Value{ .bool = b },
+        .integer => |i| Value{ .integer = i },
+        .float => |f| Value{ .float = f },
+        .string => |s| Value{ .string = try allocator.dupe(u8, s) },
+        .array => |arr| blk: {
+            var new_arr = std.ArrayList(Value).initCapacity(allocator, arr.items.len) catch unreachable;
+            for (arr.items) |item| {
+                try new_arr.append(try cloneJson(item, allocator));
+            }
+            break :blk Value{ .array = new_arr };
+        },
+        .object => |obj| blk: {
+            var new_obj = std.json.ObjectMap.init(allocator);
+            try new_obj.ensureTotalCapacity(@intCast(obj.map.count()));
+            var it = obj.map.iterator();
+            while (it.next()) |entry| {
+                const key_clone = try allocator.dupe(u8, entry.key_ptr.*);
+                const value_clone = try cloneJson(entry.value_ptr.*, allocator);
+                try new_obj.put(key_clone, value_clone);
+            }
+            break :blk Value{ .object = new_obj };
+        },
+    };
+}
 
 /// Token usage information
 pub const TokenUsage = struct {
