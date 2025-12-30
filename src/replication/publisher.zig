@@ -15,6 +15,15 @@ const ReplicaConnection = struct {
     last_ack_sequence: u64,
     state: config.ReplicaState,
     writer: ?std.net.Stream.Writer = null,
+    stream: ?std.net.Stream = null,
+
+    /// Check if checksum validation is enabled for this replica
+    checksum_enabled: bool = true,
+
+    /// Get the stream for this connection
+    fn getStream(self: *ReplicaConnection) ?std.net.Stream {
+        return self.stream;
+    }
 };
 
 /// Replication publisher - streams commit records to replicas
@@ -85,6 +94,8 @@ pub const ReplicationPublisher = struct {
             .last_ack_sequence = 0,
             .state = config.ReplicaState.init(replica_id),
             .writer = stream.writer(),
+            .stream = stream,
+            .checksum_enabled = true,
         };
 
         try self.replicas.append(conn);
@@ -160,8 +171,13 @@ pub const ReplicationPublisher = struct {
 
         const current_lsn = self.wal.getCurrentLsn();
 
-        for (self.replicas.items) |*replica| {
-            if (!replica.state.connected) continue;
+        var i: usize = 0;
+        while (i < self.replicas.items.len) {
+            const replica = &self.replicas.items[i];
+            if (!replica.state.connected) {
+                _ = self.replicas.orderedRemove(i);
+                continue;
+            }
 
             if (replica.writer) |writer| {
                 const heartbeat = protocol.HeartbeatMessage{
@@ -169,26 +185,53 @@ pub const ReplicationPublisher = struct {
                     .timestamp_ms = timestampMs(),
                 };
 
-                // Serialize heartbeat
-                var buffer: [32]u8 = undefined;
+                // Serialize heartbeat with length prefix
+                var buffer: [64]u8 = undefined;
                 var fbs = std.io.fixedBufferStream(&buffer);
+
+                // Write message length
+                const heartbeat_size = 16; // 8 bytes current_lsn + 8 bytes timestamp
+                try writer.writeInt(u32, heartbeat_size, .little);
+
+                // Serialize heartbeat
                 try heartbeat.serialize(fbs.writer());
 
-                _ = try writer.writeAll(fbs.getWritten());
+                // Write heartbeat data
+                _ = writer.writeAll(fbs.getWritten()) catch |err| {
+                    // Send error - mark replica as disconnected
+                    std.log.warn("Failed to send heartbeat to replica {}: {}", .{ replica.replica_id, err });
+                    replica.state.connected = false;
+                    _ = self.replicas.orderedRemove(i);
+                    continue;
+                };
             }
+
+            i += 1;
         }
 
-        // Check for timed out replicas
-        var i: usize = 0;
+        // Check for timed out replicas (5x heartbeat interval)
+        const heartbeat_timeout = self.cfg.heartbeat_interval_ms * 5;
+        i = 0;
         while (i < self.replicas.items.len) {
             const replica = &self.replicas.items[i];
-            if (replica.state.isTimedOut(self.cfg.connection_timeout_ms)) {
+            if (replica.state.isTimedOut(heartbeat_timeout)) {
+                std.log.warn("Replica {} timed out after {}ms", .{ replica.replica_id, heartbeat_timeout });
                 replica.state.connected = false;
                 _ = self.replicas.orderedRemove(i);
             } else {
                 i += 1;
             }
         }
+    }
+
+    /// Check if a specific replica is connected
+    pub fn isReplicaConnected(self: *const Self, replica_id: u64) bool {
+        for (self.replicas.items) |*replica| {
+            if (replica.replica_id == replica_id) {
+                return replica.state.connected;
+            }
+        }
+        return false;
     }
 
     /// Get current replication lag for a replica

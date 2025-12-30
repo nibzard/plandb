@@ -15,6 +15,7 @@ pub const protocol = @import("protocol.zig");
 pub const config = @import("config.zig");
 pub const publisher = @import("publisher.zig");
 pub const subscriber = @import("subscriber.zig");
+pub const hardening = @import("hardening.zig");
 
 // Re-export main types
 pub const ReplicationMessage = protocol.ReplicationMessage;
@@ -30,6 +31,9 @@ pub const ConnectRequest = protocol.ConnectRequest;
 pub const AcceptResponse = protocol.AcceptResponse;
 pub const AckMessage = protocol.AckMessage;
 pub const HeartbeatMessage = protocol.HeartbeatMessage;
+pub const BootstrapRequest = protocol.BootstrapRequest;
+pub const BootstrapData = protocol.BootstrapData;
+pub const BootstrapComplete = protocol.BootstrapComplete;
 
 // Convenience constructors
 pub const initPrimary = config.ReplicationConfig.initPrimary;

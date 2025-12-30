@@ -31,6 +31,9 @@ pub const ReplicationMessage = struct {
         commit_record = 1,    // Actual commit record
         snapshot = 2,         // Full snapshot for bootstrap
         error_message = 3,    // Error notification
+        bootstrap_request = 4, // Request snapshot bootstrap
+        bootstrap_data = 5,   // Snapshot data chunk
+        bootstrap_complete = 6, // Bootstrap completion signal
     };
 
     /// Calculate message size for allocation
@@ -92,6 +95,20 @@ pub const ReplicationMessage = struct {
                 // Error code and message placeholders
                 try writer.writeInt(u16, 0, .little); // error_code
                 try writer.writeInt(u32, 0, .little); // error_message_len
+            },
+            .bootstrap_request => {
+                // Bootstrap request includes requested starting LSN
+                try writer.writeInt(u64, 0, .little); // start_lsn placeholder
+            },
+            .bootstrap_data => {
+                // Bootstrap data chunk - placeholder
+                try writer.writeInt(u32, 0, .little); // chunk_size
+                try writer.writeInt(u32, 0, .little); // chunk_index
+                try writer.writeInt(u32, 0, .little); // total_chunks
+            },
+            .bootstrap_complete => {
+                // Bootstrap completion includes final LSN
+                try writer.writeInt(u64, 0, .little); // final_lsn
             },
         }
 
@@ -231,6 +248,18 @@ pub const ReplicationMessage = struct {
                     _ = try reader.readBytesNoEof(msg_len); // error_message
                 }
             },
+            .bootstrap_request => {
+                _ = try reader.readInt(u64, .little); // start_lsn
+            },
+            .bootstrap_data => {
+                _ = try reader.readInt(u32, .little); // chunk_size
+                _ = try reader.readInt(u32, .little); // chunk_index
+                _ = try reader.readInt(u32, .little); // total_chunks
+                // Data would follow - for now skip
+            },
+            .bootstrap_complete => {
+                _ = try reader.readInt(u64, .little); // final_lsn
+            },
         }
 
         const checksum = try reader.readInt(u32, .little);
@@ -333,6 +362,89 @@ pub const HeartbeatMessage = struct {
         return Self{
             .current_lsn = current_lsn,
             .timestamp_ms = timestamp_ms,
+        };
+    }
+};
+
+/// Bootstrap request from replica to primary
+pub const BootstrapRequest = struct {
+    replica_id: u64,
+    start_lsn: u64,
+    protocol_version: u16 = 1,
+
+    const Self = @This();
+
+    pub fn serialize(self: @This(), writer: anytype) !void {
+        try writer.writeInt(u64, self.replica_id, .little);
+        try writer.writeInt(u64, self.start_lsn, .little);
+        try writer.writeInt(u16, self.protocol_version, .little);
+    }
+
+    pub fn deserialize(reader: anytype) !Self {
+        const replica_id = try reader.readInt(u64, .little);
+        const start_lsn = try reader.readInt(u64, .little);
+        const protocol_version = try reader.readInt(u16, .little);
+        return Self{
+            .replica_id = replica_id,
+            .start_lsn = start_lsn,
+            .protocol_version = protocol_version,
+        };
+    }
+};
+
+/// Bootstrap data message from primary to replica
+pub const BootstrapData = struct {
+    snapshot_lsn: u64,
+    chunk_index: u32,
+    total_chunks: u32,
+    data: []const u8,
+
+    const Self = @This();
+
+    pub fn serialize(self: @This(), writer: anytype) !void {
+        try writer.writeInt(u64, self.snapshot_lsn, .little);
+        try writer.writeInt(u32, self.chunk_index, .little);
+        try writer.writeInt(u32, self.total_chunks, .little);
+        try writer.writeInt(u32, @intCast(self.data.len), .little);
+        try writer.writeAll(self.data);
+    }
+
+    pub fn deserialize(reader: anytype, allocator: std.mem.Allocator) !Self {
+        const snapshot_lsn = try reader.readInt(u64, .little);
+        const chunk_index = try reader.readInt(u32, .little);
+        const total_chunks = try reader.readInt(u32, .little);
+        const data_len = try reader.readInt(u32, .little);
+        const data = try allocator.alloc(u8, data_len);
+        errdefer allocator.free(data);
+        _ = try reader.readAll(data);
+        return Self{
+            .snapshot_lsn = snapshot_lsn,
+            .chunk_index = chunk_index,
+            .total_chunks = total_chunks,
+            .data = data,
+        };
+    }
+};
+
+/// Bootstrap complete message
+pub const BootstrapComplete = struct {
+    final_lsn: u64,
+    success: bool,
+
+    const Self = @This();
+
+    pub fn serialize(self: @This(), writer: anytype) !void {
+        try writer.writeInt(u64, self.final_lsn, .little);
+        try writer.writeByte(@intFromBool(self.success));
+    }
+
+    pub fn deserialize(reader: anytype) !Self {
+        const final_lsn = try reader.readInt(u64, .little);
+        const success_byte = try reader.readByte();
+        const success = success_byte != 0;
+        return Self{
+            .final_lsn = final_lsn,
+            .success = success,
         };
     }
 };
