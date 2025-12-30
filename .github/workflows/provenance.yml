@@ -28,7 +28,7 @@ jobs:
       provenance-download-url: ${{ steps.generate.outputs.download-url }}
     steps:
     - name: Checkout source
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
 
     - name: Install Zig
       uses: goto-bus-stop/setup-zig@v2
@@ -60,7 +60,7 @@ jobs:
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     steps:
     - name: Checkout source
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
 
     - name: Install Zig
       uses: goto-bus-stop/setup-zig@v2
@@ -89,7 +89,7 @@ jobs:
       contents: write
     steps:
     - name: Checkout source
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
 
     - name: Download all workflow artifacts
       uses: actions/download-artifact@v4
