@@ -8,6 +8,15 @@ const wal = @import("../wal.zig");
 const protocol = @import("protocol.zig");
 const config = @import("config.zig");
 
+/// Connected replica state
+const ReplicaConnection = struct {
+    replica_id: u64,
+    start_lsn: u64,
+    last_ack_sequence: u64,
+    state: config.ReplicaState,
+    writer: ?std.net.Stream.Writer = null,
+};
+
 /// Replication publisher - streams commit records to replicas
 pub const ReplicationPublisher = struct {
     allocator: std.mem.Allocator,
@@ -20,22 +29,13 @@ pub const ReplicationPublisher = struct {
 
     const Self = @This();
 
-    /// Connected replica state
-    const ReplicaConnection = struct {
-        replica_id: u64,
-        start_lsn: u64,
-        last_ack_sequence: u64,
-        state: config.ReplicaState,
-        writer: ?std.net.Stream.Writer = null,
-    };
-
     /// Create a new replication publisher
     pub fn init(allocator: std.mem.Allocator, wal_handle: *wal.WriteAheadLog, cfg: config.PrimaryConfig) !Self {
         return Self{
             .allocator = allocator,
             .wal = wal_handle,
             .cfg = cfg,
-            .replicas = std.ArrayList(ReplicaConnection).init(allocator),
+            .replicas = .{}, // Empty ArrayList
             .next_sequence = 1,
             .running = false,
             .lock = std.Thread.Mutex{},
@@ -50,7 +50,7 @@ pub const ReplicationPublisher = struct {
         for (self.replicas.items) |*replica| {
             replica.state.connected = false;
         }
-        self.replicas.deinit();
+        self.replicas.deinit(self.allocator);
     }
 
     /// Start the publisher (begin streaming)

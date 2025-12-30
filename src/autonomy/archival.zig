@@ -198,7 +198,7 @@ pub const ArchiveManager = struct {
         try compressed.appendSlice(data);
 
         return CompressedData{
-            .data = compressed.toOwnedSlice(),
+            .data = try compressed.toOwnedSlice(),
             .method = .lz4,
         };
     }
@@ -338,7 +338,7 @@ pub const RetentionPolicy = struct {
     /// Check if archive should be kept
     pub fn shouldKeep(self: *const RetentionPolicy, metadata: *const ArchiveMetadata) bool {
         // Check age
-        const age_ms = @as(u64, @intCast((std.time.nanoTimestamp() - metadata.created_at) / 1_000_000));
+        const age_ms = @as(u64, @intCast(@divFloor(std.time.nanoTimestamp() - metadata.created_at, 1_000_000)));
         if (self.max_age_ms > 0 and age_ms > self.max_age_ms) {
             return false;
         }
@@ -378,7 +378,7 @@ pub const AutoArchiver = struct {
     /// Run archival cycle if due
     pub fn runCycleIfNeeded(self: *Self) !AutoArchiveResult {
         const now = std.time.nanoTimestamp();
-        const elapsed_ms = (now - self.last_run) / 1_000_000;
+        const elapsed_ms = @divFloor(now - self.last_run, 1_000_000);
 
         if (elapsed_ms < self.config.interval_ms) {
             return AutoArchiveResult{
@@ -419,7 +419,7 @@ pub const AutoArchiver = struct {
         // Clean up old archives
         var it = self.archive_manager.archives.iterator();
         while (it.next()) |entry| {
-            if (!self.policy.shouldKeep(entry.value_ptr.*)) {
+            if (!self.policy.shouldKeep(&entry.value_ptr.*)) {
                 // Delete archive
                 entry.value_ptr.deinit(self.allocator);
                 self.allocator.free(entry.key_ptr.*);
@@ -476,7 +476,7 @@ test "ArchiveManager scanForColdData" {
     });
     defer manager.deinit();
 
-    std.time.sleep(1 * std.time.ns_per_ms);
+    std.Thread.sleep(1_000_000 * 1_000_000); // 1 second in nanoseconds
 
     const candidates = try manager.scanForColdData();
     defer {

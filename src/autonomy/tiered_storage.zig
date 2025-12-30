@@ -146,7 +146,7 @@ pub const TieredStorageManager = struct {
             .last_access_ts = std.time.nanoTimestamp(),
         };
 
-        try tier_state.placements.append(placement);
+        try tier_state.placements.append(self.allocator, placement);
 
         tier_state.current_bytes += size_bytes;
 
@@ -222,7 +222,7 @@ pub const TieredStorageManager = struct {
 
                     // Move placement
                     const moved_placement = try self.clonePlacement(placement.*);
-                    try target_tier.placements.append(moved_placement);
+                    try target_tier.placements.append(self.allocator, moved_placement);
 
                     tier.placements.items[i].deinit(self.allocator);
                     _ = tier.placements.orderedRemove(i);
@@ -249,7 +249,7 @@ pub const TieredStorageManager = struct {
 
                     // Move placement
                     const moved_placement = try self.clonePlacement(placement.*);
-                    try target_tier.placements.append(moved_placement);
+                    try target_tier.placements.append(self.allocator, moved_placement);
 
                     tier.placements.items[i].deinit(self.allocator);
                     _ = tier.placements.orderedRemove(i);
@@ -265,7 +265,6 @@ pub const TieredStorageManager = struct {
         // Update stats
         for (&self.tiers) |*tier| {
             tier.stats.total_optimizations += 1;
-            tier.stats.current_bytes = tier.calculateCurrentBytes();
         }
 
         return OptimizationResult{
@@ -278,7 +277,7 @@ pub const TieredStorageManager = struct {
     /// Get cost breakdown
     pub fn getCostBreakdown(self: *const Self) CostBreakdown {
         var total_monthly_cost: f64 = 0;
-        var tier_costs = [4]f64{0} ** 4;
+        var tier_costs = [_]f64{0} ** 4;
 
         for (&self.tiers, 0..) |*tier, i| {
             const gb_used = @as(f64, @floatFromInt(tier.current_bytes)) / (1024 * 1024 * 1024);
@@ -313,7 +312,7 @@ pub const TieredStorageManager = struct {
                     .description = try std.fmt.allocPrint(
                         self.allocator,
                         "{s} tier at {d:.0}% capacity",
-                        .{@tagName(tier.config.tier), @as(f64, @floatFromInt(usage_ratio * 100))}
+                        .{@tagName(tier.config.tier), usage_ratio * 100}
                     ),
                     .estimated_savings = 0,
                 });
@@ -365,7 +364,7 @@ pub const TieredStorageManager = struct {
                 if (mem.eql(u8, tier.placements.items[i].entity_id, entity_id)) {
                     const placement = tier.placements.orderedRemove(i);
 
-                    try self.tiers[@intFromEnum(target_tier)].placements.append(placement);
+                    try self.tiers[@intFromEnum(target_tier)].placements.append(self.allocator, placement);
                     return;
                 }
                 i += 1;
@@ -373,7 +372,7 @@ pub const TieredStorageManager = struct {
         }
     }
 
-    fn handleCapacityExceeded(self: *Self, entity_id: []const u8, size_bytes: u64, preferred_tier: StorageTier) !PlacementResult {
+    fn handleCapacityExceeded(self: *Self, entity_id: []const u8, size_bytes: u64, preferred_tier: StorageTier) error{ArchiveFailed,OutOfMemory}!PlacementResult {
         // Try to evict from preferred tier
         const tier_state = &self.tiers[@intFromEnum(preferred_tier)];
 
@@ -389,10 +388,10 @@ pub const TieredStorageManager = struct {
                 }
             }
 
-            const evicted = tier_state.placements.orderedRemove(min_access_idx);
+            var evicted = tier_state.placements.orderedRemove(min_access_idx);
 
             // Move to colder tier
-            try self.archiveManager.archiveEntity(evicted.entity_id, "placeholder_data");
+            _ = try self.archive_manager.archiveEntity(evicted.entity_id, "placeholder_data");
 
             evicted.deinit(self.allocator);
         }
@@ -416,25 +415,26 @@ pub const TieredStorageManager = struct {
 /// State of a storage tier
 pub const TierState = struct {
     config: TierConfig,
-    placements: std.ArrayList(DataPlacement),
+    placements: std.ArrayListUnmanaged(DataPlacement),
     current_bytes: u64,
     stats: TierStats,
 
     pub fn init(allocator: std.mem.Allocator, tier: StorageTier, config: TierConfig) !TierState {
+        _ = allocator;
         _ = tier;
         return TierState{
             .config = config,
-            .placements = std.array_list.Managed(DataPlacement).init(allocator),
+            .placements = .{},
             .current_bytes = 0,
             .stats = TierStats{},
         };
     }
 
-    pub fn deinit(self: *TierState) void {
+    pub fn deinit(self: *TierState, allocator: std.mem.Allocator) void {
         for (self.placements.items) |*p| {
-            p.deinit(self.config.tier);
+            p.deinit(allocator);
         }
-        self.placements.deinit();
+        self.placements.deinit(allocator);
     }
 
     pub fn calculateCurrentBytes(self: *const TierState) u64 {
@@ -529,33 +529,33 @@ test "TierConfig defaults" {
 }
 
 test "TieredStorageManager init" {
-    const detector = undefined; // Mock
-    const archiver = undefined; // Mock
+    var detector_val: PatternDetector = undefined; // Mock
+    var archiver_val: ArchiveManager = undefined; // Mock
 
-    var manager = try TieredStorageManager.init(std.testing.allocator, &detector, &archiver, .{});
+    var manager = try TieredStorageManager.init(std.testing.allocator, &detector_val, &archiver_val, .{});
     defer manager.deinit();
 
     try std.testing.expectEqual(@as(usize, 4), manager.tiers.len);
 }
 
 test "TieredStorageManager placeData" {
-    const detector = undefined;
-    const archiver = undefined;
+    var detector_val: PatternDetector = undefined;
+    var archiver_val: ArchiveManager = undefined;
 
-    var manager = try TieredStorageManager.init(std.testing.allocator, &detector, &archiver, .{});
+    var manager = try TieredStorageManager.init(std.testing.allocator, &detector_val, &archiver_val, .{});
     defer manager.deinit();
 
     const result = try manager.placeData("entity:123", 1024 * 1024);
 
     try std.testing.expect(result.success);
-    try std.testing.expect(result.reason != null);
+    try std.testing.expect(result.reason.len > 0);
 }
 
 test "TieredStorageManager runOptimizationCycle" {
-    const detector = undefined;
-    const archiver = undefined;
+    var detector_val: PatternDetector = undefined;
+    var archiver_val: ArchiveManager = undefined;
 
-    var manager = try TieredStorageManager.init(std.testing.allocator, &detector, &archiver, .{});
+    var manager = try TieredStorageManager.init(std.testing.allocator, &detector_val, &archiver_val, .{});
     defer manager.deinit();
 
     const result = try manager.runOptimizationCycle();
@@ -564,10 +564,10 @@ test "TieredStorageManager runOptimizationCycle" {
 }
 
 test "TieredStorageManager getCostBreakdown" {
-    const detector = undefined;
-    const archiver = undefined;
+    var detector_val: PatternDetector = undefined;
+    var archiver_val: ArchiveManager = undefined;
 
-    var manager = try TieredStorageManager.init(std.testing.allocator, &detector, &archiver, .{});
+    var manager = try TieredStorageManager.init(std.testing.allocator, &detector_val, &archiver_val, .{});
     defer manager.deinit();
 
     const costs = manager.getCostBreakdown();
@@ -576,10 +576,10 @@ test "TieredStorageManager getCostBreakdown" {
 }
 
 test "TieredStorageManager getRecommendations" {
-    const detector = undefined;
-    const archiver = undefined;
+    var detector_val: PatternDetector = undefined;
+    var archiver_val: ArchiveManager = undefined;
 
-    var manager = try TieredStorageManager.init(std.testing.allocator, &detector, &archiver, .{});
+    var manager = try TieredStorageManager.init(std.testing.allocator, &detector_val, &archiver_val, .{});
     defer manager.deinit();
 
     const recommendations = try manager.getRecommendations();
@@ -593,7 +593,7 @@ test "TieredStorageManager getRecommendations" {
 }
 
 test "DataPlacement deinit" {
-    const placement = DataPlacement{
+    var placement = DataPlacement{
         .entity_id = try std.testing.allocator.dupe(u8, "test"),
         .tier = .hot,
         .size_bytes = 1024,
@@ -609,7 +609,7 @@ test "DataPlacement deinit" {
 }
 
 test "PlacementResult deinit" {
-    const result = PlacementResult{
+    var result = PlacementResult{
         .tier = .hot,
         .success = true,
         .reason = try std.testing.allocator.dupe(u8, "test reason"),

@@ -74,16 +74,14 @@ pub const ResourceSnapshot = struct {
     open_fds: u32,
 
     pub fn toJson(self: ResourceSnapshot, allocator: std.mem.Allocator) !std.json.Value {
-        return std.json.Value{
-            .object = try std.json.ObjectMap.init(allocator, &.{
-                .{ .key = "timestamp_ns", .value = .{ .integer = @intCast(self.timestamp_ns) } },
-                .{ .key = "cpu_percent", .value = .{ .float = self.cpu_percent } },
-                .{ .key = "memory_gb", .value = .{ .float = self.memory_gb } },
-                .{ .key = "memory_percent", .value = .{ .float = self.memory_percent } },
-                .{ .key = "thread_count", .value = .{ .integer = self.thread_count } },
-                .{ .key = "open_fds", .value = .{ .integer = self.open_fds } },
-            }),
-        };
+        var map = std.json.ObjectMap.init(allocator);
+        try map.put("timestamp_ns", .{ .integer = @intCast(self.timestamp_ns) });
+        try map.put("cpu_percent", .{ .float = self.cpu_percent });
+        try map.put("memory_gb", .{ .float = self.memory_gb });
+        try map.put("memory_percent", .{ .float = self.memory_percent });
+        try map.put("thread_count", .{ .integer = self.thread_count });
+        try map.put("open_fds", .{ .integer = self.open_fds });
+        return .{ .object = map };
     }
 };
 
@@ -851,7 +849,6 @@ test "resource snapshot JSON serialization" {
     };
 
     const json = try snapshot.toJson(allocator);
-    defer json.deinit(allocator);
 
     try std.testing.expect(json.object.count() == 6);
 }

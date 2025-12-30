@@ -492,7 +492,7 @@ pub const PendingTasksCartridge = struct {
         // Return a claimed copy
         task.claimed = true;
         task.claimed_by = try self.allocator.dupe(u8, claimer);
-        task.claim_time = std.time.nanoTimestamp();
+        task.claim_time = @as(u64, @intCast(@divFloor(std.time.nanoTimestamp(), 1_000_000_000)));
 
         return task;
     }
@@ -1150,7 +1150,10 @@ test "PendingTasksCartridge.memory_map_lookups" {
     // Test getTask by key
     const task = try cartridge.getTask("task:001");
     try std.testing.expect(task != null);
-    defer if (task) |*t| t.deinit(std.testing.allocator);
+    defer if (task) |t| {
+        var t_mut = t;
+        t_mut.deinit(std.testing.allocator);
+    };
     try std.testing.expectEqualStrings("task:001", task.?.key);
     try std.testing.expectEqualStrings("processing", task.?.task_type);
     try std.testing.expectEqual(@as(u8, 10), task.?.priority);
@@ -1171,7 +1174,7 @@ test "PendingTasksCartridge.memory_map_lookups" {
     try std.testing.expectEqual(@as(usize, 1), upload_tasks.len);
 
     // Test claimTask
-    const claimed = try cartridge.claimTask("task:002", "agent-42");
+    var claimed = try cartridge.claimTask("task:002", "agent-42");
     try std.testing.expect(claimed != null);
     defer if (claimed) |*c| c.deinit(std.testing.allocator);
     try std.testing.expect(claimed.?.claimed);

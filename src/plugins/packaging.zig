@@ -452,7 +452,7 @@ test "parse_plugin_manifest" {
         \\}
     ;
 
-    const manifest = try parsePluginManifest(std.testing.allocator, json);
+    var manifest = try parsePluginManifest(std.testing.allocator, json);
     defer manifest.deinit(std.testing.allocator);
 
     try std.testing.expectEqualStrings("test_plugin", manifest.name);

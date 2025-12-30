@@ -38,8 +38,8 @@ pub const ReplicationMessage = struct {
         var size: usize = 2 + 1 + 8 + 4; // version + type + sequence + checksum
         switch (self.message_type) {
             .heartbeat => {},
-            .commit_record => |cr| {
-                if (cr) |record| {
+            .commit_record => {
+                if (self.commit_record) |record| {
                     size += self.calculateCommitRecordSize(record.*);
                 }
             },
@@ -78,8 +78,8 @@ pub const ReplicationMessage = struct {
         // Write payload based on message type
         switch (self.message_type) {
             .heartbeat => {},
-            .commit_record => |cr| {
-                if (cr) |record| {
+            .commit_record => {
+                if (self.commit_record) |record| {
                     try self.serializeCommitRecord(writer, record.*);
                 }
             },

@@ -433,8 +433,9 @@ pub const SnapshotManager = struct {
         has_delta: bool,
     ) ![]const u8 {
         // Build a simple JSON metadata object
-        var json_buffer = std.ArrayList(u8).init(self.allocator);
-        errdefer json_buffer.deinit();
+        var json_buffer = ArrayListManaged(u8){};
+        try json_buffer.ensureTotalCapacity(self.allocator, 256);
+        errdefer json_buffer.deinit(self.allocator);
 
         // Format numbers directly to avoid extra allocations
         var version_buf: [32]u8 = undefined;
@@ -443,20 +444,24 @@ pub const SnapshotManager = struct {
         var timestamp_buf: [32]u8 = undefined;
         const timestamp_str = try std.fmt.bufPrint(&timestamp_buf, "{d}", .{std.time.nanoTimestamp()});
 
-        try json_buffer.append('{');
-        try json_buffer.appendSlice("\"entity_namespace\":");
-        try std.json.encodeJsonString(entity_namespace, json_buffer.writer(), .{});
-        try json_buffer.appendSlice(",\"entity_id\":");
-        try std.json.encodeJsonString(entity_local_id, json_buffer.writer(), .{});
-        try json_buffer.appendSlice(",\"version\":");
-        try json_buffer.appendSlice(version_str);
-        try json_buffer.appendSlice(",\"has_delta\":");
-        try json_buffer.append(if (has_delta) "true" else "false");
-        try json_buffer.appendSlice(",\"created_at\":");
-        try json_buffer.appendSlice(timestamp_str);
-        try json_buffer.append('}');
+        try json_buffer.append(self.allocator, '{');
+        try json_buffer.appendSlice(self.allocator, "\"entity_namespace\":");
+        try json_buffer.append(self.allocator, '"');
+        try json_buffer.appendSlice(self.allocator, entity_namespace);
+        try json_buffer.append(self.allocator, '"');
+        try json_buffer.appendSlice(self.allocator, ",\"entity_id\":");
+        try json_buffer.append(self.allocator, '"');
+        try json_buffer.appendSlice(self.allocator, entity_local_id);
+        try json_buffer.append(self.allocator, '"');
+        try json_buffer.appendSlice(self.allocator, ",\"version\":");
+        try json_buffer.appendSlice(self.allocator, version_str);
+        try json_buffer.appendSlice(self.allocator, ",\"has_delta\":");
+        try json_buffer.appendSlice(self.allocator, if (has_delta) "true" else "false");
+        try json_buffer.appendSlice(self.allocator, ",\"created_at\":");
+        try json_buffer.appendSlice(self.allocator, timestamp_str);
+        try json_buffer.append(self.allocator, '}');
 
-        return json_buffer.toOwnedSlice();
+        return json_buffer.toOwnedSlice(self.allocator);
     }
 
     /// Compute delta between current state and previous snapshot
@@ -497,7 +502,7 @@ pub const SnapshotManager = struct {
         defer new_parsed.deinit();
 
         // Compute field-level delta
-        const delta_result = try computeFieldDelta(
+        var delta_result = try computeFieldDelta(
             self.allocator,
             prev_parsed.value,
             new_parsed.value,
@@ -510,18 +515,19 @@ pub const SnapshotManager = struct {
         }
 
         // Serialize delta data
-        var delta_data_buffer = std.ArrayList(u8).init(self.allocator);
-        defer delta_data_buffer.deinit();
+        var delta_data_buffer = ArrayListManaged(u8){};
+        try delta_data_buffer.ensureTotalCapacity(self.allocator, 256);
+        defer delta_data_buffer.deinit(self.allocator);
 
         // Build delta data as JSON array of changed fields
-        try delta_data_buffer.append('[');
+        delta_data_buffer.appendAssumeCapacity('[');
         for (delta_result.changed_fields.items, 0..) |field, i| {
-            if (i > 0) try delta_data_buffer.append(',');
-            try delta_data_buffer.append('"');
-            try delta_data_buffer.appendSlice(field);
-            try delta_data_buffer.append('"');
+            if (i > 0) try delta_data_buffer.append(self.allocator, ',');
+            try delta_data_buffer.append(self.allocator, '"');
+            try delta_data_buffer.appendSlice(self.allocator, field);
+            try delta_data_buffer.append(self.allocator, '"');
         }
-        try delta_data_buffer.append(']');
+        try delta_data_buffer.append(self.allocator, ']');
 
         const delta_data = try self.allocator.dupe(u8, delta_data_buffer.items);
         const base_snapshot_id = try self.allocator.dupe(u8, prev_snapshot.id);
@@ -572,7 +578,7 @@ pub const FieldDeltaResult = struct {
         for (self.changed_fields.items) |field| {
             allocator.free(field);
         }
-        self.changed_fields.deinit();
+        self.changed_fields.deinit(allocator);
     }
 };
 
@@ -584,8 +590,10 @@ pub fn jsonValuesEqual(a: std.json.Value, b: std.json.Value) bool {
         .integer => |ai| b == .integer and ai == b.integer,
         .float => |af| b == .float and af == b.float,
         .string => |as| b == .string and std.mem.eql(u8, as, b.string),
+        .number_string => |as| b == .number_string and std.mem.eql(u8, as, b.number_string),
         .array => |aa| {
-            const ba = b.array orelse return false;
+            if (b != .array) return false;
+            const ba = b.array;
             if (aa.items.len != ba.items.len) return false;
             for (aa.items, ba.items) |ai, bi| {
                 if (!jsonValuesEqual(ai, bi)) return false;
@@ -593,7 +601,8 @@ pub fn jsonValuesEqual(a: std.json.Value, b: std.json.Value) bool {
             return true;
         },
         .object => |ao| {
-            const bo = b.object orelse return false;
+            if (b != .object) return false;
+            const bo = b.object;
             if (ao.count() != bo.count()) return false;
             var it = ao.iterator();
             while (it.next()) |entry| {
@@ -612,13 +621,15 @@ pub fn computeFieldDelta(
     new: std.json.Value,
 ) !FieldDeltaResult {
     var result = FieldDeltaResult{
-        .changed_fields = std.ArrayList([]const u8).init(allocator),
+        .changed_fields = std.ArrayListUnmanaged([]const u8){},
         .prev_value = prev,
         .new_value = new,
     };
 
-    const prev_obj = prev.object orelse return result;
-    const new_obj = new.object orelse return result;
+    if (prev != .object) return result;
+    if (new != .object) return result;
+    const prev_obj = prev.object;
+    const new_obj = new.object;
 
     // Find added/modified fields
     var new_it = new_obj.iterator();
@@ -628,11 +639,11 @@ pub fn computeFieldDelta(
         if (prev_obj.get(field_name)) |prev_value| {
             // Field exists in both, check if changed
             if (!jsonValuesEqual(prev_value, entry.value_ptr.*)) {
-                try result.changed_fields.append(try allocator.dupe(u8, field_name));
+                try result.changed_fields.append(allocator, try allocator.dupe(u8, field_name));
             }
         } else {
             // Field is new
-            try result.changed_fields.append(try allocator.dupe(u8, field_name));
+            try result.changed_fields.append(allocator, try allocator.dupe(u8, field_name));
         }
     }
 
@@ -4463,7 +4474,7 @@ test "computeFieldDelta no changes" {
     const new = try std.json.parseFromSlice(std.json.Value, allocator, "{\"a\":1,\"b\":2}", .{});
     defer new.deinit();
 
-    const result = try computeFieldDelta(allocator, prev.value, new.value);
+    var result = try computeFieldDelta(allocator, prev.value, new.value);
     defer result.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 0), result.changed_fields.items.len);
@@ -4478,7 +4489,7 @@ test "computeFieldDelta single field change" {
     const new = try std.json.parseFromSlice(std.json.Value, allocator, "{\"a\":1,\"b\":3}", .{});
     defer new.deinit();
 
-    const result = try computeFieldDelta(allocator, prev.value, new.value);
+    var result = try computeFieldDelta(allocator, prev.value, new.value);
     defer result.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 1), result.changed_fields.items.len);
@@ -4494,7 +4505,7 @@ test "computeFieldDelta multiple field changes" {
     const new = try std.json.parseFromSlice(std.json.Value, allocator, "{\"a\":10,\"b\":20,\"c\":3}", .{});
     defer new.deinit();
 
-    const result = try computeFieldDelta(allocator, prev.value, new.value);
+    var result = try computeFieldDelta(allocator, prev.value, new.value);
     defer result.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 2), result.changed_fields.items.len);
@@ -4519,7 +4530,7 @@ test "computeFieldDelta new field" {
     const new = try std.json.parseFromSlice(std.json.Value, allocator, "{\"a\":1,\"b\":2,\"c\":3}", .{});
     defer new.deinit();
 
-    const result = try computeFieldDelta(allocator, prev.value, new.value);
+    var result = try computeFieldDelta(allocator, prev.value, new.value);
     defer result.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 1), result.changed_fields.items.len);
@@ -4535,7 +4546,7 @@ test "computeFieldDelta nested objects" {
     const new = try std.json.parseFromSlice(std.json.Value, allocator, "{\"a\":{\"x\":2},\"b\":2}", .{});
     defer new.deinit();
 
-    const result = try computeFieldDelta(allocator, prev.value, new.value);
+    var result = try computeFieldDelta(allocator, prev.value, new.value);
     defer result.deinit(allocator);
 
     // The entire "a" field should be marked as changed

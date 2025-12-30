@@ -3,6 +3,7 @@
 //! Provides mock LLM providers, test harness, and debugging tools for plugin development
 
 const std = @import("std");
+const txn = @import("../txn.zig");
 const llm_types = @import("../llm/types.zig");
 const llm_function = @import("../llm/function.zig");
 const llm_client = @import("../llm/client.zig");
@@ -364,8 +365,8 @@ pub const PluginFixtures = struct {
     pub fn createMockCommitContext(allocator: std.mem.Allocator) manager.CommitContext {
         return manager.CommitContext{
             .txn_id = 1,
-            .mutations = &[_]std.meta.Child(manager.CommitContext.Mutations){},
-            .timestamp = std.time.nanoTimestamp(),
+            .mutations = &[_]txn.Mutation{},
+            .timestamp = @as(i64, @intCast(std.time.nanoTimestamp())),
             .metadata = std.StringHashMap([]const u8).init(allocator),
         };
     }
@@ -431,7 +432,7 @@ test "plugin_fixtures" {
     const plugin2 = PluginFixtures.createTopicExtractionPlugin(std.testing.allocator);
     try std.testing.expectEqualStrings("topic_extractor", plugin2.name);
 
-    const ctx = PluginFixtures.createMockCommitContext(std.testing.allocator);
+    var ctx = PluginFixtures.createMockCommitContext(std.testing.allocator);
     defer ctx.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(u64, 1), ctx.txn_id);
 }

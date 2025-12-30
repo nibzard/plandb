@@ -344,13 +344,13 @@ pub const ResourceQuota = struct {
             .max_memory_mb = max_memory_mb,
             .max_cpu_percent = max_cpu_percent,
             .max_llm_requests_per_hour = max_llm,
-            .hour_start = std.time.nanoTimestamp(),
+            .hour_start = @as(i64, @intCast(std.time.nanoTimestamp())),
         };
     }
 
     /// Check if quota allows an LLM call
     pub fn checkLLMQuota(self: *ResourceQuota) !void {
-        const now = std.time.nanoTimestamp();
+        const now = @as(i64, @intCast(std.time.nanoTimestamp()));
         const hour_ns: i64 = 3_600_000_000_000;
 
         // Reset counter if hour has passed
@@ -410,7 +410,7 @@ pub const SecurityContext = struct {
 };
 
 test "security_policy_validation" {
-    const policy = DefaultSecurityPolicy{};
+    const policy = &DefaultSecurityPolicy;
 
     var manifest = packaging.PluginManifest{
         .name = "test",
@@ -424,7 +424,7 @@ test "security_policy_validation" {
         },
     };
 
-    const result = try policy.validateManifest(std.testing.allocator, &manifest);
+    var result = try policy.validateManifest(std.testing.allocator, &manifest);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.is_safe); // Should fail due to network access
@@ -444,8 +444,8 @@ test "resource_quota" {
 }
 
 test "sandbox_permissions" {
-    const policy = DefaultSecurityPolicy{};
-    var sandbox = PluginSandbox.init(std.testing.allocator, policy);
+    const policy = &DefaultSecurityPolicy;
+    var sandbox = PluginSandbox.init(std.testing.allocator, policy.*);
     defer sandbox.deinit();
 
     try std.testing.expect(!sandbox.isAllowed(.network_access));

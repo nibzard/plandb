@@ -97,7 +97,7 @@ pub const PatternDetector = struct {
     pub fn detectColdEntities(self: *Self, threshold_age_ms: u64) ![]EntityColdness {
         var results = std.array_list.Managed(EntityColdness).init(self.allocator);
 
-        const now = @as(u64, @intCast(std.time.nanoTimestamp() / 1_000_000));
+        const now = @as(u64, @intCast(@divFloor(std.time.nanoTimestamp(), 1_000_000)));
 
         var it = self.entity_patterns.iterator();
         while (it.next()) |entry| {
@@ -224,7 +224,7 @@ pub const PatternDetector = struct {
     fn calculateHeatScore(self: *Self, pattern: *const EntityPattern) f32 {
         _ = self;
         // Heat score based on access frequency and recency
-        const now = @as(u64, @intCast(std.time.nanoTimestamp() / 1_000_000));
+        const now = @as(u64, @intCast(@divFloor(std.time.nanoTimestamp(), 1_000_000)));
         const age_hours = @as(f32, @floatFromInt(now - pattern.last_access_ts)) / (1000 * 60 * 60);
 
         const frequency_score = @min(1.0, @as(f32, @floatFromInt(pattern.total_accesses)) / 100);
@@ -271,7 +271,7 @@ pub const QueryPattern = struct {
     last_seen_ts: u64,
 
     pub fn init(allocator: std.mem.Allocator, query: []const u8) QueryPattern {
-        const now = @as(u64, @intCast(std.time.nanoTimestamp() / 1_000_000));
+        const now = @as(u64, @intCast(@divFloor(std.time.nanoTimestamp(), 1_000_000)));
         return QueryPattern{
             .query = allocator.dupe(u8, query) catch unreachable,
             .access_count = 0,
@@ -292,7 +292,7 @@ pub const QueryPattern = struct {
 
     pub fn recordAccess(self: *QueryPattern, latency_ms: f64, result_count: usize) !void {
         self.access_count += 1;
-        self.last_seen_ts = @as(u64, @intCast(std.time.nanoTimestamp() / 1_000_000));
+        self.last_seen_ts = @as(u64, @intCast(@divFloor(std.time.nanoTimestamp(), 1_000_000)));
 
         // Update latency stats
         self.total_latency_ms += latency_ms;
@@ -316,7 +316,7 @@ pub const EntityPattern = struct {
     first_access_ts: u64,
 
     pub fn init(allocator: std.mem.Allocator, entity_id: []const u8) EntityPattern {
-        const now = @as(u64, @intCast(std.time.nanoTimestamp() / 1_000_000));
+        const now = @as(u64, @intCast(@divFloor(std.time.nanoTimestamp(), 1_000_000)));
         return EntityPattern{
             .entity_id = allocator.dupe(u8, entity_id) catch unreachable,
             .total_accesses = 0,
@@ -332,7 +332,7 @@ pub const EntityPattern = struct {
     }
 
     pub fn recordAccess(self: *EntityPattern, access_type: AccessType) !void {
-        const now = @as(u64, @intCast(std.time.nanoTimestamp() / 1_000_000));
+        const now = @as(u64, @intCast(@divFloor(std.time.nanoTimestamp(), 1_000_000)));
         self.total_accesses += 1;
         self.last_access_ts = now;
 
@@ -352,12 +352,12 @@ pub const AccessType = enum {
 /// Temporal pattern tracker
 pub const TemporalPatternTracker = struct {
     allocator: std.mem.Allocator,
-    hourly_records: [24]std.ArrayList(TemporalRecord),
+    hourly_records: [24]std.ArrayListUnmanaged(TemporalRecord),
 
     pub fn init(allocator: std.mem.Allocator) TemporalPatternTracker {
         var tracker: TemporalPatternTracker = undefined;
         for (&tracker.hourly_records) |*hour| {
-            hour.* = std.array_list.Managed(TemporalRecord).init(allocator);
+            hour.* = std.ArrayListUnmanaged(TemporalRecord).empty;
         }
         tracker.allocator = allocator;
         return tracker;
@@ -368,15 +368,15 @@ pub const TemporalPatternTracker = struct {
             for (hour.items) |*rec| {
                 rec.deinit(self.allocator);
             }
-            hour.deinit();
+            hour.deinit(self.allocator);
         }
     }
 
     pub fn recordQuery(self: *TemporalPatternTracker, query: []const u8, latency_ms: f64) !void {
-        const now = @as(u64, @intCast(std.time.nanoTimestamp() / 1_000_000));
+        const now = @as(u64, @intCast(@divFloor(std.time.nanoTimestamp(), 1_000_000)));
         const hour = @as(usize, @intCast((now / (60 * 60 * 1000)) % 24));
 
-        try self.hourly_records[hour].append(TemporalRecord{
+        try self.hourly_records[hour].append(self.allocator, TemporalRecord{
             .query = try self.allocator.dupe(u8, query),
             .timestamp_ms = now,
             .latency_ms = latency_ms,
@@ -507,7 +507,7 @@ test "PatternDetector detectColdEntities" {
 
     // Entity accessed long ago
     try detector.recordEntityAccess("old:entity", .read);
-    std.time.sleep(1 * std.time.ns_per_ms);
+    std.Thread.sleep(1_000_000 * 1_000_000); // 1 second in nanoseconds
 
     const cold = try detector.detectColdEntities(500);
     defer {

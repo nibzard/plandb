@@ -539,12 +539,18 @@ test "plugin_validator_valid_plugin" {
         .name = "test_plugin",
         .version = "1.0.0",
         .on_commit = null,
+        .on_commit_streaming = null,
         .on_query = null,
         .on_schedule = null,
         .get_functions = null,
+        .on_agent_session_start = null,
+        .on_agent_operation = null,
+        .on_review_request = null,
+        .on_perf_sample = null,
+        .on_benchmark_complete = null,
     };
 
-    const result = try validator.validatePlugin(&plugin);
+    var result = try validator.validatePlugin(&plugin);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(result.is_valid);
@@ -558,12 +564,18 @@ test "plugin_validator_invalid_plugin" {
         .name = "",
         .version = "invalid",
         .on_commit = null,
+        .on_commit_streaming = null,
         .on_query = null,
         .on_schedule = null,
         .get_functions = null,
+        .on_agent_session_start = null,
+        .on_agent_operation = null,
+        .on_review_request = null,
+        .on_perf_sample = null,
+        .on_benchmark_complete = null,
     };
 
-    const result = try validator.validatePlugin(&plugin);
+    var result = try validator.validatePlugin(&plugin);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.is_valid);
@@ -578,7 +590,7 @@ test "plugin_validator_function_schema" {
     var params = llm_function.JSONSchema.init(.object);
     defer params.deinit(std.testing.allocator);
 
-    const schema = try manager.FunctionSchema.init(
+    var schema = try manager.FunctionSchema.init(
         std.testing.allocator,
         "test_function",
         "A test function",
@@ -586,7 +598,7 @@ test "plugin_validator_function_schema" {
     );
     defer schema.deinit(std.testing.allocator);
 
-    const result = try validator.validateFunctionSchema(&schema);
+    var result = try validator.validateFunctionSchema(&schema);
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(result.is_valid);

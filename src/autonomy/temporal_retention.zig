@@ -281,7 +281,7 @@ pub const TemporalRetentionManager = struct {
             return points;
         }
 
-        var downsampled = std.ArrayListManaged(TemporalDataPoint).init(self.allocator);
+        var downsampled = ArrayListManaged(TemporalDataPoint){};
 
         // Group points by interval buckets
         var last_bucket: i64 = -1;
@@ -291,13 +291,13 @@ pub const TemporalRetentionManager = struct {
         var bucket_max: f64 = -std.math.inf(f32);
 
         for (points) |point| {
-            const bucket = @divTrunc(point.timestamp, interval);
+            const bucket = @divTrunc(point.timestamp, @as(i64, @intCast(interval)));
 
             if (bucket != last_bucket and last_bucket != -1) {
                 // Emit aggregated point for previous bucket
                 const avg = bucket_sum / @as(f64, @floatFromInt(bucket_count));
-                try downsampled.append(.{
-                    .timestamp = last_bucket * interval,
+                try downsampled.append(self.allocator, .{
+                    .timestamp = @as(i64, @intCast(last_bucket)) * @as(i64, @intCast(interval)),
                     .value = avg,
                     .min = bucket_min,
                     .max = bucket_max,
@@ -322,8 +322,8 @@ pub const TemporalRetentionManager = struct {
         // Emit final bucket
         if (bucket_count > 0) {
             const avg = bucket_sum / @as(f64, @floatFromInt(bucket_count));
-            try downsampled.append(.{
-                .timestamp = last_bucket * interval,
+            try downsampled.append(self.allocator, .{
+                .timestamp = last_bucket * @as(i64, @intCast(interval)),
                 .value = avg,
                 .min = bucket_min,
                 .max = bucket_max,
@@ -334,7 +334,7 @@ pub const TemporalRetentionManager = struct {
         self.stats.total_points_downsampled += points.len - downsampled.items.len;
         self.stats.storage_savings_bytes += @as(u64, @intCast((points.len - downsampled.items.len) * @sizeOf(TemporalDataPoint)));
 
-        return downsampled.toOwnedSlice();
+        return downsampled.toOwnedSlice(self.allocator);
     }
 
     /// Check if data should be archived
@@ -363,7 +363,7 @@ pub const TemporalRetentionManager = struct {
         var total_downsampled: usize = 0;
         var total_archived: usize = 0;
 
-        var retained_points = std.ArrayListManaged(TemporalDataPoint).init(self.allocator);
+        var retained_points = ArrayListManaged(TemporalDataPoint).init(self.allocator);
         defer {
             for (retained_points.items) |p| p.deinit(self.allocator);
             retained_points.deinit(self.allocator);
@@ -382,7 +382,7 @@ pub const TemporalRetentionManager = struct {
                 total_downsampled += 1;
                 _ = level;
             } else {
-                try retained_points.append(point);
+                try retained_points.append(self.allocator, point);
                 total_kept += 1;
             }
 
