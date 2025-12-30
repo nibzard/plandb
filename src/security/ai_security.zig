@@ -1238,7 +1238,39 @@ pub const CredentialManager = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, encryption_key: []const u8) Self {
+    pub fn init(allocator: std.mem.Allocator, encryption_key: []const u8) !Self {
+        // Validate encryption key meets minimum security requirements
+        // Minimum 32 bytes (256 bits) for AES-256
+        if (encryption_key.len < 32) {
+            return error.WeakEncryptionKey;
+        }
+
+        // Check for common weak/default keys
+        const weak_patterns = [_][]const u8{
+            "password",
+            "12345678",
+            "abcdefgh",
+            "secretkey",
+            "northstar",
+            "default",
+        };
+
+        for (weak_patterns) |pattern| {
+            if (std.mem.indexOf(u8, encryption_key, pattern) != null) {
+                return error.WeakEncryptionKey;
+            }
+        }
+
+        // Check key entropy (should have sufficient variety)
+        var unique_bytes: [256]u8 = [_]u8{0} ** 256;
+        for (encryption_key) |byte| {
+            unique_bytes[byte] = 1;
+        }
+        const unique_count = std.mem.count(u8, &unique_bytes, &[1]u8);
+        if (unique_count < 16) {
+            return error.WeakEncryptionKey;
+        }
+
         return .{
             .allocator = allocator,
             .credentials = std.StringHashMap(StoredCredential).init(allocator),
@@ -1530,7 +1562,7 @@ test "PIIDetector redact email" {
 
 test "CredentialManager store and retrieve" {
     const encryption_key = "test-key-32-bytes-long-!!!!";
-    var manager = CredentialManager.init(std.testing.allocator, encryption_key);
+    var manager = try CredentialManager.init(std.testing.allocator, encryption_key);
     defer manager.deinit();
 
     try manager.storeCredential("test-api", "secret-key-123", .api_key);
@@ -1539,6 +1571,26 @@ test "CredentialManager store and retrieve" {
     defer std.testing.allocator.free(retrieved.?);
 
     try std.testing.expectEqualStrings("secret-key-123", retrieved.?);
+}
+
+test "CredentialManager rejects weak_keys" {
+    // Test too short key
+    try std.testing.expectError(
+        error.WeakEncryptionKey,
+        CredentialManager.init(std.testing.allocator, "short")
+    );
+
+    // Test weak pattern key
+    try std.testing.expectError(
+        error.WeakEncryptionKey,
+        CredentialManager.init(std.testing.allocator, "password12345678901234567890123")
+    );
+
+    // Test low entropy key (all same byte)
+    try std.testing.expectError(
+        error.WeakEncryptionKey,
+        CredentialManager.init(std.testing.allocator, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    );
 }
 
 test "RateLimiter basic limiting" {

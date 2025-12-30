@@ -2237,7 +2237,7 @@ This is a **non-critical** benchmark (`.critical = false`) that demonstrates adv
     - P1: Weak session token generation (CWE-338) ✅ FIXED (commit 0430080)
     - P2: No TLS certificate validation (CWE-295)
     - P2: Missing authorization checks (CWE-284) ✅ FIXED (commit 66d7f57)
-    - P2: No resource quotas for AI operations (CWE-770)
+    - P2: No resource quotas for AI operations (CWE-770) ✅ FIXED (commit 2d36cbd)
     - P2: Insecure defaults for API keys (CWE-276)
     - P2: Missing input validation for function parameters ✅ FIXED (commit 3c63d74)
     - P2: No URL validation for custom endpoints (SSRF) ✅ FIXED (commit 0df8e07)
