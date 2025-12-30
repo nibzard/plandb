@@ -547,6 +547,10 @@ pub const WriteTxn = struct {
         try self.inner.put(key, value);
     }
 
+    pub fn delete(self: *WriteTxn, key: []const u8) !void {
+        return self.del(key);
+    }
+
     pub fn del(self: *WriteTxn, key: []const u8) !void {
         // Track mutation in transaction context
         try self.txn_ctx.delete(key);
@@ -1407,6 +1411,10 @@ test "plugin_hooks_called_during_commit" {
         .on_query = null,
         .on_schedule = null,
         .get_functions = null,
+        .on_agent_session_start = null,
+        .on_agent_operation = null,
+        .on_review_request = null,
+        .on_perf_sample = null,
     };
 
     // Create plugin manager
@@ -1464,6 +1472,10 @@ test "plugin_hook_error_does_not_prevent_commit" {
         .on_query = null,
         .on_schedule = null,
         .get_functions = null,
+        .on_agent_session_start = null,
+        .on_agent_operation = null,
+        .on_review_request = null,
+        .on_perf_sample = null,
     };
 
     const plugin_config = plugins.PluginConfig{
@@ -1586,6 +1598,10 @@ test "plugin_hooks_multiple_plugins" {
                 .on_query = null,
                 .on_schedule = null,
                 .get_functions = null,
+                .on_agent_session_start = null,
+                .on_agent_operation = null,
+                .on_review_request = null,
+                .on_perf_sample = null,
             };
         }
     };
@@ -1664,11 +1680,11 @@ test "delete_operation" {
     _ = try w1.commit();
 
     // Verify data exists
-    var r1 = try db.beginRead();
+    var r1 = try db.beginReadLatest();
     try testing.expectEqualStrings("value1", r1.get("key1").?);
     try testing.expectEqualStrings("value2", r1.get("key2").?);
     try testing.expectEqualStrings("value3", r1.get("key3").?);
-    r1.end();
+    r1.close();
 
     // Delete key2
     var w2 = try db.beginWrite();
@@ -1676,11 +1692,11 @@ test "delete_operation" {
     _ = try w2.commit();
 
     // Verify key2 is deleted but others remain
-    var r2 = try db.beginRead();
+    var r2 = try db.beginReadLatest();
     try testing.expectEqualStrings("value1", r2.get("key1").?);
     try testing.expect(r2.get("key2") == null); // Deleted
     try testing.expectEqualStrings("value3", r2.get("key3").?);
-    r2.end();
+    r2.close();
 
     // Delete non-existent key should not error
     var w3 = try db.beginWrite();
@@ -1688,11 +1704,11 @@ test "delete_operation" {
     _ = try w3.commit();
 
     // Verify state unchanged
-    var r3 = try db.beginRead();
+    var r3 = try db.beginReadLatest();
     try testing.expectEqualStrings("value1", r3.get("key1").?);
     try testing.expect(r3.get("key2") == null);
     try testing.expectEqualStrings("value3", r3.get("key3").?);
-    r3.end();
+    r3.close();
 }
 
 test "delete_then_put" {
@@ -1721,7 +1737,7 @@ test "delete_then_put" {
     _ = try w2.commit();
 
     // Should have new value
-    var r = try db.beginRead();
+    var r = try db.beginReadLatest();
     try testing.expectEqualStrings("new_value", r.get("key1").?);
-    r.end();
+    r.close();
 }

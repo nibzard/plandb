@@ -109,13 +109,14 @@ pub const EventStore = struct {
             return error.PayloadTooLarge;
         }
 
-        // Generate event ID
+        // Generate event ID and create mutable copy
         const event_id = self.next_event_id;
         self.next_event_id += 1;
-        event.event_id = event_id;
+        var mut_event = event;
+        mut_event.event_id = event_id;
 
         // Validate event
-        try event.validate();
+        try mut_event.validate();
 
         // Calculate record size
         const record_size = EVENT_HEADER_SIZE + payload.len + EVENT_TRAILER_SIZE;
@@ -126,9 +127,9 @@ pub const EventStore = struct {
         // Write header
         var header = EventRecordHeader{
             .event_id = event_id,
-            .event_type = @intFromEnum(event.event_type),
-            .timestamp = event.timestamp,
-            .actor_id = event.actor_id,
+            .event_type = @intFromEnum(mut_event.event_type),
+            .timestamp = mut_event.timestamp,
+            .actor_id = mut_event.actor_id,
             .payload_len = @intCast(payload.len),
         };
 
@@ -150,11 +151,11 @@ pub const EventStore = struct {
         // Update index
         try self.index.put(event_id, EventIndexEntry{
             .file_offset = file_offset,
-            .event_type = event.event_type,
-            .timestamp = event.timestamp,
-            .actor_id = event.actor_id,
-            .session_id = event.session_id,
-            .visibility = event.visibility,
+            .event_type = mut_event.event_type,
+            .timestamp = mut_event.timestamp,
+            .actor_id = mut_event.actor_id,
+            .session_id = mut_event.session_id,
+            .visibility = mut_event.visibility,
         });
 
         return event_id;
@@ -162,7 +163,7 @@ pub const EventStore = struct {
 
     /// Query events by filter
     pub fn queryEvents(self: *Self, filter: types.EventFilter) ![]types.EventResult {
-        var results = std.ArrayList(types.EventResult).init(self.allocator);
+        var results = std.array_list.AlignedManaged(types.EventResult, null).init(self.allocator);
         errdefer {
             for (results.items) |*r| r.deinit();
             results.deinit();
@@ -205,7 +206,7 @@ pub const EventStore = struct {
             }
 
             // Read event payload
-            const payload = try self.readEventPayload(idx_entry.file_offset) catch |err| switch (err) {
+            const payload = self.readEventPayload(idx_entry.file_offset) catch |err| switch (err) {
                 error.CorruptEvent => continue, // Skip corrupt events
                 else => return err,
             };
@@ -401,13 +402,25 @@ pub const EventStore = struct {
 
             const session_id_raw = idx_entry.session_id orelse 0;
 
-            try self.index_file.writer().writeInt(u64, entry.key_ptr.*, .little);
-            try self.index_file.writer().writeInt(u64, idx_entry.file_offset, .little);
-            try self.index_file.writer().writeInt(u16, @intFromEnum(idx_entry.event_type), .little);
-            try self.index_file.writer().writeInt(i64, idx_entry.timestamp, .little);
-            try self.index_file.writer().writeInt(u64, idx_entry.actor_id, .little);
-            try self.index_file.writer().writeInt(u64, session_id_raw, .little);
-            try self.index_file.writer().writeInt(u8, @intFromEnum(idx_entry.visibility), .little);
+            // Write all index entry fields directly
+            var entry_buf: [31]u8 = undefined; // 8+8+2+8+8+8+1 = 43 bytes actually
+            var offset: usize = 0;
+
+            std.mem.writeInt(u64, entry_buf[0..8], entry.key_ptr.*, .little);
+            offset += 8;
+            std.mem.writeInt(u64, entry_buf[offset..][0..8], idx_entry.file_offset, .little);
+            offset += 8;
+            std.mem.writeInt(u16, entry_buf[offset..][0..2], @intFromEnum(idx_entry.event_type), .little);
+            offset += 2;
+            std.mem.writeInt(i64, entry_buf[offset..][0..8], idx_entry.timestamp, .little);
+            offset += 8;
+            std.mem.writeInt(u64, entry_buf[offset..][0..8], idx_entry.actor_id, .little);
+            offset += 8;
+            std.mem.writeInt(u64, entry_buf[offset..][0..8], session_id_raw, .little);
+            offset += 8;
+            std.mem.writeInt(u8, entry_buf[offset..][0..1], @intFromEnum(idx_entry.visibility), .little);
+
+            try self.index_file.writeAll(&entry_buf);
         }
 
         try self.index_file.sync();
@@ -415,10 +428,10 @@ pub const EventStore = struct {
 
     /// Compact event storage (remove events older than retention period)
     pub fn compact(self: *Self, retain_after_ns: i64) !void {
-        var events_to_remove = std.ArrayList(u64).init(self.allocator);
+        var events_to_remove = std.array_list.AlignedManaged(u64, null).init(self.allocator);
         defer events_to_remove.deinit();
 
-        const now = std.time.nanoTimestamp();
+        const now = @as(i64, @intCast(std.time.nanoTimestamp()));
         const cutoff = now - retain_after_ns;
 
         var it = self.index.iterator();
@@ -530,7 +543,7 @@ test "EventStore basic append and query" {
     defer store.deinit();
 
     // Append agent session event
-    const timestamp = std.time.nanoTimestamp();
+    const timestamp = @as(i64, @intCast(std.time.nanoTimestamp()));
     const header = types.EventHeader{
         .event_id = 0,
         .event_type = .agent_session_started,
@@ -573,7 +586,7 @@ test "EventStore session events" {
     var store = try EventStore.open(allocator, config);
     defer store.deinit();
 
-    const timestamp = std.time.nanoTimestamp();
+    const timestamp = @as(i64, @intCast(std.time.nanoTimestamp()));
 
     // Create session events
     const header1 = types.EventHeader{
@@ -623,7 +636,7 @@ test "EventStore persistence across reopen" {
         var store = try EventStore.open(allocator, config);
         defer store.deinit();
 
-        const timestamp = std.time.nanoTimestamp();
+        const timestamp = @as(i64, @intCast(std.time.nanoTimestamp()));
         const header = types.EventHeader{
             .event_id = 0,
             .event_type = .review_note,

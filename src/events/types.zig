@@ -298,7 +298,7 @@ test "EventHeader validation" {
     var header = EventHeader{
         .event_id = 1,
         .event_type = .agent_session_started,
-        .timestamp = std.time.nanoTimestamp(),
+        .timestamp = @as(i64, @intCast(std.time.nanoTimestamp())),
         .actor_id = 42,
         .session_id = 1,
         .visibility = .private,
@@ -312,7 +312,7 @@ test "EventHeader payload_too_large" {
     var header = EventHeader{
         .event_id = 1,
         .event_type = .agent_session_started,
-        .timestamp = std.time.nanoTimestamp(),
+        .timestamp = @as(i64, @intCast(std.time.nanoTimestamp())),
         .actor_id = 42,
         .session_id = 1,
         .visibility = .private,

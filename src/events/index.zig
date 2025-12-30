@@ -28,13 +28,13 @@ pub const EventManager = struct {
         session_purpose: []const u8,
         metadata: std.StringHashMap([]const u8),
     ) !u64 {
-        const timestamp = std.time.nanoTimestamp();
+        const timestamp = @as(i64, @intCast(std.time.nanoTimestamp()));
 
         // Serialize payload
-        var payload_buffer = std.ArrayList(u8).init(self.allocator);
-        defer payload_buffer.deinit();
+        var payload_buffer = std.ArrayList(u8){};
+        defer _ = payload_buffer.deinit(self.allocator);
 
-        const writer = payload_buffer.writer();
+        const writer = payload_buffer.writer(self.allocator);
 
         // Write agent_version (length prefixed)
         try writer.writeInt(u32, @intCast(agent_version.len), .little);
@@ -55,7 +55,7 @@ pub const EventManager = struct {
             try writer.writeAll(entry.value_ptr.*);
         }
 
-        const payload = try payload_buffer.toOwnedSlice();
+        const payload = try payload_buffer.toOwnedSlice(self.allocator);
         defer self.allocator.free(payload);
 
         const header = types.EventHeader{
@@ -84,12 +84,12 @@ pub const EventManager = struct {
         duration_ns: ?i64,
         metadata: std.StringHashMap([]const u8),
     ) !u64 {
-        const timestamp = std.time.nanoTimestamp();
+        const timestamp = @as(i64, @intCast(std.time.nanoTimestamp()));
 
-        var payload_buffer = std.ArrayList(u8).init(self.allocator);
-        defer payload_buffer.deinit();
+        var payload_buffer = std.ArrayList(u8){};
+        defer _ = payload_buffer.deinit(self.allocator);
 
-        const writer = payload_buffer.writer();
+        const writer = payload_buffer.writer(self.allocator);
 
         // Write operation fields (all length prefixed)
         try writer.writeInt(u32, @intCast(operation_type.len), .little);
@@ -124,7 +124,7 @@ pub const EventManager = struct {
             try writer.writeAll(entry.value_ptr.*);
         }
 
-        const payload = try payload_buffer.toOwnedSlice();
+        const payload = try payload_buffer.toOwnedSlice(self.allocator);
         defer self.allocator.free(payload);
 
         const header = types.EventHeader{
@@ -150,12 +150,12 @@ pub const EventManager = struct {
         visibility: types.EventVisibility,
         references: [][]const u8,
     ) !u64 {
-        const timestamp = std.time.nanoTimestamp();
+        const timestamp = @as(i64, @intCast(std.time.nanoTimestamp()));
 
-        var payload_buffer = std.ArrayList(u8).init(self.allocator);
-        defer payload_buffer.deinit();
+        var payload_buffer = std.ArrayList(u8){};
+        defer _ = payload_buffer.deinit(self.allocator);
 
-        const writer = payload_buffer.writer();
+        const writer = payload_buffer.writer(self.allocator);
 
         try writer.writeInt(u32, @intCast(target_type.len), .little);
         try writer.writeAll(target_type);
@@ -174,7 +174,7 @@ pub const EventManager = struct {
             try writer.writeAll(ref);
         }
 
-        const payload = try payload_buffer.toOwnedSlice();
+        const payload = try payload_buffer.toOwnedSlice(self.allocator);
         defer self.allocator.free(payload);
 
         const header = types.EventHeader{
@@ -203,12 +203,12 @@ pub const EventManager = struct {
         correlation_commit_range: ?[]const u8,
         correlation_session_ids: []u64,
     ) !u64 {
-        const timestamp = std.time.nanoTimestamp();
+        const timestamp = @as(i64, @intCast(std.time.nanoTimestamp()));
 
-        var payload_buffer = std.ArrayList(u8).init(self.allocator);
-        defer payload_buffer.deinit();
+        var payload_buffer = std.ArrayList(u8){};
+        defer _ = payload_buffer.deinit(self.allocator);
 
-        const writer = payload_buffer.writer();
+        const writer = payload_buffer.writer(self.allocator);
 
         try writer.writeInt(u32, @intCast(metric_name.len), .little);
         try writer.writeAll(metric_name);
@@ -242,7 +242,7 @@ pub const EventManager = struct {
             try writer.writeInt(u64, sid, .little);
         }
 
-        const payload = try payload_buffer.toOwnedSlice();
+        const payload = try payload_buffer.toOwnedSlice(self.allocator);
         defer self.allocator.free(payload);
 
         const header = types.EventHeader{
@@ -285,7 +285,8 @@ pub const EventManager = struct {
             .event_types = &[_]types.EventType{.review_note},
         });
 
-        var filtered = std.ArrayList(types.EventResult).init(self.allocator);
+        var filtered = std.ArrayList(types.EventResult){};
+        defer _ = filtered.deinit(self.allocator);
 
         for (all_notes) |note| {
             // Parse target from payload
@@ -293,10 +294,10 @@ pub const EventManager = struct {
             // In production, you'd properly deserialize and compare fields
             _ = target_type;
             _ = target_id;
-            try filtered.append(note);
+            try filtered.append(self.allocator, note);
         }
 
-        return filtered.toOwnedSlice();
+        return filtered.toOwnedSlice(self.allocator);
     }
 };
 
@@ -359,10 +360,15 @@ test "EventManager review note recording" {
 
     var manager = EventManager.init(allocator, &store);
 
-    const references = [_][]const u8{
+    const references_values = [_][]const u8{
         "commit:abc123",
         "file:src/main.zig",
     };
+    var references_list = std.array_list.AlignedManaged([]const u8, null).init(allocator);
+    defer references_list.deinit();
+    for (references_values) |ref| {
+        try references_list.append(ref);
+    }
 
     const event_id = try manager.recordReviewNote(
         42,
@@ -370,15 +376,15 @@ test "EventManager review note recording" {
         "abc123",
         "This commit needs review for safety issues",
         .team,
-        &references,
+        references_list.items,
     );
 
     try std.testing.expect(event_id >= 0);
 
     // Get the event
-    const event = try manager.getEvent(event_id);
+    var event_result = try manager.getEvent(event_id);
 
-    if (event) |e| {
+    if (event_result) |*e| {
         defer e.deinit();
         try std.testing.expectEqual(types.EventType.review_note, e.header.event_type);
     } else {
