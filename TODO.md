@@ -2,6 +2,32 @@
 
 Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · 🟢 P3 (low)
 
+---
+
+## Current Work (2025-12-30)
+
+### Recent Implementation
+- [ ✅ ] 🟢 :memory: in-memory database support
+  - **COMPLETED**: Full implementation of in-memory database mode (commit 7a9751d)
+  - **FIXED**: Tests 73-86 now pass (previously failing with FileNotFound for :memory: databases)
+  - **FUNCTIONALITY**: MemoryPager correctly handles in-memory operations without filesystem
+  - **STATUS**: Working correctly, not related to B+tree bugs below
+
+### Active Blockers (Pre-existing B+tree Bugs)
+- [ 🐛 ] 🔴 B+tree tests failing with InvalidHeaderChecksum
+  - **AFFECTED TESTS**: Tests 60-72, 87-100 show checksum validation failures
+  - **ROOT CAUSE**: Pre-existing B+tree bugs in checksum calculation during page splits
+  - **NOT RELATED TO :MEMORY:**: These failures occur with both file and memory databases
+  - **PRIORITY**: P0 - blocking full test suite from passing
+
+- [ 🐛 ] 🔴 Child page management issues during splits
+  - **SYMPTOMS**: Parent-child pointers inconsistent after B+tree split operations
+  - **ROOT CAUSE**: Child page updates not properly coordinated in splitLeafNode()
+  - **NOT RELATED TO :MEMORY:**: Structural bug in B+tree split logic
+  - **PRIORITY**: P0 - blocking correctness guarantees
+
+---
+
 **Completed 2025-12-30:**
 - [ ✅ ] 🔴 Fix P0 Critical Security Issue - Replace weak XOR encryption with AES-256-GCM in CredentialManager
   - **COMPLETED**: Replaced weak XOR encryption with AES-256-GCM authenticated encryption
@@ -101,18 +127,18 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMMIT**: ef0cd72
   - **TEST EVIDENCE**: test_split_bug.zig now passes - all 100 keys found after commit/replay
   - **STATUS**: Memory corruption eliminated, splits work correctly, all keys preserved
-- [ 🐛 ] 🔴 B+tree bug: keys lost after leaf splits (PARTIAL FIX)
-  - **REPRODUCED**: Created test_split_bug.zig demonstrating key loss after split operations
-  - **IDENTIFIED ROOT CAUSE**: Two critical bugs in splitLeafNode() in src/pager.zig:
-    1. Memory corruption: defer block freed uninitialized owned_entries entries
-    2. Aliasing bug: node_header.key_count modified during split before copying original_key_count
-  - **FIXED 2025-12-29**: Initialize owned_entries to empty slices before populating (commit 67a8d42)
-  - **FIXED 2025-12-29**: Save original_key_count before modifying node_header.key_count
-  - **FIXED 2025-12-29**: Slot array bounds bug fixed (commit ef0cd72)
-  - **STATUS**: Right leaves now populate correctly during splits, keys preserved after commit
+- [ 🐛 ] 🔴 B+tree bugs: checksum & child page management (ONGOING)
+  - **:memory: SUPPORT**: Working correctly (commit 7a9751d), tests 73-86 now pass
+  - **REMAINING ISSUES**: Pre-existing B+tree bugs NOT related to :memory: implementation
+  - **BUG 1 - InvalidHeaderChecksum**: Checksum calculation incorrect during page splits
+    - **AFFECTED**: Tests 60-72, 87-100 fail with checksum validation errors
+    - **ROOT CAUSE**: splitLeafNode() doesn't recalculate checksums after page modifications
+  - **BUG 2 - Child page management**: Parent-child pointers inconsistent after splits
+    - **ROOT CAUSE**: Child page updates not properly coordinated in splitLeafNode()
+  - **PREVIOUS FIXES (2025-12-29)**: Memory corruption and slot array bounds resolved (commits 67a8d42, ef0cd72)
   - **FILES MODIFIED**: src/pager.zig
-  - **TEST EVIDENCE**: test_split_bug.zig shows right leaf now has correct entries, all keys preserved
-  - **PRIORITY**: P0 - data loss bug affecting correctness
+  - **TEST EVIDENCE**: test_split_bug.zig passes (key loss fixed), but checksum/child bugs remain
+  - **PRIORITY**: P0 - blocking full test suite from passing
 
 **Completed 2025-12-28:**
 - [ ✅ ] 🔴 Implement Phase 1: Review & Observability
