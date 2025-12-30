@@ -2,6 +2,12 @@
 //!
 //! Implements entity storage, indexing, and query operations according to
 //! structured_memory_v1.md specification
+//!
+//! Features:
+//! - Incremental entity updates for streaming extraction
+//! - Type-based indexing
+//! - Attribute-based filtering
+//! - Temporal indexing for time-travel queries
 
 const std = @import("std");
 
@@ -119,6 +125,64 @@ pub const EntityCartridge = struct {
             .txn_id = txn_id,
             .operation = .update,
         });
+    }
+
+    /// Incrementally add entity from streaming extraction
+    /// This is called during commit for real-time entity extraction
+    pub fn add_entity_incremental(
+        self: *Self,
+        entity_id_str: []const u8,
+        entity_type_str: []const u8,
+        confidence: f32,
+        txn_id: u64
+    ) !void {
+        // Parse entity ID from string format "namespace:local_id"
+        const colon_idx = std.mem.indexOf(u8, entity_id_str, ":") orelse {
+            return error.InvalidEntityIdFormat;
+        };
+
+        const namespace = entity_id_str[0..colon_idx];
+        const local_id = entity_id_str[colon_idx + 1 ..];
+
+        const entity_id = EntityId{
+            .namespace = namespace,
+            .local_id = local_id,
+        };
+
+        // Map entity type string to enum
+        const entity_type = parseEntityType(entity_type_str);
+
+        // Create minimal attribute set for streaming extraction
+        const attributes = [_]Attribute{
+            .{
+                .key = "confidence",
+                .value = .{ .float = confidence },
+                .confidence = 1.0,
+                .source = "streaming_extraction",
+            },
+        };
+
+        // Use existing add_entity method
+        try self.add_entity(entity_id, entity_type, &attributes, txn_id);
+    }
+
+    /// Parse entity type from string
+    fn parseEntityType(type_str: []const u8) EntityType {
+        if (std.mem.eql(u8, type_str, "file")) return .file;
+        if (std.mem.eql(u8, type_str, "person")) return .person;
+        if (std.mem.eql(u8, type_str, "function")) return .function;
+        if (std.mem.eql(u8, type_str, "commit")) return .commit;
+        if (std.mem.eql(u8, type_str, "topic")) return .topic;
+        if (std.mem.eql(u8, type_str, "project")) return .project;
+        return .custom;
+    }
+
+    /// Get statistics about the cartridge
+    pub fn get_stats(self: *const Self) CartridgeStats {
+        return CartridgeStats{
+            .total_entities = self.entities.count(),
+            .total_types = self.type_index.count(),
+        };
     }
 };
 
@@ -356,6 +420,12 @@ pub const TemporalIndex = struct {
     };
 };
 
+/// Cartridge statistics
+pub const CartridgeStats = struct {
+    total_entities: usize,
+    total_types: usize,
+};
+
 test "entity_cartridge_basic_operations" {
     var cartridge = try EntityCartridge.init(std.testing.allocator);
     defer cartridge.deinit();
@@ -407,4 +477,49 @@ test "entity_iterator" {
     }
 
     try std.testing.expectEqual(@as(usize, 2), count);
+}
+
+test "add_entity_incremental" {
+    var cartridge = try EntityCartridge.init(std.testing.allocator);
+    defer cartridge.deinit();
+
+    // Test incremental entity addition
+    try cartridge.add_entity_incremental("file:main.zig", "file", 0.95, 100);
+    try cartridge.add_entity_incremental("user:alice", "person", 0.88, 101);
+    try cartridge.add_entity_incremental("commit:abc123", "commit", 0.92, 102);
+
+    const stats = cartridge.get_stats();
+    try std.testing.expectEqual(@as(usize, 3), stats.total_entities);
+
+    // Verify the file entity was added correctly
+    const file_entity_id = EntityId{
+        .namespace = "file",
+        .local_id = "main.zig",
+    };
+    const file_entity = cartridge.get_entity(file_entity_id);
+    try std.testing.expect(file_entity != null);
+    try std.testing.expect(EntityType.file == file_entity.?.type);
+
+    // Verify confidence attribute
+    const confidence_attr = file_entity.?.get_attribute("confidence");
+    try std.testing.expect(confidence_attr != null);
+    try std.testing.expectEqual(@as(f64, 0.95), confidence_attr.?.float);
+}
+
+test "cartridge_stats" {
+    var cartridge = try EntityCartridge.init(std.testing.allocator);
+    defer cartridge.deinit();
+
+    var stats = cartridge.get_stats();
+    try std.testing.expectEqual(@as(usize, 0), stats.total_entities);
+    try std.testing.expectEqual(@as(usize, 0), stats.total_types);
+
+    // Add entities of different types
+    try cartridge.add_entity_incremental("file:a.zig", "file", 0.9, 1);
+    try cartridge.add_entity_incremental("file:b.zig", "file", 0.9, 2);
+    try cartridge.add_entity_incremental("user:alice", "person", 0.8, 3);
+
+    stats = cartridge.get_stats();
+    try std.testing.expectEqual(@as(usize, 3), stats.total_entities);
+    try std.testing.expectEqual(@as(usize, 2), stats.total_types); // file and person
 }

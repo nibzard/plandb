@@ -342,6 +342,42 @@ pub const PluginManager = struct {
         return QueryPlan.none;
     }
 
+    /// Execute on_commit_streaming hooks synchronously during commit
+    /// These hooks run BEFORE WAL fsync for real-time processing
+    /// Returns: number of entities extracted, processing latency in ns
+    pub fn execute_on_commit_streaming(
+        self: *Self,
+        ctx: StreamingCommitContext
+    ) !struct { entities_extracted: usize, latency_ns: u64 } {
+        const start = std.time.nanoTimestamp();
+
+        var entities_extracted: usize = 0;
+
+        var it = self.plugins.iterator();
+        while (it.next()) |entry| {
+            const plugin = &entry.value_ptr.*;
+            if (plugin.on_commit_streaming) |hook| {
+                const result = hook(self.allocator, ctx) catch |err| {
+                    // Log but don't fail commit - streaming is best-effort
+                    std.log.err("Streaming hook failed for plugin '{s}': {}", .{ plugin.name, err });
+                    continue;
+                };
+
+                entities_extracted += result.entities_extracted;
+
+                // Apply backpressure if needed
+                if (result.throttled) {
+                    std.log.warn("Streaming plugin '{s}' was throttled due to backpressure", .{plugin.name});
+                }
+            }
+        }
+
+        const end = std.time.nanoTimestamp();
+        const latency_ns: u64 = @intCast(end - start);
+
+        return .{ .entities_extracted = entities_extracted, .latency_ns = latency_ns };
+    }
+
     pub fn call_function(
         self: *Self,
         function_name: []const u8,
@@ -435,11 +471,32 @@ fn async_hook_wrapper(
     result_ptr.* = AsyncHookResult{ .success = hook_result.operations_processed };
 }
 
+/// Streaming commit context passed to on_commit_streaming hooks
+/// This runs DURING commit before WAL fsync for real-time processing
+pub const StreamingCommitContext = struct {
+    txn_id: u64,
+    mutations: []const txn.Mutation,
+    timestamp: i64,
+    metadata: std.StringHashMap([]const u8),
+    // Stream callback to report incremental results
+    on_entity_extracted: ?*const fn(entity_id: []const u8, entity_type: []const u8, confidence: f32) void,
+
+    pub fn deinit(self: *StreamingCommitContext, allocator: std.mem.Allocator) void {
+        var it = self.metadata.iterator();
+        while (it.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+            allocator.free(entry.value_ptr.*);
+        }
+        self.metadata.deinit();
+    }
+};
+
 /// Plugin trait definition - plugins implement this interface
 pub const Plugin = struct {
     name: []const u8,
     version: []const u8,
     on_commit: ?*const fn(allocator: std.mem.Allocator, ctx: CommitContext) anyerror!PluginResult,
+    on_commit_streaming: ?*const fn(allocator: std.mem.Allocator, ctx: StreamingCommitContext) anyerror!StreamingPluginResult,
     on_query: ?*const fn(allocator: std.mem.Allocator, ctx: QueryContext) anyerror!?QueryPlan,
     on_schedule: ?*const fn(allocator: std.mem.Allocator, ctx: ScheduleContext) anyerror!MaintenanceTask,
     get_functions: ?*const fn(allocator: std.mem.Allocator) []FunctionSchema,
@@ -538,6 +595,15 @@ pub const PluginResult = struct {
     operations_processed: usize,
     cartridges_updated: usize,
     confidence: f32 = 1.0,
+};
+
+/// Result from streaming plugin operation (runs during commit)
+pub const StreamingPluginResult = struct {
+    success: bool,
+    entities_extracted: usize,
+    processing_latency_ns: u64,
+    // For backpressure: true if processing was throttled
+    throttled: bool = false,
 };
 
 /// Result from executing all plugin hooks
@@ -864,6 +930,7 @@ test "plugin_registration" {
         .name = "test_plugin",
         .version = "0.1.0",
         .on_commit = null,
+        .on_commit_streaming = null,
         .on_query = null,
         .on_schedule = null,
         .get_functions = null,
@@ -930,6 +997,7 @@ test "execute_on_commit_hooks_with_plugin" {
                 };
             }
         }.hook,
+        .on_commit_streaming = null,
         .on_query = null,
         .on_schedule = null,
         .get_functions = null,
@@ -980,6 +1048,7 @@ test "execute_on_commit_hooks_with_error" {
                 return error.TestError;
             }
         }.hook,
+        .on_commit_streaming = null,
         .on_query = null,
         .on_schedule = null,
         .get_functions = null,
@@ -1082,6 +1151,7 @@ test "async_execution_multiple_plugins" {
                 };
             }
         }.hook,
+        .on_commit_streaming = null,
         .on_query = null,
         .on_schedule = null,
         .get_functions = null,
@@ -1106,6 +1176,7 @@ test "async_execution_multiple_plugins" {
                 };
             }
         }.hook,
+        .on_commit_streaming = null,
         .on_query = null,
         .on_schedule = null,
         .get_functions = null,
@@ -1162,6 +1233,7 @@ test "async_execution_with_performance_isolation_disabled" {
                 };
             }
         }.hook,
+        .on_commit_streaming = null,
         .on_query = null,
         .on_schedule = null,
         .get_functions = null,

@@ -5,6 +5,7 @@
 //! cartridge format for semantic query capabilities.
 //!
 //! Features:
+//! - Streaming extraction during commit (real-time processing)
 //! - Batch processing of commits for cost-effective LLM calls
 //! - Entity extraction with confidence scoring
 //! - Topic clustering and hierarchical organization
@@ -201,7 +202,7 @@ fn processEntityExtractionResults(
 /// Global plugin state
 var global_state: ?*ExtractorState = null;
 
-/// On commit hook implementation
+/// On commit hook implementation (batch mode)
 fn onCommitHook(allocator: std.mem.Allocator, ctx: manager.CommitContext) anyerror!manager.PluginResult {
     _ = allocator;
 
@@ -234,6 +235,55 @@ fn onCommitHook(allocator: std.mem.Allocator, ctx: manager.CommitContext) anyerr
     };
 }
 
+/// On commit streaming hook implementation (real-time mode)
+/// Runs during commit before WAL fsync for immediate entity extraction
+fn onCommitStreamingHook(allocator: std.mem.Allocator, ctx: manager.StreamingCommitContext) anyerror!manager.StreamingPluginResult {
+    _ = allocator;
+
+    const state = global_state orelse return error.PluginNotInitialized;
+
+    const start = std.time.nanoTimestamp();
+
+    // Process mutations in streaming mode
+    var entities_extracted: usize = 0;
+
+    for (ctx.mutations) |mutation| {
+        _ = switch (mutation) {
+            .put => |p| p.value,
+            .delete => continue, // Skip deletes for entity extraction
+        };
+
+        // Extract entities from key-value pair
+        // In real implementation, this would call LLM with function calling
+        // For now, do simple extraction based on key patterns
+
+        // Extract entity type from key prefix (e.g., "file:", "user:", etc.)
+        const key = mutation.getKey();
+        if (std.mem.indexOf(u8, key, ":")) |colon_idx| {
+            const entity_type = key[0..colon_idx];
+            const entity_id = key[colon_idx + 1 ..];
+
+            // Report entity extraction via callback
+            if (ctx.on_entity_extracted) |callback| {
+                callback(entity_id, entity_type, 0.9);
+            }
+
+            entities_extracted += 1;
+            state.stats.total_entities_extracted += 1;
+        }
+    }
+
+    const end = std.time.nanoTimestamp();
+    const latency_ns: u64 = @intCast(end - start);
+
+    return manager.StreamingPluginResult{
+        .success = true,
+        .entities_extracted = entities_extracted,
+        .processing_latency_ns = latency_ns,
+        .throttled = false,
+    };
+}
+
 /// On query hook for semantic search
 fn onQueryHook(allocator: std.mem.Allocator, ctx: manager.QueryContext) anyerror!?manager.QueryPlan {
     _ = allocator;
@@ -258,9 +308,15 @@ pub const EntityExtractorPlugin = manager.Plugin{
     .name = "entity_extractor",
     .version = "0.1.0",
     .on_commit = onCommitHook,
+    .on_commit_streaming = onCommitStreamingHook,
     .on_query = onQueryHook,
     .on_schedule = null,
     .get_functions = getFunctionsHook,
+    .on_agent_session_start = null,
+    .on_agent_operation = null,
+    .on_review_request = null,
+    .on_perf_sample = null,
+    .on_benchmark_complete = null,
 };
 
 /// Create entity extractor plugin instance
@@ -275,9 +331,15 @@ pub fn createPlugin(allocator: std.mem.Allocator, config: ExtractorConfig) !mana
         .name = "entity_extractor",
         .version = "0.1.0",
         .on_commit = onCommitHook,
+        .on_commit_streaming = onCommitStreamingHook,
         .on_query = onQueryHook,
         .on_schedule = null,
         .get_functions = getFunctionsHook,
+        .on_agent_session_start = null,
+        .on_agent_operation = null,
+        .on_review_request = null,
+        .on_perf_sample = null,
+        .on_benchmark_complete = null,
     };
 }
 
@@ -518,4 +580,87 @@ test "statistics_tracking" {
     try testing.expectEqual(@as(u64, 1), state.stats.total_commits_processed);
     try testing.expectEqual(@as(u64, 1), state.stats.llm_calls_made);
     try testing.expectEqual(@as(u64, 5), state.stats.total_entities_extracted);
+}
+
+test "onCommitStreamingHook.extracts_entities" {
+    var state = try ExtractorState.init(testing.allocator, ExtractorConfig.default());
+    defer state.deinit();
+    global_state = state;
+    defer {
+        if (global_state) |s| {
+            s.deinit();
+            testing.allocator.destroy(s);
+            global_state = null;
+        }
+    }
+
+    // Simple callback that just tracks count
+    var callback_count: usize = 0;
+    const callback = struct {
+        count: *usize,
+
+        fn cb(entity_id: []const u8, entity_type: []const u8, confidence: f32) void {
+            _ = entity_id;
+            _ = entity_type;
+            _ = confidence;
+            count.* += 1;
+        }
+    }{ .count = &callback_count };
+
+    const mutations = [_]txn.Mutation{
+        .{ .put = .{ .key = "file:main.zig", .value = "const x = 1;" } },
+        .{ .put = .{ .key = "user:alice", .value = "data" } },
+        .{ .delete = .{ .key = "old:key" } }, // Should be skipped
+    };
+
+    var metadata = std.StringHashMap([]const u8).init(testing.allocator);
+    defer metadata.deinit();
+
+    const streaming_ctx = manager.StreamingCommitContext{
+        .txn_id = 1,
+        .mutations = &mutations,
+        .timestamp = std.time.nanoTimestamp(),
+        .metadata = metadata,
+        .on_entity_extracted = callback.cb,
+    };
+
+    const result = try onCommitStreamingHook(testing.allocator, streaming_ctx);
+
+    try testing.expect(result.success);
+    try testing.expectEqual(@as(usize, 2), result.entities_extracted); // 2 puts, delete skipped
+    try testing.expectEqual(@as(usize, 2), callback_count);
+    try testing.expectEqual(@as(usize, 2), state.stats.total_entities_extracted);
+}
+
+test "onCommitStreamingHook.throttled_tracking" {
+    var state = try ExtractorState.init(testing.allocator, ExtractorConfig.default());
+    defer state.deinit();
+    global_state = state;
+    defer {
+        if (global_state) |s| {
+            s.deinit();
+            testing.allocator.destroy(s);
+            global_state = null;
+        }
+    }
+
+    const mutations = [_]txn.Mutation{
+        .{ .put = .{ .key = "test:key", .value = "value" } },
+    };
+
+    var metadata = std.StringHashMap([]const u8).init(testing.allocator);
+    defer metadata.deinit();
+
+    const streaming_ctx = manager.StreamingCommitContext{
+        .txn_id = 1,
+        .mutations = &mutations,
+        .timestamp = std.time.nanoTimestamp(),
+        .metadata = metadata,
+        .on_entity_extracted = null,
+    };
+
+    const result = try onCommitStreamingHook(testing.allocator, streaming_ctx);
+
+    try testing.expect(result.success);
+    try testing.expect(!result.throttled); // Not throttled by default
 }
