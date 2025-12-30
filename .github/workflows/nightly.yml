@@ -14,7 +14,7 @@ jobs:
     name: Hardening Suite
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
 
     - name: Install Zig
       uses: goto-bus-stop/setup-zig@v2
@@ -60,7 +60,7 @@ jobs:
     name: Macrobench Suite
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
 
     - name: Install Zig
       uses: goto-bus-stop/setup-zig@v2
@@ -112,7 +112,7 @@ jobs:
     permissions:
       contents: write
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
 
     - name: Install Zig
       uses: goto-bus-stop/setup-zig@v2
