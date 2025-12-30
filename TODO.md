@@ -2406,6 +2406,9 @@ This is a **non-critical** benchmark (`.critical = false`) that demonstrates adv
 - Ready for production use in controlled environments
 - Future phases focus on scaling, hardening, and advanced features
 
+**Recent Maintenance** (2025-12-30):
+- Fixed plugin struct compilation errors (commit f5b8bea) - Added missing `on_commit_streaming` and `on_benchmark_complete` fields to Plugin struct initializations in test fixtures and helper functions
+
 ---
 
 *End of TODO - Roadmap Complete*
