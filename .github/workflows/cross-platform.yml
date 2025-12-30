@@ -132,15 +132,12 @@ jobs:
       run: |
         .\zig-out\bin\bench.exe run --filter "pager_open_close" --repeats 1; exit 0
 
-  # Linux ARM64 (via QEMU emulation)
+  # Linux ARM64 (using ARM64 runners for native execution)
   test-linux-arm64:
     name: Linux (ARM64)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm64
     steps:
     - uses: actions/checkout@v4
-
-    - name: Set up QEMU
-      uses: docker/setup-qemu-action@v3
 
     - name: Install Zig
       uses: goto-bus-stop/setup-zig@v2
@@ -152,16 +149,15 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y jq
 
-    - name: Build for ARM64 target
-      run: |
-        # Build for aarch64-linux-gnu target
-        zig build -Dtarget=aarch64-linux-gnu
+    - name: Build
+      run: zig build
 
-    - name: Run unit tests for ARM64
+    - name: Run unit tests
+      run: zig build test
+
+    - name: Run quick microbenchmark smoke test
       run: |
-        # Note: Running ARM64 binaries on x86_64 requires QEMU user-space emulation
-        # This may be slow, so we skip actual execution and just verify compilation
-        echo "ARM64 build successful, execution skipped due to QEMU overhead"
+        ./zig-out/bin/bench run --filter "pager_open_close" --repeats 1 || true
 
   # Cross-platform test summary
   summary:
@@ -184,7 +180,8 @@ jobs:
         if [ "${{ needs.test-linux.result }}" != "success" ] || \
            [ "${{ needs.test-macos-x64.result }}" != "success" ] || \
            [ "${{ needs.test-macos-arm64.result }}" != "success" ] || \
-           [ "${{ needs.test-windows-x64.result }}" != "success" ]; then
+           [ "${{ needs.test-windows-x64.result }}" != "success" ] || \
+           [ "${{ needs.test-linux-arm64.result }}" != "success" ]; then
           echo "FAIL: One or more platform tests failed"
           exit 1
         fi
