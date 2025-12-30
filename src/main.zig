@@ -14,6 +14,7 @@ const _validator = @import("validator.zig");
 const _fuzz = @import("fuzz.zig");
 const plugin_cli = @import("plugins/cli.zig");
 const _replication_tests = @import("replication/test.zig");
+const _consensus_tests = @import("consensus/index.zig");
 
 test {
     _ = _ref_model_tests;
@@ -22,6 +23,7 @@ test {
     _ = _validator;
     _ = _fuzz;
     _ = _replication_tests;
+    _ = _consensus_tests;
 
     @import("std").testing.refAllDecls(@This());
 }
