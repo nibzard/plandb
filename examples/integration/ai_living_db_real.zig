@@ -163,18 +163,79 @@ const RealLLMIntegration = struct {
     fn callOpenAI(self: *Self, system_prompt: []const u8, user_prompt: []const u8) !ChatResponse {
         _ = system_prompt;
         _ = user_prompt;
-        _ = self.http_client;
 
-        // TODO: Implement actual OpenAI API call
-        // The Zig 0.15.2 HTTP API has changed significantly from earlier versions.
-        // The existing src/llm/providers code also needs migration to the new API.
-        // For now, this stub demonstrates the structure without making actual API calls.
+        const payload = try self.buildChatPayload(system_prompt, user_prompt);
+        defer {
+            if (payload == .object) {
+                var it = payload.object.iterator();
+                while (it.next()) |entry| {
+                    self.allocator.free(entry.key_ptr.*);
+                    if (entry.value_ptr.* == .string) {
+                        self.allocator.free(entry.value_ptr.string);
+                    } else if (entry.value_ptr.* == .array) {
+                        for (entry.value_ptr.array.items) |item| {
+                            if (item == .object) {
+                                var it2 = item.object.iterator();
+                                while (it2.next()) |e| {
+                                    self.allocator.free(e.key_ptr.*);
+                                    if (e.value_ptr.* == .string) self.allocator.free(e.value_ptr.string);
+                                }
+                                item.object.deinit();
+                            }
+                        }
+                        entry.value_ptr.array.deinit();
+                    }
+                }
+                payload.object.deinit();
+            }
+        }
 
-        std.log.err("Real LLM API calls are not yet implemented in this example.", .{});
-        std.log.err("The existing src/llm/providers code needs Zig 0.15.2 migration first.", .{});
-        std.log.err("See: https://github.com/ziglang/zig/issues/18906", .{});
+        const payload_str = try std.json.stringifyAlloc(self.allocator, payload, .{});
+        defer self.allocator.free(payload_str);
 
-        return error.HttpError;
+        const uri = try std.Uri.parse("https://api.openai.com/v1/chat/completions");
+
+        // Prepare extra headers with new Zig 0.15.2 API
+        const auth_header = try std.fmt.allocPrint(self.allocator, "Bearer {s}", .{self.api_key});
+        defer self.allocator.free(auth_header);
+
+        var header_buffer: [2]std.http.Header = undefined;
+        header_buffer[0] = .{ .name = "Content-Type", .value = "application/json" };
+        header_buffer[1] = .{ .name = "Authorization", .value = auth_header };
+
+        var request = try self.http_client.request(.POST, uri, .{
+            .extra_headers = &header_buffer,
+        });
+        defer request.deinit();
+
+        // Write request body
+        try request.writeAll(payload_str);
+
+        // Send request and receive response headers
+        var response = try request.receiveHead(&.{});
+
+        // Check status
+        if (request.response.status != .ok) {
+            var error_buffer: [1024]u8 = undefined;
+            var error_body = std.array_list.Managed(u8).init(self.allocator);
+            defer error_body.deinit();
+            var reader_buffer: [1024]u8 = undefined;
+            const body_reader = try response.reader(&reader_buffer);
+            try body_reader.readAllArrayList(&error_body, error_buffer[0..]);
+            std.log.err("OpenAI API returned status {d}: {s}", .{ @intFromEnum(request.response.status), error_body.items });
+            return error.HttpError;
+        }
+
+        // Read response body
+        var response_body = std.array_list.Managed(u8).init(self.allocator);
+        var reader_buffer: [8192]u8 = undefined;
+        const body_reader = try response.reader(&reader_buffer);
+        try body_reader.readAllArrayList(&response_body, 1024 * 1024);
+
+        const content = try response_body.toOwnedSlice();
+        errdefer self.allocator.free(content);
+
+        return try self.parseChatResponse(content);
     }
 
     fn buildChatPayload(self: *const Self, system_prompt: []const u8, user_prompt: []const u8) !std.json.Value {

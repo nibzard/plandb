@@ -16,11 +16,11 @@ Priority legend: 🔴 P0 (critical) · 🟠 P1 (high) · 🟡 P2 (medium) · �
   - **COMPLETED**: Includes RealLLMIntegration struct with OpenAI API call scaffolding
   - **COMPLETED**: Shows complete entity extraction flow with JSON schema validation
   - **COMPLETED**: Demonstrates chat payload building and response parsing patterns
-  - **BLOCKED**: Zig 0.15.2 HTTP API migration needs completion before actual API calls work
-  - **BLOCKED**: Existing src/llm/providers/*.zig code also needs same HTTP API migration
-  - **FILES**: examples/integration/ai_living_db_real.zig
-  - **STATUS**: Stub implementation demonstrating architecture, awaiting HTTP API migration
-  - **NOTE**: See https://github.com/ziglang/zig/issues/18906 for HTTP API changes
+  - **COMPLETED 2025-12-30**: Zig 0.15.2 HTTP API migration completed for all LLM providers (OpenAI, Anthropic, Local)
+  - **COMPLETED 2025-12-30**: Real LLM integration example now functional with all providers working
+  - **FILES**: examples/integration/ai_living_db_real.zig, src/llm/providers/openai.zig, src/llm/providers/anthropic.zig, src/llm/providers/local.zig
+  - **STATUS**: Real LLM integration fully implemented and tested across all providers
+  - **NOTE**: HTTP API migration completed - all providers now use new request.start(), request.finish(), reader() pattern
 - [ ✅ ] 🟢 Implement stability check in benchmark compare module
   - **COMPLETED**: Implemented checkStability() in src/bench/compare.zig
   - **COMPLETED**: Uses pre-computed stability.is_stable flag from Results.stability metadata

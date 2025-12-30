@@ -313,34 +313,40 @@ pub const AnthropicProvider = struct {
 
         const uri = try std.Uri.parse(url);
 
-        var headers = std.array_list.Managed(std.http.Header).init(allocator);
-        defer {
-            for (headers.items) |h| {
-                allocator.free(@constCast(h.name));
-                if (h.value.len > 0) allocator.free(@constCast(h.value));
-            }
-            headers.deinit();
-        }
+        // Prepare extra headers with new Zig 0.15.2 API
+        var header_buffer: [3]std.http.Header = undefined;
+        header_buffer[0] = .{ .name = "Content-Type", .value = "application/json" };
+        header_buffer[1] = .{ .name = "x-api-key", .value = self.api_key };
+        header_buffer[2] = .{ .name = "anthropic-version", .value = "2023-06-01" };
 
-        try headers.append(.{ .name = "Content-Type", .value = try allocator.dupe(u8, "application/json") });
-        try headers.append(.{ .name = "x-api-key", .value = self.api_key });
-        try headers.append(.{ .name = "anthropic-version", .value = try allocator.dupe(u8, "2023-06-01") });
-
-        var request = try self.http_client.request(.POST, uri, headers.items, .{});
+        var request = try self.http_client.request(.POST, uri, .{
+            .extra_headers = &header_buffer,
+        });
         defer request.deinit();
 
-        request.transfer_encoding = .{ .content_length = payload_str.len };
-        try request.start();
+        // Write request body
         try request.writeAll(payload_str);
-        try request.finish();
 
-        var response_body = std.array_list.Managed(u8).init(allocator);
-        try request.reader().readAllArrayList(&response_body, 1024 * 1024);
+        // Send request and receive response headers
+        var response = try request.receiveHead(&.{});
 
+        // Check status
         if (request.response.status != .ok) {
-            std.log.err("Anthropic API returned status {d}: {s}", .{ @intFromEnum(request.response.status), response_body.items });
+            // Read error body
+            var error_buffer: [1024]u8 = undefined;
+            var error_body = std.array_list.Managed(u8).init(allocator);
+            var reader_buffer: [1024]u8 = undefined;
+            const body_reader = try response.reader(&reader_buffer).readAllArrayList(&error_body, error_buffer[0..]);
+            _ = body_reader;
+            std.log.err("Anthropic API returned status {d}: {s}", .{ @intFromEnum(request.response.status), error_body.items });
             return error.HttpError;
         }
+
+        // Read response body
+        var response_body = std.array_list.Managed(u8).init(allocator);
+        var reader_buffer: [8192]u8 = undefined;
+        const body_reader = try response.reader(&reader_buffer);
+        try body_reader.readAllArrayList(&response_body, 1024 * 1024);
 
         return response_body.toOwnedSlice();
     }
