@@ -466,6 +466,7 @@ pub const LoadTestHarness = struct {
         switch (builtin.os.tag) {
             .linux => return getCpuPercentLinux(),
             .macos => return getCpuPercentMacOs(),
+            .windows => return getCpuPercentWindows(),
             else => return 50.0, // Placeholder for unsupported platforms
         }
     }
@@ -477,6 +478,7 @@ pub const LoadTestHarness = struct {
         switch (builtin.os.tag) {
             .linux => return getMemoryInfoLinux(),
             .macos => return getMemoryInfoMacOs(),
+            .windows => return getMemoryInfoWindows(),
             else => return MemoryInfo{ .gb = 4.0, .percent = 25.0 }, // Placeholder
         }
     }
@@ -494,6 +496,7 @@ pub const LoadTestHarness = struct {
         switch (builtin.os.tag) {
             .linux => return getOpenFileDescriptorsLinux(),
             .macos => return getOpenFileDescriptorsMacOs(),
+            .windows => return getOpenFileDescriptorsWindows(),
             else => return 100, // Placeholder
         }
     }
@@ -653,6 +656,69 @@ fn getOpenFileDescriptorsMacOs() u32 {
     // This is a simplified implementation - returns a reasonable placeholder
     // A full implementation would use libproc's proc_pidinfo()
     // The number is not critical for benchmark correctness, just monitoring
+    return 100;
+}
+
+fn getCpuPercentWindows() !f64 {
+    // Windows CPU detection using GetSystemTimes
+    // This provides a snapshot-based CPU percentage estimate
+    // For accurate time-based percentages, we'd need to sample twice and calculate delta
+
+    const windows = std.os.windows;
+    const kernel32 = windows.kernel32;
+
+    // Get system times
+    var idle_time: windows.FILETIME = undefined;
+    var kernel_time: windows.FILETIME = undefined;
+    var user_time: windows.FILETIME = undefined;
+
+    kernel32.GetSystemTimes(
+        &idle_time,
+        &kernel_time,
+        &user_time,
+    );
+
+    // Convert FILETIME to u64 (100-nanosecond intervals)
+    const idle = (@as(u64, idle_time.dwHighDateTime) << 32) | idle_time.dwLowDateTime;
+    const kernel = (@as(u64, kernel_time.dwHighDateTime) << 32) | kernel_time.dwLowDateTime;
+    const user = (@as(u64, user_time.dwHighDateTime) << 32) | user_time.dwLowDateTime;
+
+    // Note: kernel time includes idle time on Windows
+    const total = kernel + user;
+    const busy = total - idle;
+
+    if (total == 0) return 0.0;
+    return 100.0 * @as(f64, @floatFromInt(busy)) / @as(f64, @floatFromInt(total));
+}
+
+fn getMemoryInfoWindows() !MemoryInfo {
+    // Windows memory detection using GlobalMemoryStatusEx
+    const windows = std.os.windows;
+    const kernel32 = windows.kernel32;
+
+    var mem_status: windows.MEMORYSTATUSEX = undefined;
+    mem_status.dwLength = @sizeOf(windows.MEMORYSTATUSEX);
+
+    if (kernel32.GlobalMemoryStatusEx(&mem_status) == 0) {
+        return MemoryInfo{ .gb = 4.0, .percent = 50.0 };
+    }
+
+    // Calculate used memory in GB
+    const total_bytes = mem_status.ullTotalPhys;
+    const available_bytes = mem_status.ullAvailPhys;
+    const used_bytes = total_bytes - available_bytes;
+
+    const used_gb = @as(f64, @floatFromInt(used_bytes)) / (1024.0 * 1024.0 * 1024.0);
+    const percent = mem_status.dwMemoryLoad; // Already a percentage (0-100)
+
+    return MemoryInfo{ .gb = used_gb, .percent = @as(f64, @floatFromInt(percent)) };
+}
+
+fn getOpenFileDescriptorsWindows() u32 {
+    // Windows doesn't have the same concept of file descriptors as Unix
+    // Handles are the equivalent, but enumerating them requires complex OS calls
+    // For benchmark monitoring purposes, we return a reasonable placeholder
+    // A full implementation would use GetProcessHandleCount or NtQuerySystemInformation
     return 100;
 }
 

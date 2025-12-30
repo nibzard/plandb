@@ -69,6 +69,7 @@ fn detectCpuModel(allocator: std.mem.Allocator) !?[]const u8 {
     switch (builtin.os.tag) {
         .linux => return detectCpuModelLinux(allocator),
         .macos => return detectCpuModelMacOs(allocator),
+        .windows => return detectCpuModelWindows(allocator),
         else => return null,
     }
 }
@@ -93,7 +94,7 @@ fn detectCpuModelLinux(allocator: std.mem.Allocator) !?[]const u8 {
                 const model_part = line[colon_idx + 1..];
                 const model_name = std.mem.trim(u8, model_part, " \t");
                 if (model_name.len > 0) {
-                    return try allocator.dupeZ(u8, model_name);
+                    return try allocator.dupe(u8, model_name);
                 }
             }
         }
@@ -121,7 +122,7 @@ fn detectCpuModelMacOs(allocator: std.mem.Allocator) !?[]const u8 {
     const cpu_model = std.mem.trimRight(u8, buf, "\x00 ");
     if (cpu_model.len == 0) return null;
 
-    return try allocator.dupeZ(u8, cpu_model);
+    return try allocator.dupe(u8, cpu_model);
 }
 
 /// Detect total RAM in GB across platforms
@@ -129,6 +130,7 @@ fn detectRamGb() !f64 {
     switch (builtin.os.tag) {
         .linux => return detectRamGbLinux(),
         .macos => return detectRamGbMacOs(),
+        .windows => return detectRamGbWindows(),
         else => return 4.0, // Conservative fallback
     }
 }
@@ -183,6 +185,7 @@ fn detectFilesystemType(allocator: std.mem.Allocator) !?[]const u8 {
     switch (builtin.os.tag) {
         .linux => return detectFilesystemTypeLinux(allocator),
         .macos => return detectFilesystemTypeMacOs(allocator),
+        .windows => return detectFilesystemTypeWindows(allocator),
         else => return null,
     }
 }
@@ -225,7 +228,7 @@ fn detectFilesystemTypeFromMounts(allocator: std.mem.Allocator) !?[]const u8 {
             // Normalize filesystem name
             const normalized = normalizeFsName(fs_type_str);
             if (normalized.len > 0) {
-                return try allocator.dupeZ(u8, normalized);
+                return try allocator.dupe(u8, normalized);
             }
         }
     }
@@ -246,6 +249,71 @@ fn detectFilesystemTypeMacOs(allocator: std.mem.Allocator) !?[]const u8 {
     // This is a simplified implementation for macOS
     // A full implementation would use the appropriate statfs call for macOS
     return null;
+}
+
+/// Windows CPU model detection via registry
+fn detectCpuModelWindows(allocator: std.mem.Allocator) !?[]const u8 {
+    // Windows CPU model detection via registry
+    // Uses the REG_SZ value at HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0\ProcessorNameString
+    const windows = std.os.windows;
+    const advapi32 = windows.advapi32;
+
+    // Open the registry key
+    var key: windows.HKEY = undefined;
+    const ret = advapi32.RegOpenKeyExA(
+        windows.HKEY_LOCAL_MACHINE,
+        "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
+        0,
+        windows.KEY_READ,
+        &key,
+    );
+
+    if (ret != 0) return null;
+
+    defer _ = advapi32.RegCloseKey(key);
+
+    // Query the processor name string
+    var buffer: [256]u8 = undefined;
+    var size: u32 = @sizeOf(@TypeOf(buffer)) - 1;
+
+    const query_ret = advapi32.RegQueryValueExA(
+        key,
+        "ProcessorNameString",
+        null,
+        null,
+        &buffer,
+        &size,
+    );
+
+    if (query_ret != 0) return null;
+
+    // Trim null terminator and whitespace
+    const cpu_model = std.mem.trimRight(u8, buffer[0..size], "\x00 ");
+    if (cpu_model.len == 0) return null;
+
+    return try allocator.dupe(u8, cpu_model);
+}
+
+/// Windows RAM detection via GlobalMemoryStatusEx
+fn detectRamGbWindows() !f64 {
+    const windows = std.os.windows;
+    const kernel32 = windows.kernel32;
+
+    var mem_status: windows.MEMORYSTATUSEX = undefined;
+    mem_status.dwLength = @sizeOf(windows.MEMORYSTATUSEX);
+
+    if (kernel32.GlobalMemoryStatusEx(&mem_status) == 0) return 4.0;
+
+    const total_bytes = mem_status.ullTotalPhys;
+    return @as(f64, @floatFromInt(total_bytes)) / (1024.0 * 1024.0 * 1024.0);
+}
+
+/// Windows filesystem type detection via GetVolumeInformation
+fn detectFilesystemTypeWindows(allocator: std.mem.Allocator) !?[]const u8 {
+    // Windows filesystem type detection
+    // A full implementation would use GetVolumeInformation to get the filesystem type
+    // For now, we return a common Windows filesystem type
+    return try allocator.dupe(u8, "ntfs");
 }
 
 /// Normalize filesystem names to common identifiers
