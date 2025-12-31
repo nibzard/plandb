@@ -20,6 +20,7 @@ pub const raft = @import("raft.zig");
 pub const rpc = @import("rpc.zig");
 pub const config = @import("config.zig");
 const _test = @import("test.zig");
+const _hardening = @import("hardening.zig");
 
 // Re-export main types
 pub const Raft = raft.Raft;
