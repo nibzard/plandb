@@ -28,7 +28,15 @@ pub const LogEntry = struct {
 
     pub const Command = union(enum) {
         normal: txn.CommitRecord,
-        // TODO: config: ClusterConfig, // For Phase 4: Configuration Changes
+        config: ConfigChange,
+    };
+
+    /// Configuration change entry
+    pub const ConfigChange = struct {
+        old_nodes: []const u64,
+        new_nodes: []const u64,
+        // true = joint consensus, false = single config
+        is_joint: bool,
     };
 
     /// Create log entry from commit record
@@ -37,6 +45,19 @@ pub const LogEntry = struct {
             .term = term,
             .index = index,
             .command = .{ .normal = record },
+        };
+    }
+
+    /// Create log entry from config change
+    pub fn fromConfigChange(term: u64, index: u64, old_nodes: []const u64, new_nodes: []const u64, is_joint: bool) LogEntry {
+        return .{
+            .term = term,
+            .index = index,
+            .command = .{ .config = .{
+                .old_nodes = old_nodes,
+                .new_nodes = new_nodes,
+                .is_joint = is_joint,
+            } },
         };
     }
 };
@@ -151,6 +172,12 @@ pub const Raft = struct {
     // Snapshot manager (Phase 3)
     snapshot_manager: snapshot_mod.SnapshotManager,
 
+    // Cluster configuration (Phase 4)
+    cluster_config: config.ClusterConfig,
+
+    // Pending config change (if any)
+    pending_config_change: ?LogEntry.ConfigChange = null,
+
     // RPC handler callbacks
     on_send_request_vote: ?*const fn (peer_id: u64, args: RequestVoteArgs) anyerror!RequestVoteReply = null,
     on_send_append_entries: ?*const fn (peer_id: u64, args: AppendEntriesArgs) anyerror!AppendEntriesReply = null,
@@ -158,6 +185,7 @@ pub const Raft = struct {
     on_apply_entry: ?*const fn (entry: LogEntry) anyerror!void = null,
     on_state_change: ?*const fn (old_role: RaftState, new_role: RaftState) void = null,
     on_install_snapshot: ?*const fn (snap: snapshot_mod.Snapshot) anyerror!void = null,
+    on_config_change: ?*const fn (old_nodes: []const u64, new_nodes: []const u64) void = null,
 
     const Self = @This();
 
@@ -167,6 +195,13 @@ pub const Raft = struct {
 
         var rng = std.Random.DefaultPrng.init(@intCast(std.time.nanoTimestamp()));
 
+        // Initialize cluster config with current nodes
+        const nodes = try cfg.getClusterNodes(allocator);
+        defer allocator.free(nodes);
+
+        const cluster_cfg = try config.ClusterConfig.initSingle(allocator, nodes);
+        errdefer cluster_cfg.deinit();
+
         return Self{
             .allocator = allocator,
             .config = cfg,
@@ -175,6 +210,7 @@ pub const Raft = struct {
             .rng = rng,
             .election_deadline_ms = timestampMs() + config.randomElectionTimeout(cfg, &rng),
             .snapshot_manager = snapshot_mod.SnapshotManager.init(allocator),
+            .cluster_config = cluster_cfg,
         };
     }
 
@@ -186,6 +222,7 @@ pub const Raft = struct {
         self.persistent.deinit();
         self.votes_received.deinit();
         self.snapshot_manager.deinit();
+        self.cluster_config.deinit();
     }
 
     /// Reset election timeout with randomized value
@@ -356,11 +393,15 @@ pub const Raft = struct {
                 if (match_idx >= entry.index) replicated_count += 1;
             }
 
-            // Commit if majority has replicated
-            if (replicated_count >= self.config.majority()) {
+            // Commit if majority has replicated (use cluster config for joint consensus)
+            const majority = self.cluster_config.majority();
+            if (replicated_count >= majority) {
                 leader_state.commit_index = entry.index;
             }
         }
+
+        // Check for config entry commitment (Phase 4)
+        try self.checkConfigCommitment();
 
         // Apply committed entries
         try self.applyCommittedEntries();
@@ -381,6 +422,11 @@ pub const Raft = struct {
         while (last_applied.* < commit_idx) : (last_applied.* += 1) {
             const index = last_applied.* + 1;
             const entry = self.persistent.getEntry(index) orelse continue;
+
+            // Apply config changes immediately on followers
+            if (entry.command == .config and self.role != .leader) {
+                try self.applyConfigChange(entry);
+            }
 
             // Apply entry
             if (self.on_apply_entry) |cb| {
@@ -637,6 +683,192 @@ pub const Raft = struct {
             .term = self.persistent.current_term,
             .success = true,
         };
+    }
+
+    // ==================== Phase 4: Configuration Changes ====================
+
+    /// Add node to cluster using joint consensus (leader only)
+    pub fn addNode(self: *Self, node_id: u64, address: []const u8) !void {
+        _ = address; // Will be used for peer discovery in production
+        if (self.role != .leader) return error.NotLeader;
+
+        // Check if node already exists
+        if (self.cluster_config.contains(node_id)) return error.NodeAlreadyExists;
+
+        // Check for pending config change
+        if (self.pending_config_change != null) return error.ConfigChangeInProgress;
+
+        const current_nodes = self.cluster_config.getNodes();
+
+        // Create new node list with added node
+        const new_nodes = try self.allocator.alloc(u64, current_nodes.len + 1);
+        defer self.allocator.free(new_nodes);
+
+        for (current_nodes, 0..) |node, i| {
+            new_nodes[i] = node;
+        }
+        new_nodes[current_nodes.len] = node_id;
+
+        // Phase 1: Create joint consensus entry C_old,new
+        const index = self.persistent.lastLogIndex() + 1;
+        const joint_entry = LogEntry.fromConfigChange(
+            self.persistent.current_term,
+            index,
+            current_nodes,
+            new_nodes,
+            true, // is_joint
+        );
+        try self.persistent.appendEntry(joint_entry);
+
+        // Set pending config change
+        self.pending_config_change = .{
+            .old_nodes = try self.allocator.dupe(u64, current_nodes),
+            .new_nodes = try self.allocator.dupe(u64, new_nodes),
+            .is_joint = true,
+        };
+    }
+
+    /// Remove node from cluster using joint consensus (leader only)
+    pub fn removeNode(self: *Self, node_id: u64) !void {
+        if (self.role != .leader) return error.NotLeader;
+
+        // Check if node exists
+        if (!self.cluster_config.contains(node_id)) return error.NodeNotFound;
+
+        // Cannot remove leader during config change
+        if (node_id == self.config.node_id) return error.CannotRemoveLeader;
+
+        // Check for pending config change
+        if (self.pending_config_change != null) return error.ConfigChangeInProgress;
+
+        const current_nodes = self.cluster_config.getNodes();
+
+        // Create new node list without the removed node
+        const new_nodes = try self.allocator.alloc(u64, current_nodes.len - 1);
+        defer self.allocator.free(new_nodes);
+
+        var new_idx: usize = 0;
+        for (current_nodes) |node| {
+            if (node != node_id) {
+                new_nodes[new_idx] = node;
+                new_idx += 1;
+            }
+        }
+
+        // Phase 1: Create joint consensus entry C_old,new
+        const index = self.persistent.lastLogIndex() + 1;
+        const joint_entry = LogEntry.fromConfigChange(
+            self.persistent.current_term,
+            index,
+            current_nodes,
+            new_nodes,
+            true, // is_joint
+        );
+        try self.persistent.appendEntry(joint_entry);
+
+        // Set pending config change
+        self.pending_config_change = .{
+            .old_nodes = try self.allocator.dupe(u64, current_nodes),
+            .new_nodes = try self.allocator.dupe(u64, new_nodes),
+            .is_joint = true,
+        };
+    }
+
+    /// Complete joint consensus and transition to new config (leader only)
+    pub fn completeConfigChange(self: *Self) !void {
+        if (self.role != .leader) return error.NotLeader;
+        const pending = self.pending_config_change orelse return error.NoPendingConfigChange;
+
+        // Phase 2: Create single config entry C_new
+        const index = self.persistent.lastLogIndex() + 1;
+        const new_entry = LogEntry.fromConfigChange(
+            self.persistent.current_term,
+            index,
+            pending.new_nodes,
+            pending.new_nodes,
+            false, // not joint - final config
+        );
+        try self.persistent.appendEntry(new_entry);
+
+        // Update cluster config
+        try self.cluster_config.transitionTo(pending.new_nodes);
+
+        // Clear pending config change
+        self.allocator.free(pending.old_nodes);
+        self.allocator.free(pending.new_nodes);
+        self.pending_config_change = null;
+
+        // Notify callback
+        if (self.on_config_change) |cb| {
+            cb(pending.old_nodes, pending.new_nodes);
+        }
+    }
+
+    /// Apply config change entry (called when config entry is committed)
+    pub fn applyConfigChange(self: *Self, entry: LogEntry) !void {
+        const config_change = entry.command.config;
+
+        if (config_change.is_joint) {
+            // Phase 1: Transition to joint consensus
+            self.cluster_config.deinit();
+            self.cluster_config = try config.ClusterConfig.initJoint(
+                self.allocator,
+                config_change.old_nodes,
+                config_change.new_nodes,
+            );
+        } else {
+            // Phase 2: Transition to single config
+            try self.cluster_config.transitionTo(config_change.new_nodes);
+
+            // If we're leader with pending config, clear it
+            if (self.pending_config_change != null) {
+                const pending = self.pending_config_change.?;
+                self.allocator.free(pending.old_nodes);
+                self.allocator.free(pending.new_nodes);
+                self.pending_config_change = null;
+            }
+
+            // Notify callback
+            if (self.on_config_change) |cb| {
+                cb(config_change.old_nodes, config_change.new_nodes);
+            }
+        }
+    }
+
+    /// Check if config entry is committed and can be applied
+    pub fn checkConfigCommitment(self: *Self) !void {
+        if (self.role != .leader) return;
+        const leader_state = &self.leader_state.?;
+
+        // Find first uncommitted config entry
+        for (self.persistent.log.items) |entry| {
+            if (entry.index <= leader_state.commit_index) {
+                // Already committed
+                continue;
+            }
+
+            if (entry.command == .config) {
+                // Check if config is committed
+                var replicated_count: u64 = 1; // Count leader
+                for (leader_state.match_index.values()) |match_idx| {
+                    if (match_idx >= entry.index) replicated_count += 1;
+                }
+
+                if (replicated_count >= self.cluster_config.majority()) {
+                    // Config is committed, update commit index
+                    leader_state.commit_index = entry.index;
+
+                    // Apply config change
+                    try self.applyConfigChange(entry);
+
+                    // If this was joint consensus, trigger completion
+                    if (entry.command.config.is_joint) {
+                        try self.completeConfigChange();
+                    }
+                }
+                break; // Only handle one config change at a time
+            }
+        }
     }
 
     // ==================== Phase 3: Snapshotting ====================

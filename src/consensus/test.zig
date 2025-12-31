@@ -990,3 +990,445 @@ test "Raft Phase 3 - snapshot covers index check" {
     try std.testing.expect(!snap.covers(101));
     try std.testing.expect(!snap.covers(200));
 }
+
+// ==================== Phase 4: Configuration Changes Tests ====================
+
+test "Raft Phase 4 - ClusterConfig single initialization" {
+    const allocator = std.testing.allocator;
+    const nodes = [_]u64{ 1, 2, 3 };
+
+    var cluster_cfg = try config.ClusterConfig.initSingle(allocator, &nodes);
+    defer cluster_cfg.deinit();
+
+    try std.testing.expectEqual(config.ConfigState.single, cluster_cfg.state);
+    try std.testing.expect(cluster_cfg.contains(1));
+    try std.testing.expect(cluster_cfg.contains(2));
+    try std.testing.expect(cluster_cfg.contains(3));
+    try std.testing.expect(!cluster_cfg.contains(4));
+    try std.testing.expectEqual(@as(u64, 2), cluster_cfg.majority());
+}
+
+test "Raft Phase 4 - ClusterConfig joint consensus" {
+    const allocator = std.testing.allocator;
+    const old_nodes = [_]u64{ 1, 2, 3 };
+    const new_nodes = [_]u64{ 1, 2, 3, 4 };
+
+    var joint_config = try config.ClusterConfig.initJoint(allocator, &old_nodes, &new_nodes);
+    defer joint_config.deinit();
+
+    try std.testing.expectEqual(config.ConfigState.joint, joint_config.state);
+    try std.testing.expect(joint_config.contains(4));
+    // Joint consensus needs majority from both configs
+    try std.testing.expectEqual(@as(u64, 3), joint_config.majority());
+}
+
+test "Raft Phase 4 - ClusterConfig transition" {
+    const allocator = std.testing.allocator;
+    const nodes = [_]u64{ 1, 2, 3 };
+    var cluster_cfg = try config.ClusterConfig.initSingle(allocator, &nodes);
+
+    const new_nodes = [_]u64{ 1, 2, 3, 4, 5 };
+    try cluster_cfg.transitionTo(&new_nodes);
+    defer cluster_cfg.deinit();
+
+    try std.testing.expectEqual(config.ConfigState.single, cluster_cfg.state);
+    try std.testing.expect(cluster_cfg.contains(5));
+    try std.testing.expectEqual(@as(u64, 3), cluster_cfg.majority());
+}
+
+test "Raft Phase 4 - addNode to 3-node cluster" {
+    const allocator = std.testing.allocator;
+    const peers = [_]config.NodeInfo{
+        config.NodeInfo.init(2, "node2:7234"),
+        config.NodeInfo.init(3, "node3:7234"),
+    };
+
+    const cfg = config.RaftConfig{
+        .node_id = 1,
+        .peers = &peers,
+        .rpc_listen_address = "0.0.0.0:7234",
+    };
+
+    var raft_instance = try raft.Raft.init(allocator, cfg);
+    defer raft_instance.deinit();
+
+    // Become leader
+    try raft_instance.becomeCandidate();
+    try raft_instance.becomeLeader();
+
+    // Initial config should have 3 nodes
+    try std.testing.expectEqual(@as(usize, 3), raft_instance.cluster_config.getNodes().len);
+
+    // Add node 4
+    try raft_instance.addNode(4, "node4:7234");
+
+    // Pending config change should be set
+    try std.testing.expect(raft_instance.pending_config_change != null);
+
+    // Log should contain joint consensus entry
+    try std.testing.expectEqual(@as(usize, 1), raft_instance.persistent.log.items.len);
+    const entry = raft_instance.persistent.log.items[0];
+    try std.testing.expectEqual(@as(usize, 1), entry.index);
+    try std.testing.expect(entry.command == .config);
+    try std.testing.expect(entry.command.config.is_joint);
+}
+
+test "Raft Phase 4 - removeNode from 5-node cluster" {
+    const allocator = std.testing.allocator;
+    const peers = [_]config.NodeInfo{
+        config.NodeInfo.init(2, "node2:7234"),
+        config.NodeInfo.init(3, "node3:7234"),
+        config.NodeInfo.init(4, "node4:7234"),
+        config.NodeInfo.init(5, "node5:7234"),
+    };
+
+    const cfg = config.RaftConfig{
+        .node_id = 1,
+        .peers = &peers,
+        .rpc_listen_address = "0.0.0.0:7234",
+    };
+
+    var raft_instance = try raft.Raft.init(allocator, cfg);
+    defer raft_instance.deinit();
+
+    // Become leader
+    try raft_instance.becomeCandidate();
+    try raft_instance.becomeLeader();
+
+    // Initial config should have 5 nodes
+    try std.testing.expectEqual(@as(usize, 5), raft_instance.cluster_config.getNodes().len);
+
+    // Remove node 5
+    try raft_instance.removeNode(5);
+
+    // Pending config change should be set
+    try std.testing.expect(raft_instance.pending_config_change != null);
+
+    // Log should contain joint consensus entry
+    try std.testing.expectEqual(@as(usize, 1), raft_instance.persistent.log.items.len);
+    const entry = raft_instance.persistent.log.items[0];
+    try std.testing.expect(entry.command == .config);
+    try std.testing.expect(entry.command.config.is_joint);
+
+    // New nodes should not include node 5
+    const new_nodes = entry.command.config.new_nodes;
+    try std.testing.expectEqual(@as(usize, 4), new_nodes.len);
+    try std.testing.expect(!std.mem.contains(u64, new_nodes, &[_]u64{5}));
+}
+
+test "Raft Phase 4 - addNode fails if not leader" {
+    const allocator = std.testing.allocator;
+    const peers = [_]config.NodeInfo{
+        config.NodeInfo.init(2, "node2:7234"),
+        config.NodeInfo.init(3, "node3:7234"),
+    };
+
+    const cfg = config.RaftConfig{
+        .node_id = 1,
+        .peers = &peers,
+        .rpc_listen_address = "0.0.0.0:7234",
+    };
+
+    var raft_instance = try raft.Raft.init(allocator, cfg);
+    defer raft_instance.deinit();
+
+    // Follower cannot add node
+    try std.testing.expectError(error.NotLeader, raft_instance.addNode(4, "node4:7234"));
+}
+
+test "Raft Phase 4 - removeNode fails if not leader" {
+    const allocator = std.testing.allocator;
+    const peers = [_]config.NodeInfo{
+        config.NodeInfo.init(2, "node2:7234"),
+        config.NodeInfo.init(3, "node3:7234"),
+    };
+
+    const cfg = config.RaftConfig{
+        .node_id = 1,
+        .peers = &peers,
+        .rpc_listen_address = "0.0.0.0:7234",
+    };
+
+    var raft_instance = try raft.Raft.init(allocator, cfg);
+    defer raft_instance.deinit();
+
+    // Follower cannot remove node
+    try std.testing.expectError(error.NotLeader, raft_instance.removeNode(2));
+}
+
+test "Raft Phase 4 - addNode fails if node exists" {
+    const allocator = std.testing.allocator;
+    const peers = [_]config.NodeInfo{
+        config.NodeInfo.init(2, "node2:7234"),
+        config.NodeInfo.init(3, "node3:7234"),
+    };
+
+    const cfg = config.RaftConfig{
+        .node_id = 1,
+        .peers = &peers,
+        .rpc_listen_address = "0.0.0.0:7234",
+    };
+
+    var raft_instance = try raft.Raft.init(allocator, cfg);
+    defer raft_instance.deinit();
+
+    // Become leader
+    try raft_instance.becomeCandidate();
+    try raft_instance.becomeLeader();
+
+    // Cannot add existing node
+    try std.testing.expectError(error.NodeAlreadyExists, raft_instance.addNode(2, "node2:7234"));
+}
+
+test "Raft Phase 4 - removeNode fails if node not found" {
+    const allocator = std.testing.allocator;
+    const peers = [_]config.NodeInfo{
+        config.NodeInfo.init(2, "node2:7234"),
+        config.NodeInfo.init(3, "node3:7234"),
+    };
+
+    const cfg = config.RaftConfig{
+        .node_id = 1,
+        .peers = &peers,
+        .rpc_listen_address = "0.0.0.0:7234",
+    };
+
+    var raft_instance = try raft.Raft.init(allocator, cfg);
+    defer raft_instance.deinit();
+
+    // Become leader
+    try raft_instance.becomeCandidate();
+    try raft_instance.becomeLeader();
+
+    // Cannot remove non-existent node
+    try std.testing.expectError(error.NodeNotFound, raft_instance.removeNode(99));
+}
+
+test "Raft Phase 4 - config change in progress prevents another" {
+    const allocator = std.testing.allocator;
+    const peers = [_]config.NodeInfo{
+        config.NodeInfo.init(2, "node2:7234"),
+        config.NodeInfo.init(3, "node3:7234"),
+    };
+
+    const cfg = config.RaftConfig{
+        .node_id = 1,
+        .peers = &peers,
+        .rpc_listen_address = "0.0.0.0:7234",
+    };
+
+    var raft_instance = try raft.Raft.init(allocator, cfg);
+    defer raft_instance.deinit();
+
+    // Become leader
+    try raft_instance.becomeCandidate();
+    try raft_instance.becomeLeader();
+
+    // Start config change
+    try raft_instance.addNode(4, "node4:7234");
+
+    // Cannot start another config change
+    try std.testing.expectError(error.ConfigChangeInProgress, raft_instance.addNode(5, "node5:7234"));
+    try std.testing.expectError(error.ConfigChangeInProgress, raft_instance.removeNode(2));
+}
+
+test "Raft Phase 4 - applyConfigChange joint consensus" {
+    const allocator = std.testing.allocator;
+    const peers = [_]config.NodeInfo{
+        config.NodeInfo.init(2, "node2:7234"),
+        config.NodeInfo.init(3, "node3:7234"),
+    };
+
+    const cfg = config.RaftConfig{
+        .node_id = 1,
+        .peers = &peers,
+        .rpc_listen_address = "0.0.0.0:7234",
+    };
+
+    var raft_instance = try raft.Raft.init(allocator, cfg);
+    defer raft_instance.deinit();
+
+    // Create joint consensus entry
+    const old_nodes = [_]u64{ 1, 2, 3 };
+    const new_nodes = [_]u64{ 1, 2, 3, 4 };
+    const entry = raft.LogEntry.fromConfigChange(1, 1, &old_nodes, &new_nodes, true);
+
+    // Apply config change
+    try raft_instance.applyConfigChange(entry);
+
+    // Cluster config should be in joint state
+    try std.testing.expectEqual(config.ConfigState.joint, raft_instance.cluster_config.state);
+    try std.testing.expect(raft_instance.cluster_config.contains(4));
+}
+
+test "Raft Phase 4 - applyConfigChange single config" {
+    const allocator = std.testing.allocator;
+    const peers = [_]config.NodeInfo{
+        config.NodeInfo.init(2, "node2:7234"),
+        config.NodeInfo.init(3, "node3:7234"),
+    };
+
+    const cfg = config.RaftConfig{
+        .node_id = 1,
+        .peers = &peers,
+        .rpc_listen_address = "0.0.0.0:7234",
+    };
+
+    var raft_instance = try raft.Raft.init(allocator, cfg);
+    defer raft_instance.deinit();
+
+    // First transition to joint
+    const old_nodes = [_]u64{ 1, 2, 3 };
+    const new_nodes = [_]u64{ 1, 2, 3, 4 };
+    const joint_entry = raft.LogEntry.fromConfigChange(1, 1, &old_nodes, &new_nodes, true);
+    try raft_instance.applyConfigChange(joint_entry);
+
+    // Now apply single config
+    const final_entry = raft.LogEntry.fromConfigChange(1, 2, &new_nodes, &new_nodes, false);
+    try raft_instance.applyConfigChange(final_entry);
+
+    // Cluster config should be in single state with new nodes
+    try std.testing.expectEqual(config.ConfigState.single, raft_instance.cluster_config.state);
+    try std.testing.expectEqual(@as(usize, 4), raft_instance.cluster_config.getNodes().len);
+    try std.testing.expect(raft_instance.cluster_config.contains(4));
+}
+
+test "Raft Phase 4 - completeConfigChange" {
+    const allocator = std.testing.allocator;
+    const peers = [_]config.NodeInfo{
+        config.NodeInfo.init(2, "node2:7234"),
+        config.NodeInfo.init(3, "node3:7234"),
+    };
+
+    const cfg = config.RaftConfig{
+        .node_id = 1,
+        .peers = &peers,
+        .rpc_listen_address = "0.0.0.0:7234",
+    };
+
+    var raft_instance = try raft.Raft.init(allocator, cfg);
+    defer raft_instance.deinit();
+
+    // Become leader
+    try raft_instance.becomeCandidate();
+    try raft_instance.becomeLeader();
+
+    // Start config change
+    try raft_instance.addNode(4, "node4:7234");
+
+    // Complete config change
+    try raft_instance.completeConfigChange();
+
+    // Cluster config should be updated
+    try std.testing.expectEqual(config.ConfigState.single, raft_instance.cluster_config.state);
+    try std.testing.expectEqual(@as(usize, 4), raft_instance.cluster_config.getNodes().len);
+    try std.testing.expect(raft_instance.cluster_config.contains(4));
+
+    // Pending config change should be cleared
+    try std.testing.expect(raft_instance.pending_config_change == null);
+
+    // Log should have 2 entries (joint + final)
+    try std.testing.expectEqual(@as(usize, 2), raft_instance.persistent.log.items.len);
+}
+
+test "Raft Phase 4 - LogEntry fromConfigChange" {
+    const old_nodes = [_]u64{ 1, 2, 3 };
+    const new_nodes = [_]u64{ 1, 2, 3, 4 };
+
+    const entry = raft.LogEntry.fromConfigChange(5, 42, &old_nodes, &new_nodes, true);
+
+    try std.testing.expectEqual(@as(u64, 5), entry.term);
+    try std.testing.expectEqual(@as(u64, 42), entry.index);
+    try std.testing.expect(entry.command == .config);
+    try std.testing.expect(entry.command.config.is_joint);
+    try std.testing.expectEqual(@as(usize, 3), entry.command.config.old_nodes.len);
+    try std.testing.expectEqual(@as(usize, 4), entry.command.config.new_nodes.len);
+}
+
+test "Raft Phase 4 - cluster majority with joint consensus" {
+    const allocator = std.testing.allocator;
+    const peers = [_]config.NodeInfo{
+        config.NodeInfo.init(2, "node2:7234"),
+        config.NodeInfo.init(3, "node3:7234"),
+    };
+
+    const cfg = config.RaftConfig{
+        .node_id = 1,
+        .peers = &peers,
+        .rpc_listen_address = "0.0.0.0:7234",
+    };
+
+    var raft_instance = try raft.Raft.init(allocator, cfg);
+    defer raft_instance.deinit();
+
+    // Initial single config: 3 nodes, majority 2
+    try std.testing.expectEqual(@as(u64, 2), raft_instance.cluster_config.majority());
+
+    // Transition to joint: C_3 -> C_4
+    const old_nodes = [_]u64{ 1, 2, 3 };
+    const new_nodes = [_]u64{ 1, 2, 3, 4 };
+    const joint_entry = raft.LogEntry.fromConfigChange(1, 1, &old_nodes, &new_nodes, true);
+    try raft_instance.applyConfigChange(joint_entry);
+
+    // Joint consensus: max(majority(3), majority(4)) = max(2, 3) = 3
+    try std.testing.expectEqual(@as(u64, 3), raft_instance.cluster_config.majority());
+}
+
+test "Raft Phase 4 - 3-node cluster add node without downtime" {
+    const allocator = std.testing.allocator;
+    var cluster = try TestCluster.init(allocator, 3);
+    defer cluster.deinit();
+
+    // Elect leader
+    _ = try cluster.simulateElection();
+
+    const leader = &cluster.nodes[0];
+    try std.testing.expectEqual(raft.RaftState.leader, leader.raft.role);
+
+    // Add node 4
+    try leader.raft.addNode(4, "node4:7234");
+
+    // Joint consensus entry created
+    try std.testing.expectEqual(@as(usize, 1), leader.raft.persistent.log.items.len);
+
+    // Cluster still operational - can propose entries during config change
+    const record = txn.CommitRecord{
+        .txn_id = 1,
+        .root_page_id = 2,
+        .mutations = &[_]txn.Mutation{},
+        .checksum = 0,
+    };
+
+    const index = try leader.raft.propose(record);
+    try std.testing.expectEqual(@as(u64, 2), index);
+}
+
+test "Raft Phase 4 - 5-node cluster remove node without downtime" {
+    const allocator = std.testing.allocator;
+    var cluster = try TestCluster.init(allocator, 5);
+    defer cluster.deinit();
+
+    // Elect leader
+    _ = try cluster.simulateElection();
+
+    const leader = &cluster.nodes[0];
+    try std.testing.expectEqual(raft.RaftState.leader, leader.raft.role);
+
+    // Remove node 5 (not leader)
+    try leader.raft.removeNode(5);
+
+    // Joint consensus entry created
+    try std.testing.expectEqual(@as(usize, 1), leader.raft.persistent.log.items.len);
+
+    // Cluster still operational
+    const record = txn.CommitRecord{
+        .txn_id = 1,
+        .root_page_id = 2,
+        .mutations = &[_]txn.Mutation{},
+        .checksum = 0,
+    };
+
+    const index = try leader.raft.propose(record);
+    try std.testing.expectEqual(@as(u64, 2), index);
+}
+

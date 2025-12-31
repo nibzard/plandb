@@ -24,21 +24,119 @@ pub const NodeInfo = struct {
     }
 };
 
-/// Cluster configuration
+/// Cluster configuration state for joint consensus
+pub const ConfigState = enum {
+    /// Normal single configuration
+    single,
+    /// Joint consensus (C_old,new)
+    joint,
+};
+
+/// Cluster configuration with joint consensus support
 pub const ClusterConfig = struct {
-    nodes: []const u64, // Node IDs
+    allocator: std.mem.Allocator,
+    state: ConfigState,
+    /// Single config nodes (used when state == .single)
+    nodes_single: []const u64,
+    /// Old config nodes (used when state == .joint)
+    nodes_old: []const u64,
+    /// New config nodes (used when state == .joint)
+    nodes_new: []const u64,
+
+    /// Create single configuration
+    pub fn initSingle(allocator: std.mem.Allocator, nodes: []const u64) !ClusterConfig {
+        const nodes_copy = try allocator.dupe(u64, nodes);
+        return .{
+            .allocator = allocator,
+            .state = .single,
+            .nodes_single = nodes_copy,
+            .nodes_old = &[_]u64{},
+            .nodes_new = &[_]u64{},
+        };
+    }
+
+    /// Create joint consensus configuration
+    pub fn initJoint(allocator: std.mem.Allocator, old_nodes: []const u64, new_nodes: []const u64) !ClusterConfig {
+        const old_copy = try allocator.dupe(u64, old_nodes);
+        errdefer allocator.free(old_copy);
+        const new_copy = try allocator.dupe(u64, new_nodes);
+        errdefer allocator.free(new_copy);
+
+        return .{
+            .allocator = allocator,
+            .state = .joint,
+            .nodes_single = &[_]u64{},
+            .nodes_old = old_copy,
+            .nodes_new = new_copy,
+        };
+    }
+
+    /// Cleanup allocated resources
+    pub fn deinit(self: *ClusterConfig) void {
+        if (self.state == .single) {
+            self.allocator.free(self.nodes_single);
+        } else {
+            self.allocator.free(self.nodes_old);
+            self.allocator.free(self.nodes_new);
+        }
+    }
+
+    /// Get all unique node IDs in configuration
+    pub fn getNodes(self: *const ClusterConfig) []const u64 {
+        return if (self.state == .single) self.nodes_single else self.nodes_new;
+    }
 
     /// Get majority count (quorum)
-    pub fn majority(self: @This()) u64 {
-        return @divTrunc(self.nodes.len, 2) + 1;
+    pub fn majority(self: *const ClusterConfig) u64 {
+        return if (self.state == .single)
+            @divTrunc(self.nodes_single.len, 2) + 1
+        else
+            // For joint consensus, need majority from BOTH configs
+            @max(
+                @divTrunc(self.nodes_old.len, 2) + 1,
+                @divTrunc(self.nodes_new.len, 2) + 1,
+            );
     }
 
     /// Check if node ID is in cluster
-    pub fn contains(self: @This(), node_id: u64) bool {
-        for (self.nodes) |id| {
+    pub fn contains(self: *const ClusterConfig, node_id: u64) bool {
+        if (self.state == .single) {
+            for (self.nodes_single) |id| {
+                if (id == node_id) return true;
+            }
+            return false;
+        }
+
+        // Joint: check old config
+        for (self.nodes_old) |id| {
+            if (id == node_id) return true;
+        }
+        // Joint: check new config
+        for (self.nodes_new) |id| {
             if (id == node_id) return true;
         }
         return false;
+    }
+
+    /// Transition to new single configuration
+    pub fn transitionTo(self: *ClusterConfig, new_nodes: []const u64) !void {
+        // Cleanup current state
+        if (self.state == .single) {
+            self.allocator.free(self.nodes_single);
+        } else {
+            self.allocator.free(self.nodes_old);
+            self.allocator.free(self.nodes_new);
+        }
+
+        self.state = .single;
+        self.nodes_single = try self.allocator.dupe(u64, new_nodes);
+        self.nodes_old = &[_]u64{};
+        self.nodes_new = &[_]u64{};
+    }
+
+    /// Check if this is a joint config that can transition to single
+    pub fn canCompleteJointConsensus(self: *const ClusterConfig) bool {
+        return self.state == .joint;
     }
 };
 
@@ -159,22 +257,90 @@ test "NodeInfo creation" {
     try std.testing.expectEqualStrings("localhost:7234", node.address);
 }
 
-test "ClusterConfig majority calculation" {
+test "ClusterConfig single config majority calculation" {
+    const allocator = std.testing.allocator;
     const nodes = [_]u64{ 1, 2, 3 };
-    const config = ClusterConfig{ .nodes = &nodes };
+    var config = try ClusterConfig.initSingle(allocator, &nodes);
+    defer config.deinit();
+
     try std.testing.expectEqual(@as(u64, 2), config.majority());
 
     const nodes5 = [_]u64{ 1, 2, 3, 4, 5 };
-    const config5 = ClusterConfig{ .nodes = &nodes5 };
+    var config5 = try ClusterConfig.initSingle(allocator, &nodes5);
+    defer config5.deinit();
+
     try std.testing.expectEqual(@as(u64, 3), config5.majority());
 }
 
-test "ClusterConfig contains" {
+test "ClusterConfig single config contains" {
+    const allocator = std.testing.allocator;
     const nodes = [_]u64{ 1, 2, 3 };
-    const config = ClusterConfig{ .nodes = &nodes };
+    var config = try ClusterConfig.initSingle(allocator, &nodes);
+    defer config.deinit();
+
     try std.testing.expect(config.contains(1));
     try std.testing.expect(config.contains(3));
     try std.testing.expect(!config.contains(4));
+}
+
+test "ClusterConfig joint consensus creation" {
+    const allocator = std.testing.allocator;
+    const old_nodes = [_]u64{ 1, 2, 3 };
+    const new_nodes = [_]u64{ 1, 2, 3, 4 };
+
+    var config = try ClusterConfig.initJoint(allocator, &old_nodes, &new_nodes);
+    defer config.deinit();
+
+    try std.testing.expectEqual(ConfigState.joint, config.state);
+    try std.testing.expect(config.contains(1));
+    try std.testing.expect(config.contains(4));
+    try std.testing.expect(!config.contains(5));
+}
+
+test "ClusterConfig joint consensus majority" {
+    const allocator = std.testing.allocator;
+    const old_nodes = [_]u64{ 1, 2, 3 };
+    const new_nodes = [_]u64{ 1, 2, 3, 4 };
+
+    var config = try ClusterConfig.initJoint(allocator, &old_nodes, &new_nodes);
+    defer config.deinit();
+
+    // Joint consensus needs majority from both configs
+    // old: 3 nodes -> majority 2
+    // new: 4 nodes -> majority 3
+    // Should return max(2, 3) = 3
+    try std.testing.expectEqual(@as(u64, 3), config.majority());
+}
+
+test "ClusterConfig transitionTo" {
+    const allocator = std.testing.allocator;
+    const nodes = [_]u64{ 1, 2, 3 };
+    var config = try ClusterConfig.initSingle(allocator, &nodes);
+
+    const new_nodes = [_]u64{ 1, 2, 3, 4, 5 };
+    try config.transitionTo(&new_nodes);
+    defer config.deinit();
+
+    try std.testing.expectEqual(ConfigState.single, config.state);
+    try std.testing.expect(config.contains(4));
+    try std.testing.expect(config.contains(5));
+    try std.testing.expectEqual(@as(u64, 3), config.majority());
+}
+
+test "ClusterConfig canCompleteJointConsensus" {
+    const allocator = std.testing.allocator;
+    const nodes = [_]u64{ 1, 2, 3 };
+    var single_config = try ClusterConfig.initSingle(allocator, &nodes);
+    defer single_config.deinit();
+
+    try std.testing.expect(!single_config.canCompleteJointConsensus());
+
+    const old_nodes = [_]u64{ 1, 2, 3 };
+    const new_nodes = [_]u64{ 1, 2, 3, 4 };
+    var joint_config = try ClusterConfig.initJoint(allocator, &old_nodes, &new_nodes);
+    defer joint_config.deinit();
+
+    try std.testing.expect(joint_config.canCompleteJointConsensus());
 }
 
 test "RaftConfig majority" {
