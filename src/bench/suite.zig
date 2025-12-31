@@ -23,6 +23,7 @@ const storage_efficiency_bench = @import("storage_efficiency_bench.zig");
 const timeseries_telemetry_bench = @import("timeseries_telemetry_bench.zig");
 const downsampling_comparison_bench = @import("downsampling_comparison_bench.zig");
 const load_test = @import("load_test.zig");
+const raft_bench = @import("raft_bench.zig");
 
 // Stub benchmark functions for testing the harness
 
@@ -370,6 +371,77 @@ pub fn registerBenchmarks(bench_runner: *runner.Runner) !void {
         .run_fn = benchLoadSustained,
         .critical = false,
         .suite = .macro,
+    });
+
+    // Raft consensus benchmarks (Phase 5: Robustness)
+    try bench_runner.addBenchmark(.{
+        .name = "bench/raft/leader_election",
+        .run_fn = raft_bench.benchRaftLeaderElection,
+        .critical = true,
+        .suite = .micro,
+    });
+
+    try bench_runner.addBenchmark(.{
+        .name = "bench/raft/leader_election_repeated",
+        .run_fn = raft_bench.benchRaftLeaderElectionRepeated,
+        .critical = true,
+        .suite = .micro,
+    });
+
+    try bench_runner.addBenchmark(.{
+        .name = "bench/raft/write_throughput_single_leader",
+        .run_fn = raft_bench.benchRaftWriteThroughputSingleLeader,
+        .critical = true,
+        .suite = .micro,
+    });
+
+    try bench_runner.addBenchmark(.{
+        .name = "bench/raft/write_throughput_batched",
+        .run_fn = raft_bench.benchRaftWriteThroughputBatched,
+        .critical = true,
+        .suite = .micro,
+    });
+
+    try bench_runner.addBenchmark(.{
+        .name = "bench/raft/write_latency_end_to_end",
+        .run_fn = raft_bench.benchRaftWriteLatencyEndToEnd,
+        .critical = true,
+        .suite = .micro,
+    });
+
+    try bench_runner.addBenchmark(.{
+        .name = "bench/raft/read_latency_follower",
+        .run_fn = raft_bench.benchRaftReadLatencyFollower,
+        .critical = true,
+        .suite = .micro,
+    });
+
+    try bench_runner.addBenchmark(.{
+        .name = "bench/raft/snapshot_creation",
+        .run_fn = raft_bench.benchRaftSnapshotCreation,
+        .critical = true,
+        .suite = .micro,
+    });
+
+    try bench_runner.addBenchmark(.{
+        .name = "bench/raft/snapshot_install",
+        .run_fn = raft_bench.benchRaftSnapshotInstall,
+        .critical = true,
+        .suite = .micro,
+    });
+
+    try bench_runner.addBenchmark(.{
+        .name = "bench/raft/recovery_time",
+        .run_fn = raft_bench.benchRaftRecoveryTime,
+        .critical = true,
+        .suite = .micro,
+    });
+
+    try bench_runner.addBenchmark(.{
+        .name = "bench/raft/heartbeat_overhead",
+        .run_fn = raft_bench.benchRaftHeartbeatOverhead,
+        .critical = false,
+        .suite = .micro,
     });
 }
 

@@ -189,7 +189,7 @@ pub const SnapshotManager = struct {
     }
 
     /// Get current snapshot (if exists)
-    pub fn getSnapshot(self: *const Self) ?*const Snapshot {
+    pub fn getSnapshot(self: *const Self) ?Snapshot {
         return self.current_snapshot;
     }
 
@@ -231,7 +231,7 @@ pub const SnapshotManager = struct {
 test "Snapshot creation and serialization" {
     const allocator = std.testing.allocator;
 
-    const snap = try Snapshot.create(
+    var snap = try Snapshot.create(
         allocator,
         100,
         2,
@@ -251,7 +251,7 @@ test "Snapshot creation and serialization" {
 test "Snapshot serialize/deserialize roundtrip" {
     const allocator = std.testing.allocator;
 
-    const original = try Snapshot.create(
+    var original = try Snapshot.create(
         allocator,
         100,
         2,
@@ -268,7 +268,7 @@ test "Snapshot serialize/deserialize roundtrip" {
 
     // Deserialize
     fbs.pos = 0;
-    const parsed = try Snapshot.deserialize(fbs.reader(), allocator);
+    var parsed = try Snapshot.deserialize(fbs.reader(), allocator);
     defer parsed.deinit(allocator);
 
     try std.testing.expectEqual(original.last_included_index, parsed.last_included_index);
@@ -281,7 +281,7 @@ test "Snapshot serialize/deserialize roundtrip" {
 test "Snapshot covers index" {
     const allocator = std.testing.allocator;
 
-    const snap = try Snapshot.create(allocator, 100, 2, 50, 12345, &[_]u8{});
+    var snap = try Snapshot.create(allocator, 100, 2, 50, 12345, &[_]u8{});
     defer snap.deinit(allocator);
 
     try std.testing.expect(snap.covers(50));
@@ -293,7 +293,7 @@ test "Snapshot covers index" {
 test "SnapshotMetadata fromSnapshot" {
     const allocator = std.testing.allocator;
 
-    const snap = try Snapshot.create(allocator, 100, 2, 50, 12345, &[_]u8{});
+    var snap = try Snapshot.create(allocator, 100, 2, 50, 12345, &[_]u8{});
     defer snap.deinit(allocator);
 
     const meta = SnapshotMetadata.fromSnapshot(snap);
@@ -364,7 +364,7 @@ test "SnapshotManager restoreFromSnapshot" {
     var manager = SnapshotManager.init(allocator);
     defer manager.deinit();
 
-    const snap = try Snapshot.create(allocator, 200, 3, 75, 54321, &[_]u8{ 5, 6, 7 });
+    var snap = try Snapshot.create(allocator, 200, 3, 75, 54321, &[_]u8{ 5, 6, 7 });
     defer snap.deinit(allocator);
 
     try manager.restoreFromSnapshot(snap);

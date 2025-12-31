@@ -66,13 +66,13 @@ pub const LogEntry = struct {
 pub const RaftPersistentState = struct {
     current_term: u64 = 0,
     voted_for: ?u64 = null, // node_id
-    log: std.ArrayList(LogEntry),
+    log: std.array_list.Managed(LogEntry),
 
     pub fn init(allocator: std.mem.Allocator) RaftPersistentState {
         return .{
             .current_term = 0,
             .voted_for = null,
-            .log = std.ArrayList(LogEntry).init(allocator),
+            .log = std.array_list.Managed(LogEntry).init(allocator),
         };
     }
 
@@ -389,8 +389,9 @@ pub const Raft = struct {
 
             // Count how many peers have replicated this entry
             var replicated_count: u64 = 1; // Count leader
-            for (leader_state.match_index.values()) |match_idx| {
-                if (match_idx >= entry.index) replicated_count += 1;
+            var value_iter = leader_state.match_index.valueIterator();
+            while (value_iter.next()) |match_idx| {
+                if (match_idx.* >= entry.index) replicated_count += 1;
             }
 
             // Commit if majority has replicated (use cluster config for joint consensus)
@@ -850,8 +851,9 @@ pub const Raft = struct {
             if (entry.command == .config) {
                 // Check if config is committed
                 var replicated_count: u64 = 1; // Count leader
-                for (leader_state.match_index.values()) |match_idx| {
-                    if (match_idx >= entry.index) replicated_count += 1;
+                var value_iter = leader_state.match_index.valueIterator();
+                while (value_iter.next()) |match_idx| {
+                    if (match_idx.* >= entry.index) replicated_count += 1;
                 }
 
                 if (replicated_count >= self.cluster_config.majority()) {
@@ -955,7 +957,7 @@ pub const Raft = struct {
 
         // Deserialize snapshot
         var fbs = std.io.fixedBufferStream(args.snapshot);
-        const snap = try snapshot_mod.Snapshot.deserialize(fbs.reader(), self.allocator);
+        var snap = try snapshot_mod.Snapshot.deserialize(fbs.reader(), self.allocator);
         defer snap.deinit(self.allocator);
 
         // Check if we already have a more recent snapshot
