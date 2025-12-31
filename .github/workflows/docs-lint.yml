@@ -176,7 +176,7 @@ jobs:
         run: |
           echo "Checking for unresolved TODO comments..."
           find docs/src/content/docs spec -name "*.md" -o -name "*.mdx" | while read file; do
-            if grep -i -n "TODO\|FIXME\|XXX" "$file" | grep -v "```" > /dev/null; then
+            if grep -i -n 'TODO\|FIXME\|XXX' "$file" | grep -v '```' > /dev/null; then
               echo "::warning file=$file::Contains TODO/FIXME comments"
             fi
           done
