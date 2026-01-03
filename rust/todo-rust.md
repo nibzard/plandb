@@ -530,9 +530,34 @@
   - Recovery checklist (before/during/after)
   - Performance metrics and monitoring
 
-- [ ] **3.12** Create `03-wal-tests.md`
+- [x] **3.12** Create `03-wal-tests.md` - **[DONE]**
   - **LIST**: Test scenarios (crash, corruption, etc.)
   - **DESCRIBE**: Crash simulation methods
+  - **Completed**: 2026-01-04 (commit 2ed2398)
+  - **Blockers**: None - comprehensive test specification complete
+
+  **Work Summary**:
+  - **6 test categories** documented (unit, integration, property, hardening, performance, crash simulation)
+  - **50+ test scenarios** specified across all categories
+  - **Property-based tests** defined (LSN monotonicity, checksum validity, round-trip, idempotency, append-only)
+  - **Crash simulation** methods documented (crash during append, checkpoint, truncation)
+  - **Test implementation** guidance provided for Rust
+  - **CI/CD integration** specified
+
+  **Key Deliverables**:
+  - Basic operations tests (create, append, read, flush)
+  - Checksum validation tests (valid/invalid header/payload)
+  - Encoding/decoding tests (Put, Delete, size limits)
+  - Replay tests (empty, single, multiple, from middle, with checkpoint)
+  - Truncation tests (single, last, nonexistent, empty)
+  - Corruption handling tests (magic, checksum, truncated, garbage)
+  - Crash simulation tests (append, fsync, checkpoint, truncation)
+  - Concurrent operations tests (append, read/write, recovery)
+  - Performance tests with targets (throughput, replay, truncation)
+  - Property-based tests using proptest
+  - Fuzzing guidance with random inputs
+  - Test organization and utilities
+  - CI/CD integration with coverage and benchmarking
 
 ---
 
