@@ -196,30 +196,38 @@
   - **Completed**: 2026-01-03 (commit 09e8de3)
   - **Blockers**: None - comprehensive pager overview specification complete
 
-- [ ] **2.2** Create `02-pager-struct.md`
+- [x] **2.2** Create `02-pager-struct.md` - **[DONE]**
   - **LIST**: Every field in Pager struct with type and purpose
   - **EXPLAIN**: Invariants for each field
   - **DESCRIBE**: Helper structs and their roles
   - **DEFINE**: Rust struct with interior mutability pattern
   - **EXPLAIN**: Mutex vs RwLock choice
+  - **Completed**: 2026-01-03 (commit 1b1b4a0)
+  - **Blockers**: None - comprehensive pager struct specification complete
 
-- [ ] **2.3** Create `02-pager-open.md`
+- [x] **2.3** Create `02-pager-open.md` - **[DONE]**
   - **DESCRIBE**: File opening sequence step-by-step
   - **LIST**: All validation checks performed
   - **EXPLAIN**: Error conditions and what causes them
   - **DEFINE**: Function signature and return types
+  - **Completed**: 2026-01-03 (commit 3fb84a4)
+  - **Blockers**: None - comprehensive pager open specification complete
 
-- [ ] **2.4** Create `02-pager-alloc.md`
+- [x] **2.4** Create `02-pager-alloc.md` - **[DONE]**
   - **DESCRIBE**: Page allocation algorithm
   - **EXPLAIN**: Free list management
   - **LIST**: Lock ordering for concurrency
   - **DEFINE**: Thread-safe allocation approach
+  - **Completed**: 2026-01-03 (commit f526e08)
+  - **Blockers**: None - comprehensive page allocation spec complete
 
-- [ ] **2.5** Create `02-pager-read.md`
+- [x] **2.5** Create `02-pager-read.md` - **[DONE]**
   - **DESCRIBE**: Page read flow step-by-step
   - **EXPLAIN**: Cache lookup and insertion
   - **DESCRIBE**: Cache eviction policy
   - **DEFINE**: Buffer pool data structure
+  - **Completed**: 2026-01-03 (commit 218840e)
+  - **Blockers**: None - comprehensive pager read spec complete
 
 - [ ] **2.6** Create `02-pager-write.md`
   - **DESCRIBE**: Page write operation flow
