@@ -359,11 +359,32 @@
   - Rust implementation guidance (Mutex, File, Vec<u8> buffer)
   - Performance considerations (throughput batching, latency optimization)
 
-- [ ] **3.5** Create `03-wal-record.md`
+- [x] **3.5** Create `03-wal-record.md` - **[DONE]**
   - **DESCRIBE**: LogRecord structure
   - **LIST**: Record format (header fields, checksum, payload)
   - **EXPLAIN**: Record framing
   - **DESCRIBE**: Binary layout byte-by-byte
+  - **Completed**: 2026-01-04 (commit d028927)
+  - **Blockers**: None - comprehensive record structure specification complete
+
+  **Work Summary**:
+  - **Complete record layout** documented (header 40B + payload + trailer 12B)
+  - **7 core types** fully specified (RecordHeader, RecordTrailer, RecordType, CommitPayloadHeader, EncodedOperation, Mutation, CommitRecord)
+  - **Binary format diagram** included showing byte-by-byte layout
+  - **Size limits** defined (MAX_KEY_SIZE 4KB, MAX_VALUE_SIZE 16MB, MAX_OPERATIONS 1000)
+  - **Validation functions** specified for all types
+  - **Checksum algorithms** documented (CRC32C with zeroed checksum fields)
+
+  **Key Deliverables**:
+  - RecordHeader spec with all 10 fields (magic, version, type, flags, txn_id, prev_lsn, payload_len, checksums)
+  - RecordTrailer spec with magic2, total_len, trailer_crc32c
+  - CommitPayloadHeader spec (CMIT magic, txn_id, root_page_id, op_count)
+  - EncodedOperation spec (op_type, flags, key_len, val_len, key_bytes, val_bytes)
+  - Mutation enum (Put/Delete) with ownership semantics
+  - CommitRecord high-level representation with checksum
+  - Binary format diagram showing complete structure
+  - Rust implementation guidance with repr(C) structs
+  - Size limits and validation rules
 
 - [ ] **3.6** Create `03-wal-encode.md`
   - **DESCRIBE**: Operation encoding format
