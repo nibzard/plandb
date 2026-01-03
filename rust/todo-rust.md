@@ -237,11 +237,13 @@
   - **Completed**: 2026-01-03 (commit 33885aa)
   - **Blockers**: None - comprehensive pager write spec complete
 
-- [ ] **2.7** Create `02-pager-flush.md`
+- [x] **2.7** Create `02-pager-flush.md` - **[DONE]**
   - **DESCRIBE**: Flush operation step-by-step
   - **EXPLAIN**: Checkpoint process
   - **LIST**: What gets persisted when
   - **DESCRIBE**: Recovery implications
+  - **Completed**: 2026-01-03 (commit 8c5ccf3)
+  - **Blockers**: None - comprehensive flush spec complete
 
 - [ ] **2.8** Create `02-pager-close.md`
   - **DESCRIBE**: Resource release sequence
