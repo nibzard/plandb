@@ -412,10 +412,29 @@
   - Rust implementation with Write trait
   - Performance optimization guidance
 
-- [ ] **3.7** Create `03-wal-decode.md`
+- [x] **3.7** Create `03-wal-decode.md` - **[DONE]**
   - **DESCRIBE**: Record decoding process
   - **EXPLAIN**: Error recovery on corruption
   - **DESCRIBE**: Partial read handling
+  - **Completed**: 2026-01-04 (commit f45f6bf)
+  - **Blockers**: None - comprehensive decoding specification complete
+
+  **Work Summary**:
+  - **Decoding algorithms** fully specified with step-by-step instructions
+  - **14 DecodeError variants** documented with conditions
+  - **DecodingCursor helper** designed for bounds-checked reading
+  - **Error recovery strategy** defined for WAL replay
+  - **Memory management** clearly specified (allocation and cleanup)
+  - **Rust implementation guidance** with byteorder crate
+
+  **Key Deliverables**:
+  - deserializeCommitRecord 9-step algorithm
+  - CommitPayloadHeader deserialization
+  - DecodingCursor with read_u8, read_u16_le, read_u32_le, read_u64_le, read_bytes
+  - Error handling for all corruption scenarios
+  - Bounds checking strategy (no panics)
+  - Round-trip verification approach
+  - Fuzzing strategy for robustness
 
 - [ ] **3.8** Create `03-wal-truncate.md`
   - **DESCRIBE**: Truncation process
