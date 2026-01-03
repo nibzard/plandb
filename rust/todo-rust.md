@@ -320,20 +320,44 @@
   - **Completed**: 2026-01-04 (commit 4a97709)
   - **Blockers**: None - comprehensive WAL overview specification complete
 
-- [ ] **3.2** Create `03-wal-struct.md`
+- [x] **3.2** Create `03-wal-struct.md` - **[DONE]**
   - **LIST**: All Wal struct fields with types and purposes
   - **EXPLAIN**: Invariants maintained
   - **DESCRIBE**: File handle management
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - WAL structure specification complete
 
-- [ ] **3.3** Create `03-wal-open.md`
+- [x] **3.3** Create `03-wal-open.md` - **[DONE]**
   - **DESCRIBE**: WAL creation process
   - **EXPLAIN**: Recovery mode operation
   - **DESCRIBE**: WAL file lifecycle
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive WAL open specification complete
 
-- [ ] **3.4** Create `03-wal-append.md`
+- [x] **3.4** Create `03-wal-append.md` - **[DONE]**
   - **DESCRIBE**: Append operation step-by-step
   - **EXPLAIN**: Append-only guarantee
   - **DESCRIBE**: fsync strategy (when do we sync?)
+  - **Completed**: 2026-01-04 (commit b96f3ec)
+  - **Blockers**: None - comprehensive append specification complete
+
+  **Work Summary**:
+  - **3 append functions** documented (appendCommitRecord, appendRecordWithTrailer, appendCheckpoint)
+  - **Complete append flow** described with 6-step algorithm
+  - **Buffer management** specified (64KB buffer, flush on overflow)
+  - **Large record handling** documented (direct write bypass for oversized records)
+  - **Checksum calculation** explained for header and trailer with explicit field ordering
+  - **LSN allocation** strategy defined (monotonic counter starting from 0)
+  - **fsync strategy** clarified (sync_needed flag + explicit sync call)
+
+  **Key Deliverables**:
+  - RecordHeader and RecordTrailer structure specifications with all fields
+  - Append-only guarantee explanation (never modify existing data)
+  - Buffer vs direct write decision logic (64KB threshold)
+  - Checksum calculation algorithm (CRC32C with zeroed checksum fields)
+  - LSN monotonicity invariant documentation
+  - Rust implementation guidance (Mutex, File, Vec<u8> buffer)
+  - Performance considerations (throughput batching, latency optimization)
 
 - [ ] **3.5** Create `03-wal-record.md`
   - **DESCRIBE**: LogRecord structure
