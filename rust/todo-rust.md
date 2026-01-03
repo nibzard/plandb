@@ -483,10 +483,29 @@
   - Crash recovery workflow
   - Optimization strategies (mmap for large WAL)
 
-- [ ] **3.10** Create `03-wal-lsn.md`
+- [x] **3.10** Create `03-wal-lsn.md` - **[DONE]**
   - **DESCRIBE**: LSN allocation
   - **EXPLAIN**: LSN persistence format
   - **DESCRIBE**: Gap detection
+  - **Completed**: 2026-01-04 (commit d7e3bf7)
+  - **Blockers**: None - comprehensive LSN specification complete
+
+  **Work Summary**:
+  - **LSN type** defined as u64 with special values (0=empty, 1=first)
+  - **LsnAllocation** strategy documented (monotonic increment)
+  - **5 LSN functions** specified (getCurrentLsn, allocateLsn, scanHighestLsn, validateLsnChain, lsnToPosition)
+  - **Gap detection** algorithm using prev_lsn chain
+  - **Optimization strategies** for large WAL (LSN index)
+  - **Rust implementation guidance** with atomic operations
+
+  **Key Deliverables**:
+  - LSN allocation algorithm (O(1) increment)
+  - scanHighestLsn for recovery (O(N) scanning)
+  - lsnToPosition for finding record by LSN
+  - prev_lsn chain validation
+  - Gap detection algorithm
+  - LSN index for O(1) lookup optimization
+  - LSN overflow analysis (584K years at 1M/sec)
 
 - [ ] **3.11** Create `03-wal-recovery.md`
   - **LIST**: Recovery states
