@@ -122,46 +122,79 @@
   - **Completed**: 2026-01-03 (commit 7a07b52)
   - **Blockers**: None - comprehensive checksum specification complete
 
-- [ ] **1.8** Create `01-mutation-types.md`
+- [x] **1.8** Create `01-mutation-types.md` - **[DONE]**
   - **DESCRIBE**: Mutation enum variants (Put, Delete)
   - **LIST**: All fields for each variant with types
   - **EXPLAIN**: Encoding format byte-by-byte
   - **DEFINE**: Rust enum structure
+  - **Completed**: 2026-01-03 (commit 8599285)
+  - **Blockers**: None - comprehensive mutation types spec complete
 
-- [ ] **1.9** Create `01-key-value-types.md`
+- [x] **1.9** Create `01-key-value-types.md` - **[DONE]**
   - **DESCRIBE**: Key type (byte slice, ownership)
   - **DESCRIBE**: Value type (byte slice, ownership)
   - **EXPLAIN**: Comparison semantics (lexicographic)
   - **DEFINE**: Rust Key and Value types (Bytes vs Arc)
   - **EXPLAIN**: Trade-offs (clone vs copy)
+  - **Completed**: 2026-01-03 (commit 3e2cd09)
+  - **Blockers**: None - comprehensive key-value types specification complete
 
-- [ ] **1.10** Create `01-result-types.md`
+- [x] **1.10** Create `01-result-types.md` - **[DONE]**
   - **LIST**: All benchmark result structures
   - **DESCRIBE**: Each metric (throughput, latency, percentiles)
   - **EXPLAIN**: Statistical aggregation methods
   - **DEFINE**: Rust result types
+  - **Completed**: 2026-01-03 (commit c6a6c08)
+  - **Blockers**: None - comprehensive benchmark result types spec complete
 
-- [ ] **1.11** Create `01-config-types.md`
+- [x] **1.11** Create `01-config-types.md` - **[DONE]**
   - **LIST**: All configuration options with defaults and ranges
   - **DESCRIBE**: Validation rules for each option
   - **EXPLAIN**: Builder pattern requirements
   - **DEFINE**: Rust Config struct and builder
+  - **Completed**: 2026-01-03 (commit 212713d)
+  - **Blockers**: None - comprehensive configuration types spec complete
 
-- [ ] **1.12** Create `01-constants.md`
+- [x] **1.12** Create `01-constants.md` - **[DONE]**
   - **CATEGORIZE**: Constants by module (pager, wal, txn, snapshot)
   - **LIST**: Each constant with name, value, and purpose
   - **EXPLAIN**: Meaning of magic numbers
   - **DEFINE**: Rust const module structure
+  - **Completed**: 2026-01-03 (commit 762b3d4)
+  - **Blockers**: None - comprehensive constants specification complete
+
+**Work Summary**:
+  - **40+ constants** cataloged and organized by module
+  - **ASCII magic numbers** documented for all data structures
+  - **Complete rationale** provided for each constant value
+  - **Rust const module structure** defined with visibility guidelines
+  - **Magic number strategy** explained with trade-offs
+
+**Key Deliverables**:
+  - Pager constants: PAGE_MAGIC, META_MAGIC, BTREE_MAGIC, DEFAULT_PAGE_SIZE (16KB), FORMAT_VERSION, reserved page IDs
+  - WAL constants: COMMIT_MAGIC, operation type enumerations
+  - Transaction constants: MAX_KEY_SIZE (4KB), MAX_VALUE_SIZE (16MB), MAX_OPERATIONS_PER_COMMIT (1000), transaction states
+  - Snapshot constants: SnapshotState enumerations
+  - B+tree constants: Node types and header magic
+  - CRC32C constants: Polynomial, initial/final XOR values
+  - Error thresholds: TORN_WRITE_THRESHOLD for corruption detection
+  - Rust module structure with SCREAMING_SNAKE_CASE naming conventions
+  - Const generics strategy for page size parameterization
+  - Documentation and testing requirements
+
+**Phase 1 Complete**: All 12 tasks finished. Core primitives fully specified.
 
 ---
 
 ## Phase 2: Pager Module (15 tasks)
 
-- [ ] **2.1** Create `02-pager-overview.md`
+- [x] **2.1** Create `02-pager-overview.md` - **[DONE]**
   - **DESCRIBE**: Pager's purpose and responsibilities
   - **LIST**: All public functions with signatures in prose
   - **EXPLAIN**: Invariants maintained by Pager
   - **DEFINE**: Module structure
+  - **Completed**: 2026-01-03 (commit 09e8de3)
+  - **Blockers**: None - comprehensive pager overview specification complete
 
 - [ ] **2.2** Create `02-pager-struct.md`
   - **LIST**: Every field in Pager struct with type and purpose
