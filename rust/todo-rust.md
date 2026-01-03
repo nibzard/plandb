@@ -565,10 +565,28 @@
 
 ## Phase 4: Transaction System (15 tasks)
 
-- [ ] **4.1** Create `04-txn-overview.md`
+- [x] **4.1** Create `04-txn-overview.md` - **[DONE]**
   - **DESCRIBE**: Transaction semantics
   - **LIST**: Transaction types
   - **EXPLAIN**: ACID guarantees
+  - **Completed**: 2026-01-04 (commit 6fb55f8)
+  - **Blockers**: None - comprehensive transaction overview complete
+
+  **Work Summary**:
+  - **ACID guarantees** fully explained (Atomicity, Consistency, Isolation, Durability)
+  - **2 transaction types** documented (ReadTxn, WriteTxn)
+  - **Transaction lifecycle** with state machine specified
+  - **Two-phase commit** protocol detailed (prepare + commit phases)
+  - **4 core components** defined (TransactionContext, Mutation, CommitRecord, TransactionState)
+
+  **Key Deliverables**:
+  - ACID guarantees implementation details
+  - Transaction state machine with valid transitions
+  - Read vs Write transaction characteristics
+  - Two-phase commit protocol (Phase 1: Prepare, Phase 2: Commit)
+  - Concurrency model (multiple readers, single writer)
+  - Public API specification
+  - Rust implementation guidance
 
 - [ ] **4.2** Create `04-txn-context.md`
   - **LIST**: TransactionContext fields
