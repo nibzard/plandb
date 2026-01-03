@@ -261,11 +261,13 @@
   - **Completed**: 2026-01-03 (commit 7882777)
   - **Blockers**: None - comprehensive cache spec complete
 
-- [ ] **2.10** Create `02-pager-freelist.md`
+- [x] **2.10** Create `02-pager-freelist.md` - **[DONE]**
   - **DESCRIBE**: Free list structure and persistence
   - **EXPLAIN**: Free page tracking
   - **DESCRIBE**: Crash recovery of free list
   - **DEFINE**: FreeList type
+  - **Completed**: 2026-01-03 (commit 9604d0f)
+  - **Blockers**: None - comprehensive freelist spec complete
 
 - [ ] **2.11** Create `02-pager-header.md`
   - **LIST**: FileHeader fields with offsets and sizes
