@@ -588,31 +588,123 @@
   - Public API specification
   - Rust implementation guidance
 
-- [ ] **4.2** Create `04-txn-context.md`
+- [x] **4.2** Create `04-txn-context.md` - **[DONE]**
   - **LIST**: TransactionContext fields
   - **EXPLAIN**: Purpose of each field
   - **DESCRIBE**: Invariants
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - transaction context specification complete
 
-- [ ] **4.3** Create `04-read-txn.md`
+- [x] **4.3** Create `04-read-txn.md` - **[DONE]**
   - **DESCRIBE**: ReadTxn implementation
   - **EXPLAIN**: Read-only guarantees
   - **LIST**: Required trait bounds (Send, Sync)
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - read transaction specification complete
 
-- [ ] **4.4** Create `04-write-txn.md`
+  **Work Summary**:
+  - **ReadTxn struct** fully specified with 6 fields (db, snapshot, txn_id, state, metrics, phantom)
+  - **Read-only guarantees** documented (no writes, snapshot isolation, idempotent gets)
+  - **Thread safety** specified with Send + Sync bounds
+  - **8 public methods** detailed (new, get, scan, commit, rollback, is_active, get_id, get_snapshot_lsn)
+  - **Lifecycle management** explained (borrow tracking, state transitions)
+  - **Performance optimizations** documented (zero-copy reads, cached pages)
+
+  **Key Deliverables**:
+  - ReadTxn type definition with lifetime parameters and phantom data
+  - Snapshot-based visibility guarantees
+  - get() operation with 3-step lookup (pending writes → B+tree → not found)
+  - scan() operation for range queries with iterator pattern
+  - commit() for explicit release (optional, Drop handles it)
+  - rollback() for early termination
+  - Read transaction invariants (read-only, snapshot isolation)
+  - Thread-safety analysis (Send + Sync requirements)
+  - Rust implementation guidance with Arc<Db> borrowing
+
+- [x] **4.4** Create `04-write-txn.md` - **[DONE]**
   - **DESCRIBE**: WriteTxn implementation
   - **EXPLAIN**: Mutation tracking strategy
   - **DESCRIBE**: Transaction lifecycle
+  - **Completed**: 2026-01-04 (commit 4589ace)
+  - **Blockers**: None - completed successfully
 
-- [ ] **4.5** Create `04-txn-begin.md`
+  **Work Summary**:
+  - **WriteTxn struct** fully specified with 7 fields (db, context, pending_ops, snapshot, txn_id, state, metrics)
+  - **Mutation tracking strategy** documented with HashMap buffer and LRU cache design
+  - **Write-your-writes** guarantee implemented via pending_ops lookup order
+  - **Transaction lifecycle** explained (init → active → preparing → committing/rolled_back)
+  - **11 public methods** detailed (new, put, delete, get, scan, prepare, commit, rollback, is_active, get_id, get_mutation_count)
+  - **Performance optimizations** documented (batched mutations, incremental size tracking)
+
+  **Key Deliverables**:
+  - WriteTxn type definition with lifetime parameters and ownership semantics
+  - PendingOpsMap mutation buffer (Key → (Operation, Size))
+  - put() operation with duplicate detection and size tracking
+  - delete() operation with idempotency handling
+  - get() with pending_ops priority lookup (read-your-writes)
+  - scan() with pending mutation integration
+  - prepare() for pre-commit validation and conflict checking
+  - commit() with two-phase persistence (WAL → B+tree)
+  - rollback() with automatic cleanup and Drop integration
+  - Transaction lifecycle invariants and state transitions
+  - Thread-safety analysis (non-Send, exclusive ownership)
+  - Rust implementation guidance with memory reclamation strategy
+
+- [x] **4.5** Create `04-txn-begin.md` - **[DONE]**
   - **DESCRIBE**: Transaction begin process
   - **EXPLAIN**: TxnId allocation
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - transaction begin specification complete
 
-- [ ] **4.6** Create `04-txn-get.md`
+  **Work Summary**:
+  - **Transaction begin process** fully documented with 3 begin operations (begin_read_latest, begin_read_at, begin_write)
+  - **TxnId allocation** specified with atomic counter and persistence strategy
+  - **Lock acquisition** detailed for read (shared) and write (exclusive) transactions
+  - **Snapshot acquisition** explained for both read (latest/historical) and write (base snapshot) transactions
+  - **Transaction registration** specified with active transaction registry
+  - **State initialization** documented with Active state as initial state
+
+  **Key Deliverables**:
+  - begin_read_latest() algorithm for reading most recent committed state
+  - begin_read_at(txn_id) algorithm for time-travel queries
+  - begin_write() algorithm for read-write transactions
+  - TransactionId allocation with atomic counter (lock-free)
+  - Lock strategy with RwLock (shared for reads, exclusive for writes)
+  - Snapshot capture and registry lookup
+  - Active transaction registry for cleanup
+  - Error conditions (lock timeout, snapshot not found, allocation failed)
+  - Performance considerations (fast begin path, lock contention, pre-allocation)
+  - Concurrency and thread safety guidance
+  - Rust implementation guidance with atomic operations and RwLock usage
+
+- [x] **4.6** Create `04-txn-get.md` - **[DONE]**
   - **DESCRIBE**: Get operation read path
   - **EXPLAIN**: Read-your-writes implementation
   - **LIST**: Lookup order (snapshot, pending, btree)
+  - **Completed**: 2026-01-04 (commit 6ab7a8f)
+  - **Blockers**: None - comprehensive Get operation specification complete
 
-- [ ] **4.7** Create `04-txn-put.md`
+  **Work Summary**:
+  - **ReadTxn.get()** fully specified with snapshot isolation semantics
+  - **WriteTxn.get()** fully specified with read-your-writes semantics
+  - **3 lookup paths** documented (snapshot for ReadTxn, pending mutations for WriteTxn, B+tree for both)
+  - **Error handling** detailed (CorruptBtree, BufferTooSmall, AllocationFailed)
+  - **Performance characteristics** analyzed (O(log n) for file-based, O(1) for in-memory)
+  - **Testing requirements** comprehensive (unit, integration, property tests)
+
+  **Key Deliverables**:
+  - ReadTxn.get() algorithm with 6-step file-based and 3-step in-memory paths
+  - WriteTxn.get() algorithm with pending mutation check and database fallback
+  - Read-your-writes guarantee implementation with reverse-order mutation search
+  - B+tree traversal details with binary search and page reading
+  - Value lifetime and ownership semantics for both transaction types
+  - Concurrency considerations (multiple readers, single writer)
+  - Rust implementation guidance with example code
+  - 50+ test scenarios across unit, integration, and property tests
+  - Error handling best practices (corruption, buffer management)
+  - Invariants documented (snapshot consistency, idempotency, read-your-writes)
+
+- [ ] **4.7** Create `04-txn-put.md` - **[NEXT TASK]**
   - **DESCRIBE**: Put operation flow
   - **EXPLAIN**: Write buffering
   - **DESCRIBE**: Duplicate key handling
