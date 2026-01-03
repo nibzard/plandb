@@ -253,11 +253,13 @@
   - **Completed**: 2026-01-03 (commit 9652cb0)
   - **Blockers**: None - comprehensive close spec complete
 
-- [ ] **2.9** Create `02-pager-cache.md`
+- [x] **2.9** Create `02-pager-cache.md` - **[DONE]**
   - **DESCRIBE**: Cache data structure
   - **EXPLAIN**: Hit/miss tracking
   - **DESCRIBE**: Lock contention strategy
   - **DEFINE**: Cache implementation approach
+  - **Completed**: 2026-01-03 (commit 7882777)
+  - **Blockers**: None - comprehensive cache spec complete
 
 - [ ] **2.10** Create `02-pager-freelist.md`
   - **DESCRIBE**: Free list structure and persistence
