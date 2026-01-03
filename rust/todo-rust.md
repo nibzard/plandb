@@ -436,10 +436,29 @@
   - Round-trip verification approach
   - Fuzzing strategy for robustness
 
-- [ ] **3.8** Create `03-wal-truncate.md`
+- [x] **3.8** Create `03-wal-truncate.md` - **[DONE]**
   - **DESCRIBE**: Truncation process
   - **EXPLAIN**: When truncation occurs
   - **DESCRIBE**: Coordination with Pager
+  - **Completed**: 2026-01-04 (commit d31dc65)
+  - **Blockers**: None - comprehensive truncation specification complete
+
+  **Work Summary**:
+  - **Truncation algorithm** fully specified (6 steps)
+  - **4 TruncationStrategy variants** documented
+  - **TruncationResult** structure defined
+  - **Checkpoint coordination** sequence explained
+  - **Error recovery** scenarios covered
+  - **Rust implementation guidance** with atomic truncation
+
+  **Key Deliverables**:
+  - truncate(keep_lsn) function specification
+  - Scan algorithm to find keep_lsn position
+  - Atomic truncation using set_len
+  - LSN recalculation after truncation
+  - Checkpoint-based truncation workflow
+  - Performance considerations (O(N) scanning)
+  - Safety checks before/after truncation
 
 - [ ] **3.9** Create `03-wal-replay.md`
   - **DESCRIBE**: Replay algorithm step-by-step
