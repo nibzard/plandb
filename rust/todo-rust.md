@@ -386,11 +386,31 @@
   - Rust implementation guidance with repr(C) structs
   - Size limits and validation rules
 
-- [ ] **3.6** Create `03-wal-encode.md`
+- [x] **3.6** Create `03-wal-encode.md` - **[DONE]**
   - **DESCRIBE**: Operation encoding format
   - **EXPLAIN**: Put operation encoding
   - **EXPLAIN**: Delete operation encoding
   - **DESCRIBE**: Varint encoding for lengths
+  - **Completed**: 2026-01-04 (commit 6c1a6a5)
+  - **Blockers**: None - comprehensive encoding specification complete
+
+  **Work Summary**:
+  - **Encoding algorithms** documented for all operations
+  - **Put vs Delete encoding** differences clearly explained
+  - **Binary format examples** with hex dumps provided
+  - **CommitPayloadHeader serialization** fully specified
+  - **Note**: V0 uses fixed-width lengths (u16/u32), not varint
+  - **Size calculation** and validation functions specified
+  - **Rust implementation guidance** with byteorder crate
+
+  **Key Deliverables**:
+  - EncodedOperation serialization algorithm (6 steps)
+  - CommitPayloadHeader serialization (6 fields, 32 bytes)
+  - serializeCommitRecord function specification
+  - Binary format examples: Put (18B), Delete (13B), full commit (62B)
+  - Size limits and invariants documentation
+  - Rust implementation with Write trait
+  - Performance optimization guidance
 
 - [ ] **3.7** Create `03-wal-decode.md`
   - **DESCRIBE**: Record decoding process
