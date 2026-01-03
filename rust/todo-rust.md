@@ -245,11 +245,13 @@
   - **Completed**: 2026-01-03 (commit 8c5ccf3)
   - **Blockers**: None - comprehensive flush spec complete
 
-- [ ] **2.8** Create `02-pager-close.md`
+- [x] **2.8** Create `02-pager-close.md` - **[DONE]**
   - **DESCRIBE**: Resource release sequence
   - **EXPLAIN**: Graceful shutdown handling
   - **LIST**: Cleanup steps in order
   - **DEFINE**: Drop and Close trait behavior
+  - **Completed**: 2026-01-03 (commit 9652cb0)
+  - **Blockers**: None - comprehensive close spec complete
 
 - [ ] **2.9** Create `02-pager-cache.md`
   - **DESCRIBE**: Cache data structure
