@@ -460,10 +460,28 @@
   - Performance considerations (O(N) scanning)
   - Safety checks before/after truncation
 
-- [ ] **3.9** Create `03-wal-replay.md`
+- [x] **3.9** Create `03-wal-replay.md` - **[DONE]**
   - **DESCRIBE**: Replay algorithm step-by-step
   - **EXPLAIN**: Error handling during replay
   - **LIST**: Recovery states
+  - **Completed**: 2026-01-04 (commit 02331db)
+  - **Blockers**: None - comprehensive replay specification complete
+
+  **Work Summary**:
+  - **Replay algorithm** fully specified (5 main steps, 11 sub-steps)
+  - **3 replay types** documented (ReplayResult, ReplayState, ReplayOptions)
+  - **Error handling strategy** defined (skip corrupted vs stop)
+  - **Recovery workflow** explained (5 steps from open to resume)
+  - **Performance considerations** documented (mmap, SIMD, async I/O)
+  - **Rust implementation guidance** with arena allocation
+
+  **Key Deliverables**:
+  - replayFrom(start_lsn, allocator) function specification
+  - Checksum validation during replay
+  - Unknown record type handling (forward compatibility)
+  - Replay statistics for monitoring
+  - Crash recovery workflow
+  - Optimization strategies (mmap for large WAL)
 
 - [ ] **3.10** Create `03-wal-lsn.md`
   - **DESCRIBE**: LSN allocation
