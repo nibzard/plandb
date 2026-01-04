@@ -884,7 +884,7 @@
 - [x] **4.14** Create `04-txn-concurrency.md` - **[DONE]**
   - **DESCRIBE**: Concurrent transaction handling
   - **EXPLAIN**: Visibility rules
-  - **Completed**: 2026-01-04 (commit TBD)
+  - **Completed**: 2026-01-04 (commit b15f188)
   - **Blockers**: None
 
   **Work Summary**:
