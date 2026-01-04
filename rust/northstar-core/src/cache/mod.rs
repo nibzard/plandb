@@ -8,11 +8,14 @@
 //! The cache supports multiple eviction policies (LRU, LFU, ARC) and
 //! uses sharded design for high concurrency.
 
+pub mod bench;
 pub mod error;
+pub mod page;
 pub mod shard;
 pub mod types;
 
 pub use error::{CacheError, CacheResult};
+pub use page::PageCache;
 pub use shard::CacheShard;
 pub use types::{
     CacheConfig, CacheEntry, CachePolicy, CacheSnapshot, CacheStats, ClearResult, PinGuard,
@@ -110,26 +113,26 @@ where
 
     /// Get cache statistics
     pub fn stats(&self) -> CacheSnapshot {
-        let mut total_hits = 0;
-        let mut total_misses = 0;
-        let mut total_evictions = 0;
-        let mut total_size = 0;
-        let mut total_entries = 0;
-        let mut total_dirty = 0;
-        let mut total_pinned = 0;
+        let mut total_hits: u64 = 0;
+        let mut total_misses: u64 = 0;
+        let mut total_evictions: u64 = 0;
+        let mut total_size: usize = 0;
+        let mut total_entries: usize = 0;
+        let mut total_dirty: usize = 0;
+        let mut total_pinned: usize = 0;
 
         for shard in &self.shards {
             let snapshot = shard.stats();
-            total_hits += snapshot.hits;
-            total_misses += snapshot.misses;
-            total_evictions += snapshot.evictions;
-            total_size += snapshot.current_size;
-            total_entries += snapshot.current_entries;
-            total_dirty += snapshot.dirty_pages;
-            total_pinned += snapshot.pinned_entries;
+            total_hits = total_hits.saturating_add(snapshot.hits);
+            total_misses = total_misses.saturating_add(snapshot.misses);
+            total_evictions = total_evictions.saturating_add(snapshot.evictions);
+            total_size = total_size.saturating_add(snapshot.current_size);
+            total_entries = total_entries.saturating_add(snapshot.current_entries);
+            total_dirty = total_dirty.saturating_add(snapshot.dirty_pages);
+            total_pinned = total_pinned.saturating_add(snapshot.pinned_entries);
         }
 
-        let total_requests = total_hits + total_misses;
+        let total_requests = total_hits.saturating_add(total_misses);
         let hit_rate = if total_requests > 0 {
             total_hits as f64 / total_requests as f64
         } else {

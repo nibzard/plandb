@@ -5,9 +5,9 @@
 //! file handle management.
 
 use super::allocator::PageAllocator;
-use super::cache::PageCache;
 use super::meta::{choose_best_meta, MetaState};
 use super::storage::Storage;
+use crate::cache::PageCache;
 use crate::btree::overflow::{OverflowPage, OVERFLOW_DATA_SIZE, OVERFLOW_MAGIC};
 use crate::error::{Error, IoError, Result, ValidationError};
 use crate::page::{Page, PageHeader, PageType, PAGE_MAGIC, PAGE_SIZE};
@@ -372,7 +372,7 @@ impl Pager {
     }
 
     /// Get cache statistics
-    pub fn cache_stats(&self) -> super::cache::CacheStats {
+    pub fn cache_stats(&self) -> crate::cache::types::CacheSnapshot {
         self.cache.stats()
     }
 
@@ -709,14 +709,14 @@ mod tests {
         let mut pager = Pager::create_memory().unwrap();
 
         let stats = pager.cache_stats();
-        assert_eq!(stats.total_pages, 0);
+        assert_eq!(stats.current_entries, 0);
 
         // Allocate and cache a page
         let page_id = pager.allocate_page().unwrap();
         let _data = pager.read_page_cached(page_id).unwrap();
 
         let stats = pager.cache_stats();
-        assert_eq!(stats.total_pages, 1);
+        assert_eq!(stats.current_entries, 1);
     }
 
     #[test]
