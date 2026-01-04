@@ -1571,25 +1571,150 @@
   - 45+ test scenarios across unit, property, integration, edge case, and performance tests
   - 1200+ lines of detailed natural language specification (no code)
 
-- [ ] **6.14** Create `06-btree-key.md`
+- [x] **6.14** Create `06-btree-key.md` - **[DONE]**
   - **DESCRIBE**: Key encoding
   - **EXPLAIN**: Ordering guarantees
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive key encoding specification complete
 
-- [ ] **6.15** Create `06-btree-value.md`
+  **Work Summary**:
+  - **Complete key encoding scheme** documented with length-prefix format
+  - **3 key comparison functions** specified (lexicographic, reverse, custom)
+  - **Key validation functions** for size limits and encoding compatibility
+  - **Binary format diagrams** showing byte-by-byte layout
+  - **SIMD acceleration** strategies for performance optimization
+  - **Prefix compression** techniques for space optimization
+  - **8 key encoding types** fully defined (Key, KeyPrefix, KeyComparator, etc.)
+  - **10 comparison functions** specified with algorithms
+
+  **Key Deliverables**:
+  - Length-prefix encoding: 1-byte length + N-byte key data
+  - Inline value encoding: 2-byte length + N-byte value data
+  - Overflow marker encoding: 0xFFFF + 8-byte page ID
+  - Lexicographic ordering with memcmp semantics
+  - Reverse ordering via byte complementing
+  - Custom collation support through KeyComparator trait
+  - Composite key encoding for multi-dimensional indexing
+  - Key validation enforcing 255-byte maximum
+  - SIMD optimization guidance for long keys
+  - Rust implementation with type-safe wrappers
+
+- [x] **6.15** Create `06-btree-value.md` - **[DONE]**
   - **DESCRIBE**: Value storage strategy
   - **EXPLAIN**: Inline vs overflow pages
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive value storage specification complete
 
-- [ ] **6.16** Create `06-btree-delta.md`
+  **Work Summary**:
+  - **Dual storage strategy** fully documented (inline vs overflow)
+  - **INLINE_THRESHOLD** configuration with 2000-byte default
+  - **MAX_VALUE_SIZE** limit of 16MB (16,777,215 bytes)
+  - **InlineValue encoding**: 2-byte length + value bytes
+  - **OverflowValue encoding**: 0xFFFF marker + 8-byte page ID
+  - **OverflowPage structure** with 16368-byte data chunks
+  - **Value operations** complete (insert, read, update, delete)
+  - **Value compression** strategies (LZ4, Zstd, Snappy)
+  - **MVCC versioning** support for multiple value versions
+  - **Performance analysis** for inline vs overhead tradeoffs
+
+  **Key Deliverables**:
+  - should_store_inline() decision algorithm
+  - Overflow page allocation: num_pages = ceil(value_len / 16368)
+  - Overflow chain reading with next_page traversal
+  - Inline compression with compression flag tracking
+  - Version chain compaction for old value cleanup
+  - Cache considerations for different value sizes
+  - Rust types: Value, InlineValue, OverflowValue, OverflowPage
+  - 10-byte overflow reference vs variable inline size
+  - 1000+ lines of detailed natural language specification (no code)
+
+- [x] **6.16** Create `06-btree-delta.md` - **[DONE]**
   - **DESCRIBE**: Uncommitted change tracking
   - **EXPLAIN**: Delta layer
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive delta layer specification complete
 
-- [ ] **6.17** Create `06-btree-recovery.md`
+  **Work Summary**:
+  - **DeltaLayer structure** fully specified with HashMap storage
+  - **MutationEntry enum** with Put and Delete variants
+  - **Delta operations** complete (record, lookup, apply, rollback)
+  - **Transaction integration** with read-your-writes semantics
+  - **Size limits** enforced (1000 operations, 16MB delta size)
+  - **Delta serialization** for WAL commit records
+  - **Delta deserialization** for recovery replay
+  - **Optimization strategies** (batching, compression, deferred copy)
+  - **Complete Rust implementation** guidance with examples
+
+  **Key Deliverables**:
+  - record_put() and record_delete() with validation
+  - get_from_delta() for transaction-local lookups
+  - apply_delta() for atomic commit application
+  - rollback_delta() for discard
+  - serialize_delta() and deserialize_delta() for WAL
+  - Last-write-wins semantics within transaction
+  - MAX_OPERATIONS_PER_TXN = 1000
+  - MAX_DELTA_SIZE = 16MB
+  - Binary format for WAL commit records
+  - 1100+ lines of detailed natural language specification (no code)
+
+- [x] **6.17** Create `06-btree-recovery.md` - **[DONE]**
   - **DESCRIBE**: B+tree recovery from WAL
   - **EXPLAIN**: Rebuild algorithm
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive recovery specification complete
 
-- [ ] **6.18** Create `06-btree-tests.md`
+  **Work Summary**:
+  - **Complete recovery algorithm** with 5-phase process
+  - **RecoveryContext** and **RecoveryState** types specified
+  - **WAL scanning phase** with corruption resync strategy
+  - **Transaction filtering** for committed vs incomplete
+  - **Mutation replay** applying transactions in LSN order
+  - **Tree validation** ensuring all invariants satisfied
+  - **Recovery optimization** (incremental, parallel, checkpoint-assisted)
+  - **Error handling** for WAL corruption, incomplete txns, allocation failures
+  - **Comprehensive Rust implementation** with examples
+
+  **Key Deliverables**:
+  - recover_btree() main entry point with 7-step algorithm
+  - scan_wal_for_commits() for commit record extraction
+  - filter_committed_transactions() for sorting and validation
+  - replay_mutations() for applying changes to B+Tree
+  - validate_recovered_tree() for invariant checking
+  - RecoveryStats with comprehensive metrics
+  - Corruption resync with 4KB garbage threshold
+  - Incremental recovery from checkpoint LSN
+  - Parallel recovery with transaction partitioning
+  - 1000+ lines of detailed natural language specification (no code)
+
+- [x] **6.18** Create `06-btree-tests.md` - **[DONE]**
   - **LIST**: Test cases
   - **EXPLAIN**: Invariant checking
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive test specification complete
+
+  **Work Summary**:
+  - **5 test categories** documented (unit, integration, property, hardening, performance)
+  - **100+ test scenarios** specified across all categories
+  - **Unit tests** for node structures, encoding, search, split, merge, delta
+  - **Integration tests** for operations, growth, shrink, transactions, recovery
+  - **Property-based tests** using proptest for invariants
+  - **Hardening tests** for crash simulation, corruption, invalid input, exhaustion
+  - **Performance benchmarks** with targets for latency and throughput
+  - **Invariant checking** functions for comprehensive verification
+  - **CI/CD integration** strategy defined
+
+  **Key Deliverables**:
+  - Node structure tests (header validation, capacity, checksums)
+  - Key/value encoding tests (round-trip, comparison, validation)
+  - Binary search tests (internal and leaf nodes)
+  - Split/merge tests (leaf, internal, root)
+  - Delta layer tests (record, serialize, lookup)
+  - Integration tests (CRUD operations, tree growth/shrink)
+  - Property tests (invariants, ordering, idempotency, determinism)
+  - Hardening tests (crashes, corruption, invalid input, OOM)
+  - Performance benchmarks (latency, throughput, build, recovery)
+  - verify_tree_invariants() and verify_node_invariants() functions
+  - 1200+ lines of detailed natural language specification (no code)
 
 ---
 
