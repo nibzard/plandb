@@ -6,15 +6,62 @@
 
 **All Phases 0-14 COMPLETE** - 134 tasks implemented and committed
 
-**Latest Commit**: `7bc587b` - "fix(core): Fix compilation errors in query plan and recovery modules"
+**Latest Commit**: `90d7d80` - "docs(todo-rust): Document integration test fixes"
 
-**Git Status**: Clean - all changes committed
+**Git Status**: UNCOMMITTED - Working on B+Tree search bug fix
 
-### Latest Work: Compilation Fixes (2026-01-04)
+### Latest Work: B+Tree Search Bug Investigation (2026-01-04)
+
+**Status**: [ ] IN PROGRESS - Critical bug identified, investigation ongoing
+
+**Issue**: Integration tests failing because B+Tree search cannot find keys that were just inserted
+
+**Findings**:
+- Data IS being written correctly (leaf contains 200 entries)
+- Binary search for "workflow-00000000" fails
+- Closest key found is "workflow-00000001" at position 1
+- This suggests position 0 contains a different key than expected
+
+**Root Cause Hypothesis**:
+1. Key encoding issue during insertion
+2. Key comparison bug in binary search
+3. Entries not being sorted correctly after insertion
+
+**Debug Output Added**:
+- `WriteTxn::commit`: Logs transaction ID and mutation count
+- `BTree::get`: Logs root_page_id, key, and snapshot_lsn
+- `LeafNode::find`: Logs search failure and closest keys
+- `ReadTxn::get`: Logs transaction lookup details
+
+**Files Modified** (DEBUG - NOT COMMITTED):
+- `northstar-core/src/txn/write_txn.rs` - Added commit logging
+- `northstar-core/src/txn/read_txn.rs` - Added read logging
+- `northstar-core/src/btree/tree.rs` - Added BTree get logging
+- `northstar-core/src/btree/node.rs` - Added LeafNode find logging
+- `northstar-test/src/integration/common.rs` - Added populate_db logging
+- `northstar-test/src/integration/end_to_end.rs` - Added test assertion logging
+
+**Meta Page Persistence Fix** (COMMITTED):
+- Added `Pager::commit_transaction()` method
+- Added `SnapshotRegistry::commit_transaction()` method
+- Modified `Db::register_snapshot()` to take write lock and persist meta
+- This ensures transaction state is written to meta pages for durability
+
+**Blockers**:
+- B+Tree search bug must be fixed before integration tests can pass
+- Without fixing search, data written cannot be read back
+
+**Next Steps**:
+1. Add more debug output to see what keys are actually in position 0
+2. Verify key encoding during insertion
+3. Check if entries are being sorted correctly
+4. Fix the root cause once identified
+
+---
+
+### Previous Work: Compilation Fixes (2026-01-04)
 
 **Commit**: `7bc587b` - "fix(core): Fix compilation errors in query plan and recovery modules"
-
-**Blocker Identified**: Test execution is extremely slow (tests take 2+ minutes to even start). This is blocking validation of test fixes.
 
 **Compilation Fixes Applied**:
 1. **Lsn Constructor Calls** (backup.rs, failover.rs, replication.rs, restore.rs)

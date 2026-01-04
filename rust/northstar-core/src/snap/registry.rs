@@ -302,6 +302,14 @@ impl SnapshotRegistry {
         self.pager.sync()
     }
 
+    /// Commit transaction state to meta pages.
+    ///
+    /// Updates the pager's meta pages with the new transaction ID and root page ID,
+    /// then flushes to disk for persistence.
+    pub(crate) fn commit_transaction(&mut self, txn_id: TransactionId, root_page_id: PageId) -> Result<()> {
+        self.pager.commit_transaction(txn_id, root_page_id)
+    }
+
     /// Apply mutations to the B+Tree and return the new root page ID.
     ///
     /// This method takes a closure that receives a mutable B+Tree reference

@@ -515,11 +515,19 @@ impl Db {
     }
 
     /// Register a new snapshot after transaction commit (internal use).
+    ///
+    /// This also persists the transaction state to meta pages for durability.
     pub(crate) fn register_snapshot(&self, txn_id: TransactionId, root_page_id: crate::PageId) -> Result<()> {
-        let inner = self.inner.read()
+        let mut inner = self.inner.write()
             .map_err(|_| Error::Transaction(TransactionError::LockPoisoned))?;
 
-        inner.snap_registry.register_snapshot(txn_id, root_page_id)
+        // First register the snapshot in memory
+        inner.snap_registry.register_snapshot(txn_id, root_page_id)?;
+
+        // Then commit the transaction state to meta pages for persistence
+        inner.snap_registry.commit_transaction(txn_id, root_page_id)?;
+
+        Ok(())
     }
 
     /// Get mutable access to the inner state (internal use for write operations).

@@ -51,11 +51,7 @@ export default defineConfig({
 					items: [
 						{
 							label: 'Zig API Documentation',
-							href: '/api/index.html',
-							badge: {
-								text: 'Generated',
-								variant: 'note'
-							}
+							link: '/api/index.html',
 						}
 					]
 				},

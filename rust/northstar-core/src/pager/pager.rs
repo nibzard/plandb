@@ -614,6 +614,29 @@ impl Pager {
         MetaState::from_page(&page).ok()
     }
 
+    /// Update and persist meta pages with new transaction state.
+    ///
+    /// This should be called after transaction commit to update the
+    /// committed transaction ID and root page ID in the meta pages.
+    ///
+    /// # Arguments
+    ///
+    /// * `txn_id` - New committed transaction ID
+    /// * `root_page_id` - New root page ID
+    pub fn commit_transaction(&mut self, txn_id: TransactionId, root_page_id: PageId) -> Result<()> {
+        // Update current meta state
+        self.current_meta.update_committed_txn_id(txn_id);
+        self.current_meta.update_root_page_id(root_page_id);
+
+        // Write both meta pages
+        self.write_meta_pages()?;
+
+        // Sync to ensure meta pages are persisted
+        self.storage.sync()?;
+
+        Ok(())
+    }
+
     /// Write both meta pages
     fn write_meta_pages(&mut self) -> Result<()> {
         // Write meta A

@@ -19,12 +19,14 @@ fn test_complete_workflow() -> Result<()> {
     // Phase 2: Query and verify
     let txn = db.begin_read()?;
     let value = txn.get(b"workflow-00000000")?;
-    assert!(value.is_some());
+    println!("Value for workflow-00000000: {:?}", value);
+    assert!(value.is_some(), "Key workflow-00000000 should exist");
 
     // Phase 3: Verify multiple keys
     for i in 0..10 {
         let key = format!("workflow-{:08x}", i);
         let result = txn.get(key.as_bytes())?;
+        println!("Value for {}: {:?}", key, result.is_some());
         assert!(result.is_some());
     }
 

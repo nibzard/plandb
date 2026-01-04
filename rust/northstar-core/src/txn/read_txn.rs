@@ -36,10 +36,14 @@ impl<'a> ReadTxn<'a> {
     /// Performs a B+tree lookup using this transaction's snapshot.
     /// Returns None if the key doesn't exist.
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        self.db.with_btree(self.root_page_id, |btree| {
+        println!("ReadTxn::get: txn_id={}, root_page_id={}, key={:?}", self.txn_id.as_u64(), self.root_page_id.as_u64(), std::str::from_utf8(key).unwrap_or("<binary>"));
+        let result = self.db.with_btree(self.root_page_id, |btree| {
             let snapshot_lsn = crate::types::Lsn::from(self.txn_id.as_u64());
+            println!("  snapshot_lsn={}", snapshot_lsn.as_u64());
             btree.get(key, snapshot_lsn)
-        })
+        })?;
+        println!("ReadTxn::get: result={:?}", result.is_some());
+        Ok(result)
     }
 
     /// Scan all keys with the given prefix.

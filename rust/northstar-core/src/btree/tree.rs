@@ -74,6 +74,9 @@ impl<'a> BTree<'a> {
 
     /// Get a value by key
     pub fn get(&mut self, key: &[u8], snapshot_lsn: Lsn) -> Result<Option<Vec<u8>>> {
+        let key_str = std::str::from_utf8(key).unwrap_or("<binary>");
+        println!("BTree::get: root_page_id={}, key={}, snapshot_lsn={}", self.root_page_id.as_u64(), key_str, snapshot_lsn.as_u64());
+
         let mut current_page_id = self.root_page_id;
         let mut ctx = SearchContext::new();
 
@@ -85,15 +88,22 @@ impl<'a> BTree<'a> {
                 Node::Internal(internal) => {
                     // Find child to traverse
                     let child_id = internal.find_child(key);
+                    println!("  Internal node page={}, child={}", current_page_id.as_u64(), child_id);
                     ctx.push(current_page_id, 0);
                     current_page_id = PageId::from(child_id);
                 }
                 Node::Leaf(leaf) => {
+                    println!("  Leaf node page={}, num_keys={}", current_page_id.as_u64(), leaf.entries.len());
                     // Search for key in leaf
                     if let Some(entry) = leaf.find(key) {
+                        println!("  Found entry: lsn={}, value_len={}", entry.lsn, entry.value.len());
                         if entry.lsn <= snapshot_lsn {
                             return Ok(Some(entry.value.clone()));
+                        } else {
+                            println!("  LSN check failed: entry.lsn={} > snapshot_lsn={}", entry.lsn, snapshot_lsn.as_u64());
                         }
+                    } else {
+                        println!("  Key not found in leaf");
                     }
                     return Ok(None);
                 }

@@ -215,10 +215,20 @@ impl LeafNode {
 
     /// Find entry by key (binary search)
     pub fn find(&self, key: &[u8]) -> Option<&Entry> {
-        self.entries
-            .binary_search_by(|probe| probe.key.as_slice().cmp(key))
-            .ok()
-            .map(|pos| &self.entries[pos])
+        let result = self.entries.binary_search_by(|probe| probe.key.as_slice().cmp(key));
+
+        if let Err(pos) = result {
+            println!("    LeafNode::find key={:?} not found", std::str::from_utf8(key).unwrap_or("<binary>"));
+            if pos < self.entries.len() {
+                println!("      Closest key at position {}: {:?}", pos, std::str::from_utf8(&self.entries[pos].key).unwrap_or("<binary>"));
+            } else if pos > 0 && self.entries.len() > 0 {
+                println!("      Last key at position {}: {:?}", pos - 1, std::str::from_utf8(&self.entries[pos - 1].key).unwrap_or("<binary>"));
+            }
+            return None;
+        }
+
+        let pos = result.ok()?;
+        Some(&self.entries[pos])
     }
 
     /// Remove entry by key

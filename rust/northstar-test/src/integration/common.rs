@@ -46,11 +46,16 @@ pub fn populate_db(db: &Db, count: usize, prefix: &str) -> Result<()> {
     let test_data = generate_test_kv(count, prefix);
     let mut txn = db.begin_write()?;
 
+    println!("populate_db: Writing {} items with prefix '{}'", count, prefix);
+
     for (key, value) in test_data {
         txn.put(&key, &value)?;
     }
 
+    println!("populate_db: Committing transaction...");
     txn.commit()?;
+    println!("populate_db: Transaction committed successfully");
+
     Ok(())
 }
 

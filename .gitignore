@@ -49,3 +49,4 @@ test_arraylist
 # Rust build artifacts
 rust/target/
 
+.vercel

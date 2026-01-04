@@ -128,6 +128,8 @@ impl<'a> WriteTxn<'a> {
         let txn_id = self.txn_id();
         let mutations = std::mem::take(&mut self.ctx.mutations);
 
+        println!("WriteTxn::commit: txn_id={}, mutations={}", txn_id.as_u64(), mutations.len());
+
         let new_root_page_id = self.db.apply_mutations(|btree| {
             // Apply each mutation with this transaction's LSN
             let lsn = Lsn::from(txn_id.as_u64());
@@ -146,10 +148,10 @@ impl<'a> WriteTxn<'a> {
             Ok(())
         })?;
 
-        // Sync to ensure mutations are persisted to disk
-        self.db.sync()?;
+        println!("WriteTxn::commit: new_root_page_id={}", new_root_page_id.as_u64());
 
         // Register new snapshot with updated root page ID
+        // This also persists the transaction state to meta pages
         self.db.register_snapshot(txn_id, new_root_page_id)?;
 
         // Transition to Committed state
