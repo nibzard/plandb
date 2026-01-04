@@ -26,14 +26,14 @@
 //! # Example
 //!
 //! ```rust
-//! use northstar_core::{Pager, snap::SnapshotRegistry};
+//! use northstar_core::{Pager, snap::{SnapshotRegistry, SnapshotOps}};
 //!
-//! # async fn example() -> northstar_core::Result<()> {
-//! let pager = Pager::new_in_memory();
+//! # fn example() -> northstar_core::Result<()> {
+//! let pager = Pager::create_memory()?;
 //! let registry = SnapshotRegistry::new(pager);
 //!
 //! // Create a new snapshot
-//! let snapshot = registry.snapshot().await?;
+//! let snapshot = registry.snapshot()?;
 //!
 //! // Use snapshot for reads
 //! let root_id = snapshot.root_page_id();

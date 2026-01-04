@@ -67,8 +67,8 @@ impl SnapshotRegistry {
     /// ```rust
     /// use northstar_core::{Pager, snap::SnapshotRegistry};
     ///
-    /// # async fn example() -> northstar_core::Result<()> {
-    /// let pager = Pager::create_memory();
+    /// # fn example() -> northstar_core::Result<()> {
+    /// let pager = Pager::create_memory()?;
     /// let registry = SnapshotRegistry::new(pager);
     /// # Ok(())
     /// # }
@@ -115,8 +115,8 @@ impl SnapshotRegistry {
     /// ```rust
     /// use northstar_core::{Pager, PageId, TransactionId, snap::SnapshotRegistry};
     ///
-    /// # async fn example() -> northstar_core::Result<()> {
-    /// let pager = Pager::create_memory();
+    /// # fn example() -> northstar_core::Result<()> {
+    /// let pager = Pager::create_memory()?;
     /// let registry = SnapshotRegistry::new(pager);
     ///
     /// registry.register_snapshot(TransactionId::FIRST, PageId::new(10))?;
