@@ -1335,7 +1335,7 @@
 - [x] **6.6** Create `06-btree-split.md` - **[DONE]**
   - **DESCRIBE**: Node split algorithm
   - **EXPLAIN**: Split point selection
-  - **Completed**: 2026-01-04 (commit TBD)
+  - **Completed**: 2026-01-04 (commit d0b79b5)
   - **Blockers**: None - comprehensive split specification complete
 
   **Work Summary**:
@@ -1361,18 +1361,98 @@
   - Recovery and rollback strategies for all failure scenarios
   - Rust implementation with type definitions, split algorithms, and validation
   - Comprehensive testing guidance with unit, property, integration, fuzzing, and performance tests
+  - 1450 lines of detailed natural language specification (no code)
 
-- [ ] **6.7** Create `06-btree-delete.md`
+- [x] **6.7** Create `06-btree-delete.md` - **[DONE]**
   - **DESCRIBE**: Delete operation
   - **EXPLAIN**: Underflow handling
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive delete specification complete
 
-- [ ] **6.8** Create `06-btree-merge.md`
+  **Work Summary**:
+  - **Complete delete algorithms** documented for leaf and internal nodes
+  - **Tombstone management** specified for MVCC deletes
+  - **Underflow detection** algorithms with merge/borrow triggering
+  - **Cascade delete handling** for multi-level tree restructuring
+  - **Error handling** comprehensive with rollback strategies
+  - **Rust implementation guidance** provided for all operations
+
+  **Key Deliverables**:
+  - DeleteResult and DeleteStatus types with comprehensive outcomes
+  - DeleteContext tracking state during delete operation
+  - TombstoneRecord for MVCC delete tracking
+  - Leaf node delete with tombstone creation (6-step algorithm)
+  - Internal node delete with separator removal
+  - Underflow detection checking active entry count vs minimum
+  - Tombstone visibility checking based on LSN and snapshot
+  - Tombstone reclamation for old deleted entries
+  - High-level delete orchestration with search, delete, underflow check, rebalancing
+  - Complete error handling for not found, I/O, structural, and MVCC errors
+  - Rust implementation with type definitions and delete algorithms
+  - Comprehensive testing guidance with unit, property, integration, and fuzzing tests
+  - 850+ lines of detailed natural language specification (no code)
+
+- [x] **6.8** Create `06-btree-merge.md` - **[DONE]**
   - **DESCRIBE**: Merge algorithm
   - **EXPLAIN**: Merge conditions
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive merge specification complete
 
-- [ ] **6.9** Create `06-btree-borrow.md`
+  **Work Summary**:
+  - **Complete merge algorithms** documented for leaf and internal nodes
+  - **Merge condition detection** with capacity and eligibility checking
+  - **Leaf node merge** (right into left, left into right) with linked list updates
+  - **Internal node merge** with parent separator insertion and child redistribution
+  - **Root merge** algorithm for tree shrink and height decrease
+  - **Cascade merge operations** for upward propagation
+  - **Error handling** extensive with recovery strategies
+  - **Rust implementation guidance** provided for all operations
+
+  **Key Deliverables**:
+  - MergeResult and MergeDirection types with comprehensive metadata
+  - MergeContext tracking merge state and validation
+  - MergeCandidates with eligibility and direction recommendation
+  - Merge condition detection checking combined capacity
+  - Leaf merge right into left (10-step process)
+  - Leaf merge left into right (symmetric algorithm)
+  - Internal node merge with parent separator insertion
+  - Root merge decreasing tree height by 1
+  - Cascade merge propagation with recursive upward handling
+  - Complete error handling for capacity, I/O, structural, and cascade errors
+  - Rust implementation with type definitions and merge algorithms
+  - Comprehensive testing guidance with unit, property, integration, and fuzzing tests
+  - 1000+ lines of detailed natural language specification (no code)
+
+- [x] **6.9** Create `06-btree-borrow.md` - **[DONE]**
   - **DESCRIBE**: Borrow from sibling
   - **EXPLAIN**: Redistribution strategy
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive borrow specification complete
+
+  **Work Summary**:
+  - **Complete borrow algorithms** documented for leaf and internal nodes
+  - **Borrow condition detection** with excess entry calculation
+  - **Leaf node borrow** (from right, from left) with separator updates
+  - **Internal node borrow** (from right, from left) with parent separator movement
+  - **Borrow vs merge decision logic** preferring borrow for efficiency
+  - **Error handling** comprehensive with fallback to merge
+  - **Rust implementation guidance** provided for all operations
+
+  **Key Deliverables**:
+  - BorrowResult and BorrowDirection types with comprehensive metadata
+  - BorrowContext tracking borrow state and planning
+  - BorrowCandidates with eligibility, excess counts, and direction recommendation
+  - Borrow condition detection checking donor excess vs borrower need
+  - Leaf borrow from right (9-step algorithm moving leftmost entries)
+  - Leaf borrow from left (symmetric algorithm moving rightmost entries)
+  - Internal borrow from right with parent separator movement to left
+  - Internal borrow from left with parent separator movement to right
+  - Separator update logic for maintaining search path correctness
+  - Child parent pointer updates for internal node borrows
+  - Complete error handling for insufficient excess, I/O, and structural errors
+  - Rust implementation with type definitions and borrow algorithms
+  - Comprehensive testing guidance with unit, property, integration, and fuzzing tests
+  - 850+ lines of detailed natural language specification (no code)
 
 - [ ] **6.10** Create `06-btree-grow.md`
   - **DESCRIBE**: Tree growth (root split)
