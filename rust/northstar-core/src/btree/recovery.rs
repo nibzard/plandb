@@ -6,7 +6,7 @@
 use crate::{
     error::{Error, Result},
     types::{PageId, Lsn},
-    wal::{Wal, CommitRecord, Mutation},
+    wal::{Wal, CommitRecord, Mutation, WalReplayIterator},
 };
 use super::BTree;
 
@@ -239,33 +239,40 @@ fn scan_wal_for_commits(ctx: &mut RecoveryContext) -> Result<Vec<CommitRecord>> 
     let mut corruption_count = 0;
     const MAX_CORRUPTIONS: usize = 10;
 
-    // Iterate through WAL records
-    // Note: This is a simplified implementation. The actual WAL module
-    // would provide a replay iterator or similar interface.
-    // For now, we'll assume the WAL has a method to get commit records.
+    // Create replay iterator from WAL
+    let mut iterator = ctx.wal.replay_ref()?;
 
-    // TODO: Implement actual WAL scanning when WAL replay API is available
-    // For now, return empty vector as placeholder
-    //
-    // Expected implementation:
-    // for record in ctx.wal.iter_records() {
-    //     match record {
-    //         Ok(WalRecord::Commit(commit)) => {
-    //             commits.push(commit);
-    //             corruption_count = 0;
-    //         }
-    //         Err(Error::Validation(_)) => {
-    //             corruption_count += 1;
-    //             if corruption_count > MAX_CORRUPTIONS {
-    //                 return Err(Error::Recovery(RecoveryError::WalCorruption));
-    //             }
-    //             // Attempt resync - skip to next 4KB boundary
-    //             ctx.wal.resync(4096)?;
-    //         }
-    //         Err(e) => return Err(e),
-    //         _ => {} // Skip non-commit records
-    //     }
-    // }
+    // Iterate through WAL records
+    loop {
+        match iterator.next() {
+            Some(Ok(commit)) => {
+                // Successfully read a commit record
+                commits.push(commit);
+                corruption_count = 0; // Reset corruption counter on success
+            }
+            Some(Err(Error::Validation(_))) => {
+                // Corruption detected - attempt to resync
+                corruption_count += 1;
+                if corruption_count > MAX_CORRUPTIONS {
+                    return Err(Error::Validation(
+                        crate::error::ValidationError::Generic(
+                            format!("WAL corruption: failed to resync after {} attempts", corruption_count)
+                        ),
+                    ));
+                }
+                // Attempt resync - skip to next 4KB boundary
+                iterator.resync(4096)?;
+            }
+            Some(Err(e)) => {
+                // Other error - propagate
+                return Err(e);
+            }
+            None => {
+                // End of WAL
+                break;
+            }
+        }
+    }
 
     Ok(commits)
 }

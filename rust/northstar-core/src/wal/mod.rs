@@ -8,7 +8,7 @@ mod record;
 mod wal;
 
 // Re-export main types
-pub use wal::Wal;
+pub use wal::{Wal, WalReplayIterator};
 
 // Re-export config types
 pub use config::{SyncStrategy, WalConfig, WalState};

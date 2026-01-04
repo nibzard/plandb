@@ -10,7 +10,218 @@ use crate::error::{Error, IoError, Result, ValidationError};
 use crate::types::Lsn;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::mem::ManuallyDrop;
 use std::path::Path;
+
+/// Iterator over commit records in the WAL
+pub struct WalReplayIterator {
+    /// WAL file being replayed
+    file: File,
+    /// Current file position
+    file_pos: u64,
+    /// Size of the WAL file
+    file_size: u64,
+    /// Current LSN
+    current_lsn: u64,
+    /// Whether iteration is complete
+    done: bool,
+}
+
+impl WalReplayIterator {
+    /// Create a new WAL replay iterator
+    fn new(mut file: File, file_size: u64) -> Result<Self> {
+        // Start from beginning of file
+        file.seek(SeekFrom::Start(0))
+            .map_err(|e| Error::Io(IoError::from(e)))?;
+
+        Ok(Self {
+            file,
+            file_pos: 0,
+            file_size,
+            current_lsn: 0,
+            done: false,
+        })
+    }
+
+    /// Get current LSN
+    pub fn current_lsn(&self) -> u64 {
+        self.current_lsn
+    }
+
+    /// Attempt to resync to next valid record after corruption
+    ///
+    /// Seeks forward by the specified byte offset to find a potential
+    /// valid record boundary.
+    pub fn resync(&mut self, offset: u64) -> Result<()> {
+        let new_pos = self.file_pos + offset;
+
+        if new_pos >= self.file_size {
+            self.done = true;
+            return Ok(());
+        }
+
+        self.file.seek(SeekFrom::Start(new_pos))
+            .map_err(|e| Error::Io(IoError::from(e)))?;
+        self.file_pos = new_pos;
+
+        Ok(())
+    }
+}
+
+impl Iterator for WalReplayIterator {
+    type Item = Result<CommitRecord>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+
+        // Check if we've reached EOF
+        if self.file_pos >= self.file_size {
+            self.done = true;
+            return None;
+        }
+
+        // Try to read next commit record
+        match Self::read_next_commit(&mut self.file, self.file_pos, self.file_size) {
+            Ok(Some((record, record_size))) => {
+                self.current_lsn += 1;
+                self.file_pos += record_size;
+                Some(Ok(record))
+            }
+            Ok(None) => {
+                // EOF or incomplete record - stop iteration
+                self.done = true;
+                None
+            }
+            Err(Error::Validation(_)) => {
+                // Corruption detected - stop iteration
+                // The caller can use resync() if they want to continue
+                self.done = true;
+                None
+            }
+            Err(e) => Some(Err(e)),
+        }
+    }
+}
+
+impl WalReplayIterator {
+    /// Read the next commit record from the WAL
+    ///
+    /// Returns Ok(Some((record, size))) on success,
+    /// Ok(None) on EOF or incomplete record,
+    /// Err on corruption that can't be handled.
+    fn read_next_commit(
+        file: &mut File,
+        file_pos: u64,
+        file_size: u64,
+    ) -> Result<Option<(CommitRecord, u64)>> {
+        // Check if we have enough bytes for header
+        if file_pos + HEADER_SIZE as u64 > file_size {
+            // EOF - no more records
+            return Ok(None);
+        }
+
+        // Read header
+        file.seek(SeekFrom::Start(file_pos))
+            .map_err(|e| Error::Io(IoError::from(e)))?;
+
+        let mut header_buf = [0u8; HEADER_SIZE];
+        if let Err(e) = file.read_exact(&mut header_buf) {
+            return Err(Error::Io(IoError::from(e)));
+        }
+
+        let header = match RecordHeader::from_bytes(&header_buf) {
+            Ok(h) => h,
+            Err(_) => {
+                // Invalid header - likely corruption, signal to resync
+                return Ok(None);
+            }
+        };
+
+        // Validate header
+        if header.validate().is_err() {
+            // Invalid header - signal to resync
+            return Ok(None);
+        }
+
+        // Check record type
+        let record_type = match RecordType::from_u16(header.record_type) {
+            Some(rt) => rt,
+            None => {
+                // Unknown record type - skip
+                return Ok(None);
+            }
+        };
+
+        if record_type != RecordType::Commit {
+            // Skip non-commit records (for future extensibility)
+            let payload_len = header.payload_len as usize;
+            let record_size = HEADER_SIZE + payload_len + TRAILER_SIZE;
+
+            if file_pos + record_size as u64 > file_size {
+                return Ok(None);
+            }
+
+            return Ok(None);
+        }
+
+        let payload_len = header.payload_len as usize;
+        let record_size = HEADER_SIZE + payload_len + TRAILER_SIZE;
+
+        // Check if complete record fits in file
+        if file_pos + record_size as u64 > file_size {
+            // Incomplete record at end - stop
+            return Ok(None);
+        }
+
+        // Read payload
+        let mut payload = vec![0u8; payload_len];
+        file.read_exact(&mut payload)
+            .map_err(|e| Error::Io(IoError::from(e)))?;
+
+        // Validate payload checksum
+        let calculated_checksum = checksum::checksum(&payload);
+        if calculated_checksum != header.payload_crc32c {
+            return Err(Error::Validation(ValidationError::ChecksumMismatch {
+                expected: header.payload_crc32c,
+                actual: calculated_checksum,
+            }));
+        }
+
+        // Read and validate trailer
+        let trailer_offset = file_pos + HEADER_SIZE as u64 + payload_len as u64;
+        file.seek(SeekFrom::Start(trailer_offset))
+            .map_err(|e| Error::Io(IoError::from(e)))?;
+
+        let mut trailer_buf = [0u8; TRAILER_SIZE];
+        file.read_exact(&mut trailer_buf)
+            .map_err(|e| Error::Io(IoError::from(e)))?;
+
+        let trailer = match RecordTrailer::from_bytes(&trailer_buf) {
+            Ok(t) => t,
+            Err(_) => {
+                // Invalid trailer - corruption
+                return Ok(None);
+            }
+        };
+
+        if trailer.validate(record_size as u32).is_err() {
+            return Ok(None);
+        }
+
+        // Deserialize commit record from payload
+        let commit_record = match CommitRecord::deserialize_payload(header.txn_id, &payload) {
+            Ok(record) => record,
+            Err(_) => {
+                // Failed to deserialize - corruption
+                return Ok(None);
+            }
+        };
+
+        Ok(Some((commit_record, record_size as u64)))
+    }
+}
 
 /// Default WAL buffer size (64KB)
 const DEFAULT_BUFFER_SIZE: usize = 64 * 1024;
@@ -371,6 +582,81 @@ impl Wal {
         }
         Ok(())
     }
+
+    /// Create a replay iterator for this WAL
+    ///
+    /// Returns an iterator that yields commit records from the WAL in LSN order.
+    /// The iterator takes ownership of the WAL file handle, so the WAL cannot
+    /// be used for writing after calling this method.
+    ///
+    /// This is the primary API for crash recovery and WAL replay.
+    ///
+    /// # Returns
+    /// Iterator over commit records in the WAL
+    ///
+    /// # Errors
+    /// - Returns error if WAL file cannot be reopened for reading
+    pub fn replay(mut self) -> Result<WalReplayIterator> {
+        // Flush any buffered data first
+        if self.buffer_pos > 0 {
+            self.flush_buffer()?;
+        }
+
+        // Get file size before consuming self
+        let file_size = self.file.metadata()
+            .map_err(|e| Error::Io(IoError::from(e)))?
+            .len();
+
+        // Prevent Drop from closing the file - we're transferring ownership
+        let mut this = ManuallyDrop::new(self);
+
+        // Extract the file handle
+        let file = unsafe {
+            // SAFETY: We're taking ownership of the file and preventing
+            // the Drop impl from running. The file will be owned by
+            // WalReplayIterator which will properly close it.
+            std::ptr::read(&this.file)
+        };
+
+        // Create iterator
+        WalReplayIterator::new(file, file_size)
+    }
+
+    /// Create a replay iterator without consuming the WAL
+    ///
+    /// This method clones the file handle to create an iterator for reading
+    /// while still allowing writes to the WAL. This is useful for recovery
+    /// scenarios where you need to keep the WAL open.
+    ///
+    /// Note: This creates a second file handle, which has overhead.
+    /// Use `replay()` instead if you don't need to keep the WAL open.
+    ///
+    /// # Returns
+    /// Iterator over commit records in the WAL
+    ///
+    /// # Errors
+    /// - Returns error if WAL file handle cannot be cloned
+    /// - Returns error if file metadata cannot be read
+    pub fn replay_ref(&self) -> Result<WalReplayIterator> {
+        // Flush any buffered data first
+        if self.buffer_pos > 0 {
+            return Err(Error::Storage(crate::error::StorageError::Wal(
+                "WAL has unflushed data. Call sync() before replay_ref().".to_string(),
+            )));
+        }
+
+        // Clone the file handle
+        let file_clone = self.file.try_clone()
+            .map_err(|e| Error::Io(IoError::from(e)))?;
+
+        // Get file size
+        let file_size = self.file.metadata()
+            .map_err(|e| Error::Io(IoError::from(e)))?
+            .len();
+
+        // Create iterator from cloned handle
+        WalReplayIterator::new(file_clone, file_size)
+    }
 }
 
 impl Drop for Wal {
@@ -551,5 +837,96 @@ mod tests {
 
         assert_eq!(wal.current_lsn(), 1000);
         assert!(wal.sync_needed());
+    }
+
+    #[test]
+    fn test_replay_empty_wal() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+
+        // Create empty WAL and sync
+        {
+            let mut wal = Wal::create(&wal_path).unwrap();
+            wal.sync().unwrap();
+        }
+
+        // Reopen and replay
+        let wal = Wal::open(&wal_path).unwrap();
+        let mut iterator = wal.replay_ref().unwrap();
+
+        // Should have no records
+        assert_eq!(iterator.current_lsn(), 0);
+        assert!(iterator.next().is_none());
+    }
+
+    #[test]
+    fn test_replay_single_commit() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+
+        // Create WAL and append a record
+        {
+            let mut wal = Wal::create(&wal_path).unwrap();
+
+            let mutations = vec![super::super::record::Mutation::Put {
+                key: vec![1, 2, 3],
+                value: vec![4, 5, 6],
+            }];
+
+            let record = CommitRecord::new(1, 0, mutations);
+            wal.append_commit_record(&record).unwrap();
+            wal.sync().unwrap();
+        }
+
+        // Reopen and replay
+        let wal = Wal::open(&wal_path).unwrap();
+        let mut iterator = wal.replay_ref().unwrap();
+
+        // Should have one record
+        let commit = iterator.next().unwrap().unwrap();
+        assert_eq!(commit.txn_id(), 1);
+        assert_eq!(commit.mutations().len(), 1);
+        assert_eq!(iterator.current_lsn(), 1);
+
+        // No more records
+        assert!(iterator.next().is_none());
+    }
+
+    #[test]
+    fn test_replay_multiple_commits() {
+        let dir = tempdir().unwrap();
+        let wal_path = dir.path().join("test.wal");
+
+        // Create WAL and append multiple records
+        {
+            let mut wal = Wal::create(&wal_path).unwrap();
+
+            for i in 1..=10 {
+                let mutations = vec![super::super::record::Mutation::Put {
+                    key: vec![i as u8],
+                    value: vec![i as u8; 10],
+                }];
+
+                let record = CommitRecord::new(i, 0, mutations);
+                wal.append_commit_record(&record).unwrap();
+            }
+
+            wal.sync().unwrap();
+        }
+
+        // Reopen and replay
+        let wal = Wal::open(&wal_path).unwrap();
+        let mut iterator = wal.replay_ref().unwrap();
+
+        // Should have 10 records
+        let mut count = 0;
+        while let Some(result) = iterator.next() {
+            let commit = result.unwrap();
+            count += 1;
+            assert_eq!(commit.txn_id(), count);
+        }
+
+        assert_eq!(count, 10);
+        assert_eq!(iterator.current_lsn(), 10);
     }
 }
