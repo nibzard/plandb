@@ -566,6 +566,16 @@ impl Db {
             .map_err(|_| Error::Transaction(TransactionError::LockPoisoned))?;
         Ok(inner.query_cache.clone())
     }
+
+    /// Get mutable access to WAL for writing commit records (internal use).
+    pub(crate) fn with_wal<F, R>(&self, f: F) -> Result<R>
+    where
+        F: FnOnce(Option<&mut crate::wal::Wal>) -> Result<R>,
+    {
+        let mut inner = self.inner.write()
+            .map_err(|_| Error::Transaction(TransactionError::LockPoisoned))?;
+        Ok(f(inner.wal.as_mut())?)
+    }
 }
 
 /// Clone implementation for Db (creates a new handle to the same database)

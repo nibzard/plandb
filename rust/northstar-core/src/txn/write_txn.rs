@@ -4,8 +4,10 @@
 
 use crate::db::Db;
 use crate::error::Result;
-use crate::types::{TransactionId, Lsn};
+use crate::types::{TransactionId, Lsn, PageId};
+use crate::wal::CommitRecord;
 use super::context::TransactionContext;
+use super::Mutation;
 
 /// Write transaction with two-phase commit protocol.
 ///
@@ -17,6 +19,8 @@ pub struct WriteTxn<'a> {
     pub ctx: TransactionContext,
     /// Reference to database for operations.
     pub db: &'a Db,
+    /// Original root page ID before transaction (for rollback)
+    original_root_page_id: Option<PageId>,
 }
 
 impl<'a> WriteTxn<'a> {
@@ -25,6 +29,7 @@ impl<'a> WriteTxn<'a> {
         Self {
             ctx: TransactionContext::new(txn_id),
             db,
+            original_root_page_id: None,
         }
     }
 
@@ -65,8 +70,10 @@ impl<'a> WriteTxn<'a> {
         }
 
         // Fall back to reading from the database at latest snapshot
-        self.db.with_btree(self.db.get_snapshot_root(self.db.current_txn_id()).unwrap_or(crate::PageId::FIRST_DATA), |btree| {
-            let snapshot_lsn = crate::types::Lsn::from(self.db.current_txn_id().as_u64());
+        let root_page_id = self.db.get_snapshot_root(self.db.current_txn_id())
+            .unwrap_or(PageId::FIRST_DATA);
+        self.db.with_btree(root_page_id, |btree| {
+            let snapshot_lsn = Lsn::from(self.db.current_txn_id().as_u64());
             btree.get(key, snapshot_lsn)
         })
     }
@@ -93,18 +100,62 @@ impl<'a> WriteTxn<'a> {
 
     /// Prepare phase: write mutations to WAL.
     ///
-    /// TODO: Implement WAL integration
+    /// Writes transaction mutations to the WAL for durability.
+    /// If WAL is not enabled, this is a no-op but still transitions state.
     pub fn prepare(&mut self) -> Result<()> {
         if !self.ctx.has_mutations() {
             // No-op transaction with no mutations
             return Ok(());
         }
 
+        // Store original root page ID for potential rollback
+        self.original_root_page_id = self.db.get_snapshot_root(self.db.current_txn_id());
+
         // Transition to Preparing state
         self.ctx.transition_to_preparing()?;
 
-        // TODO: Write to WAL
-        Ok(())
+        // Write to WAL if enabled
+        self.db.with_wal(|wal| {
+            if let Some(wal) = wal {
+                // Create commit record with mutations
+                let mutations: Vec<crate::wal::Mutation> = self.ctx.mutations.iter()
+                    .map(|m| match m {
+                        Mutation::Put { key, value } => {
+                            crate::wal::Mutation::Put {
+                                key: key.clone(),
+                                value: value.clone(),
+                            }
+                        }
+                        Mutation::Delete { key } => {
+                            crate::wal::Mutation::Delete {
+                                key: key.clone(),
+                            }
+                        }
+                    })
+                    .collect();
+
+                // We don't know the new root page ID yet, so use 0
+                // It will be updated during commit phase
+                let record = CommitRecord::new(
+                    self.txn_id().as_u64(),
+                    0, // Will be updated after applying mutations
+                    mutations,
+                );
+
+                // Append to WAL - this durably logs the transaction
+                let _lsn = wal.append_commit_record(&record)?;
+
+                // Sync WAL to disk for durability
+                if wal.sync_needed() {
+                    wal.sync()?;
+                }
+
+                println!("WriteTxn::prepare: wrote {} mutations to WAL", self.ctx.mutations.len());
+            } else {
+                println!("WriteTxn::prepare: WAL not enabled, skipping");
+            }
+            Ok(())
+        })
     }
 
     /// Commit phase: apply mutations to database.
@@ -136,10 +187,10 @@ impl<'a> WriteTxn<'a> {
 
             for mutation in &mutations {
                 match mutation {
-                    super::Mutation::Put { key, value } => {
+                    Mutation::Put { key, value } => {
                         btree.put(key.clone(), value.clone(), lsn)?;
                     }
-                    super::Mutation::Delete { key } => {
+                    Mutation::Delete { key } => {
                         btree.delete(key, lsn)?;
                     }
                 }
@@ -162,15 +213,19 @@ impl<'a> WriteTxn<'a> {
 
     /// Abort the transaction and rollback changes.
     ///
-    /// TODO: Implement rollback with page restoration
+    /// Clears all pending mutations and restores original state.
+    /// If the transaction had been prepared (WAL written), the WAL record
+    /// will be ignored during recovery since no snapshot was registered.
     pub fn abort(mut self) {
         // Transition to Aborted state
         let _ = self.ctx.transition_to_aborted();
 
-        // TODO: Free allocated pages, restore modified pages
-
-        // Clear mutations
+        // Clear mutations - no changes were applied to B+Tree
+        // WAL records (if any) will be ignored during recovery since
+        // no snapshot was registered for this transaction
         self.ctx.clear();
+
+        println!("WriteTxn::abort: transaction aborted, mutations cleared");
     }
 
     /// Close the transaction and release resources.
