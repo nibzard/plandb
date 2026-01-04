@@ -25,12 +25,16 @@
 
 pub mod config;
 pub mod error;
+pub mod frame;
+pub mod handlers;
 pub mod protocol;
 pub mod state;
 
 // Re-exports
 pub use config::{PrimaryConfig, ReplicaConfig, ReplicationConfig, ReplicationRole};
 pub use error::ReplicationError;
+pub use frame::{FrameHeader, FrameReader, FrameWriter};
+pub use handlers::{HandshakeHandler, HeartbeatHandler, CommitRecordHandler, SnapshotHandler, ErrorHandler};
 pub use protocol::{MessageType, ReplicationMessage};
 pub use state::{ConnectionState, ReplicaInfo};
 

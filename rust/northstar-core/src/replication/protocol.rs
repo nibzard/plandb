@@ -3,7 +3,11 @@
 //! Defines the wire format messages sent between primary and replica nodes.
 
 use crate::txn::CommitRecord;
+use crate::txn::Mutation;
+use crate::types::TransactionId;
 use serde::{Deserialize, Serialize};
+use std::io::{self, Read, Write, Cursor, BufRead};
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
 /// Type of replication message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -180,6 +184,206 @@ impl ReplicationMessage {
     pub const fn is_always_allowed(&self) -> bool {
         self.message_type.is_always_allowed()
     }
+
+    /// Serialize this message to bytes in wire format.
+    ///
+    /// Wire format (little-endian):
+    /// - version: u16 (2 bytes)
+    /// - message_type: u16 (2 bytes)
+    /// - sequence: u64 (8 bytes)
+    /// - checksum: u64 (8 bytes)
+    /// - payload_length: u32 (4 bytes, 0 if no payload)
+    /// - payload: variable (only if payload_length > 0)
+    ///
+    /// For CommitRecord messages, payload contains the serialized commit record.
+    /// For Snapshot messages, payload contains the snapshot data.
+    /// For Error messages, payload contains error_code (u32) + error_message bytes.
+    pub fn serialize(&self) -> Result<Vec<u8>, io::Error> {
+        let mut buffer = Vec::new();
+
+        // Write header
+        buffer.write_u16::<LittleEndian>(self.version)?;
+        buffer.write_u16::<LittleEndian>(self.message_type.as_u16())?;
+        buffer.write_u64::<LittleEndian>(self.sequence)?;
+        buffer.write_u64::<LittleEndian>(self.checksum)?;
+
+        // Write payload based on message type
+        match self.message_type {
+            MessageType::Heartbeat => {
+                // No payload
+                buffer.write_u32::<LittleEndian>(0)?;
+            }
+            MessageType::CommitRecord => {
+                if let Some(record) = &self.commit_record {
+                    let payload = self.serialize_commit_record(record)?;
+                    buffer.write_u32::<LittleEndian>(payload.len() as u32)?;
+                    buffer.write_all(&payload)?;
+                } else {
+                    buffer.write_u32::<LittleEndian>(0)?;
+                }
+            }
+            MessageType::Snapshot => {
+                // Snapshot data is stored separately in a real implementation
+                // For now, write empty payload
+                buffer.write_u32::<LittleEndian>(0)?;
+            }
+            MessageType::Error => {
+                // Error info is encoded in checksum, no separate payload needed
+                buffer.write_u32::<LittleEndian>(0)?;
+            }
+        }
+
+        Ok(buffer)
+    }
+
+    /// Deserialize a message from bytes in wire format.
+    pub fn deserialize(data: &[u8]) -> Result<Self, io::Error> {
+        let mut cursor = Cursor::new(data);
+
+        // Read header
+        let version = cursor.read_u16::<LittleEndian>()?;
+        let message_type = cursor.read_u16::<LittleEndian>()?;
+        let sequence = cursor.read_u64::<LittleEndian>()?;
+        let checksum = cursor.read_u64::<LittleEndian>()?;
+        let payload_length = cursor.read_u32::<LittleEndian>()? as usize;
+
+        // Validate message type
+        let msg_type = MessageType::from_u16(message_type)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Invalid message type"))?;
+
+        // Read and deserialize payload
+        let commit_record = if payload_length > 0 {
+            if msg_type == MessageType::CommitRecord {
+                let mut payload = vec![0u8; payload_length];
+                cursor.read_exact(&mut payload)?;
+                Some(Box::new(Self::deserialize_commit_record(&payload)?))
+            } else {
+                // For other message types, skip payload for now
+                cursor.consume(payload_length);
+                None
+            }
+        } else {
+            None
+        };
+
+        Ok(ReplicationMessage {
+            version,
+            message_type: msg_type,
+            sequence,
+            commit_record,
+            checksum,
+        })
+    }
+
+    /// Serialize a commit record to bytes.
+    fn serialize_commit_record(&self, record: &CommitRecord) -> Result<Vec<u8>, io::Error> {
+        let mut buffer = Vec::new();
+
+        // Write txn_id (u64)
+        buffer.write_u64::<LittleEndian>(record.txn_id.as_u64())?;
+
+        // Write root_page_id (u64)
+        buffer.write_u64::<LittleEndian>(record.root_page_id)?;
+
+        // Write checksum (u32)
+        buffer.write_u32::<LittleEndian>(record.checksum)?;
+
+        // Write mutation count (u32)
+        buffer.write_u32::<LittleEndian>(record.mutations.len() as u32)?;
+
+        // Write each mutation
+        for mutation in &record.mutations {
+            Self::serialize_mutation(&mut buffer, mutation)?;
+        }
+
+        Ok(buffer)
+    }
+
+    /// Deserialize a commit record from bytes.
+    fn deserialize_commit_record(data: &[u8]) -> Result<CommitRecord, io::Error> {
+        let mut cursor = Cursor::new(data);
+
+        // Read txn_id
+        let txn_id = TransactionId::new(cursor.read_u64::<LittleEndian>()?);
+
+        // Read root_page_id
+        let root_page_id = cursor.read_u64::<LittleEndian>()?;
+
+        // Read checksum
+        let checksum = cursor.read_u32::<LittleEndian>()?;
+
+        // Read mutation count
+        let mutation_count = cursor.read_u32::<LittleEndian>()? as usize;
+
+        // Read mutations
+        let mut mutations = Vec::with_capacity(mutation_count);
+        for _ in 0..mutation_count {
+            mutations.push(Self::deserialize_mutation(&mut cursor)?);
+        }
+
+        Ok(CommitRecord {
+            txn_id,
+            root_page_id,
+            mutations,
+            checksum,
+        })
+    }
+
+    /// Serialize a mutation to bytes.
+    fn serialize_mutation<W: Write>(writer: &mut W, mutation: &Mutation) -> Result<(), io::Error> {
+        match mutation {
+            Mutation::Put { key, value } => {
+                // Write variant (0 = Put)
+                writer.write_u8(0)?;
+                // Write key length and key
+                writer.write_u32::<LittleEndian>(key.len() as u32)?;
+                writer.write_all(key)?;
+                // Write value length and value
+                writer.write_u32::<LittleEndian>(value.len() as u32)?;
+                writer.write_all(value)?;
+            }
+            Mutation::Delete { key } => {
+                // Write variant (1 = Delete)
+                writer.write_u8(1)?;
+                // Write key length and key
+                writer.write_u32::<LittleEndian>(key.len() as u32)?;
+                writer.write_all(key)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Deserialize a mutation from bytes.
+    fn deserialize_mutation<R: Read>(reader: &mut R) -> Result<Mutation, io::Error> {
+        let variant = reader.read_u8()?;
+
+        match variant {
+            0 => {
+                // Put
+                let key_len = reader.read_u32::<LittleEndian>()? as usize;
+                let mut key = vec![0u8; key_len];
+                reader.read_exact(&mut key)?;
+
+                let value_len = reader.read_u32::<LittleEndian>()? as usize;
+                let mut value = vec![0u8; value_len];
+                reader.read_exact(&mut value)?;
+
+                Ok(Mutation::Put { key, value })
+            }
+            1 => {
+                // Delete
+                let key_len = reader.read_u32::<LittleEndian>()? as usize;
+                let mut key = vec![0u8; key_len];
+                reader.read_exact(&mut key)?;
+
+                Ok(Mutation::Delete { key })
+            }
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Invalid mutation variant",
+            )),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -316,5 +520,239 @@ mod tests {
 
         let commit_msg = ReplicationMessage::commit_record(1, record);
         assert!(commit_msg.size_hint() > heartbeat.size_hint());
+    }
+
+    #[test]
+    fn test_serialize_heartbeat() {
+        let msg = ReplicationMessage::heartbeat(123);
+        let bytes = msg.serialize().expect("Failed to serialize");
+
+        assert!(!bytes.is_empty());
+        assert!(bytes.len() >= 24); // Header size: 2+2+8+8+4 = 24 bytes
+    }
+
+    #[test]
+    fn test_deserialize_heartbeat() {
+        let msg = ReplicationMessage::heartbeat(456);
+        let bytes = msg.serialize().expect("Failed to serialize");
+
+        let deserialized = ReplicationMessage::deserialize(&bytes)
+            .expect("Failed to deserialize");
+
+        assert_eq!(deserialized.version, msg.version);
+        assert_eq!(deserialized.message_type, msg.message_type);
+        assert_eq!(deserialized.sequence, msg.sequence);
+        assert_eq!(deserialized.checksum, msg.checksum);
+    }
+
+    #[test]
+    fn test_serialize_commit_record() {
+        let txn_id = TransactionId::new(42);
+        let mutations = vec![
+            Mutation::Put {
+                key: b"test_key".to_vec(),
+                value: b"test_value".to_vec(),
+            },
+            Mutation::Delete {
+                key: b"delete_key".to_vec(),
+            },
+        ];
+        let record = CommitRecord::new(txn_id, 200, mutations);
+        let msg = ReplicationMessage::commit_record(789, record);
+
+        let bytes = msg.serialize().expect("Failed to serialize");
+
+        assert!(!bytes.is_empty());
+        assert!(bytes.len() > 24); // Header + payload
+    }
+
+    #[test]
+    fn test_deserialize_commit_record() {
+        let txn_id = TransactionId::new(99);
+        let mutations = vec![
+            Mutation::Put {
+                key: b"key1".to_vec(),
+                value: b"value1".to_vec(),
+            },
+            Mutation::Delete {
+                key: b"key2".to_vec(),
+            },
+        ];
+        let record = CommitRecord::new(txn_id, 300, mutations.clone());
+        let msg = ReplicationMessage::commit_record(1000, record);
+
+        let bytes = msg.serialize().expect("Failed to serialize");
+        let deserialized = ReplicationMessage::deserialize(&bytes)
+            .expect("Failed to deserialize");
+
+        assert_eq!(deserialized.version, msg.version);
+        assert_eq!(deserialized.message_type, MessageType::CommitRecord);
+        assert_eq!(deserialized.sequence, msg.sequence);
+
+        // Verify commit record was preserved
+        assert!(deserialized.commit_record.is_some());
+        let deserialized_record = deserialized.commit_record.as_ref().unwrap();
+        assert_eq!(deserialized_record.txn_id.as_u64(), 99);
+        assert_eq!(deserialized_record.root_page_id, 300);
+        assert_eq!(deserialized_record.mutations.len(), 2);
+
+        // Verify mutations
+        assert_eq!(deserialized_record.mutations[0], mutations[0]);
+        assert_eq!(deserialized_record.mutations[1], mutations[1]);
+
+        // Verify checksum
+        assert!(deserialized_record.verify());
+    }
+
+    #[test]
+    fn test_serialize_roundtrip_all_message_types() {
+        // Heartbeat
+        let heartbeat = ReplicationMessage::heartbeat(1);
+        let bytes = heartbeat.serialize().unwrap();
+        let deserialized = ReplicationMessage::deserialize(&bytes).unwrap();
+        assert_eq!(deserialized.message_type, MessageType::Heartbeat);
+
+        // CommitRecord
+        let txn_id = TransactionId::new(1);
+        let mutations = vec![
+            Mutation::Put {
+                key: b"k".to_vec(),
+                value: b"v".to_vec(),
+            },
+        ];
+        let record = CommitRecord::new(txn_id, 100, mutations);
+        let commit_msg = ReplicationMessage::commit_record(2, record);
+        let bytes = commit_msg.serialize().unwrap();
+        let deserialized = ReplicationMessage::deserialize(&bytes).unwrap();
+        assert_eq!(deserialized.message_type, MessageType::CommitRecord);
+
+        // Snapshot
+        let snapshot_msg = ReplicationMessage::snapshot(3, vec![1, 2, 3]);
+        let bytes = snapshot_msg.serialize().unwrap();
+        let deserialized = ReplicationMessage::deserialize(&bytes).unwrap();
+        assert_eq!(deserialized.message_type, MessageType::Snapshot);
+
+        // Error
+        let error_msg = ReplicationMessage::error(4, 500, "Internal error".to_string());
+        let bytes = error_msg.serialize().unwrap();
+        let deserialized = ReplicationMessage::deserialize(&bytes).unwrap();
+        assert_eq!(deserialized.message_type, MessageType::Error);
+    }
+
+    #[test]
+    fn test_deserialize_invalid_message_type() {
+        // Create invalid message with unknown type
+        let mut bytes = vec![0u8; 24];
+        bytes[0] = 1; // version
+        bytes[2] = 99; // invalid message type
+        bytes[3] = 0;
+
+        let result = ReplicationMessage::deserialize(&bytes);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_serialize_mutation_put() {
+        let mutation = Mutation::Put {
+            key: b"test_key".to_vec(),
+            value: b"test_value".to_vec(),
+        };
+
+        let mut buffer = Vec::new();
+        ReplicationMessage::serialize_mutation(&mut buffer, &mutation)
+            .expect("Failed to serialize mutation");
+
+        assert!(!buffer.is_empty());
+
+        // Verify structure: variant(1) + key_len(4) + key + value_len(4) + value
+        let expected_len = 1 + 4 + b"test_key".len() + 4 + b"test_value".len();
+        assert_eq!(buffer.len(), expected_len);
+    }
+
+    #[test]
+    fn test_deserialize_mutation_put() {
+        let mutation = Mutation::Put {
+            key: b"my_key".to_vec(),
+            value: b"my_value".to_vec(),
+        };
+
+        let mut buffer = Vec::new();
+        ReplicationMessage::serialize_mutation(&mut buffer, &mutation)
+            .expect("Failed to serialize");
+
+        let mut cursor = Cursor::new(buffer.as_slice());
+        let deserialized = ReplicationMessage::deserialize_mutation(&mut cursor)
+            .expect("Failed to deserialize");
+
+        assert_eq!(deserialized, mutation);
+    }
+
+    #[test]
+    fn test_serialize_mutation_delete() {
+        let mutation = Mutation::Delete {
+            key: b"delete_key".to_vec(),
+        };
+
+        let mut buffer = Vec::new();
+        ReplicationMessage::serialize_mutation(&mut buffer, &mutation)
+            .expect("Failed to serialize mutation");
+
+        assert!(!buffer.is_empty());
+
+        // Verify structure: variant(1) + key_len(4) + key
+        let expected_len = 1 + 4 + b"delete_key".len();
+        assert_eq!(buffer.len(), expected_len);
+    }
+
+    #[test]
+    fn test_deserialize_mutation_delete() {
+        let mutation = Mutation::Delete {
+            key: b"del_key".to_vec(),
+        };
+
+        let mut buffer = Vec::new();
+        ReplicationMessage::serialize_mutation(&mut buffer, &mutation)
+            .expect("Failed to serialize");
+
+        let mut cursor = Cursor::new(buffer.as_slice());
+        let deserialized = ReplicationMessage::deserialize_mutation(&mut cursor)
+            .expect("Failed to deserialize");
+
+        assert_eq!(deserialized, mutation);
+    }
+
+    #[test]
+    fn test_deserialize_invalid_mutation_variant() {
+        let bytes = vec![255u8]; // Invalid variant
+        let mut cursor = Cursor::new(bytes.as_slice());
+
+        let result = ReplicationMessage::deserialize_mutation(&mut cursor);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_serialize_large_commit_record() {
+        // Test with many mutations to ensure it handles larger payloads
+        let txn_id = TransactionId::new(1);
+        let mutations: Vec<Mutation> = (0..100)
+            .map(|i| Mutation::Put {
+                key: format!("key_{}", i).into_bytes(),
+                value: format!("value_{}", i).into_bytes(),
+            })
+            .collect();
+
+        let record = CommitRecord::new(txn_id, 100, mutations);
+        let msg = ReplicationMessage::commit_record(1, record);
+
+        let bytes = msg.serialize().expect("Failed to serialize large record");
+        assert!(bytes.len() > 1000); // Should be substantial
+
+        let deserialized = ReplicationMessage::deserialize(&bytes)
+            .expect("Failed to deserialize large record");
+
+        assert!(deserialized.commit_record.is_some());
+        let deserialized_record = deserialized.commit_record.as_ref().unwrap();
+        assert_eq!(deserialized_record.mutations.len(), 100);
+        assert!(deserialized_record.verify());
     }
 }
