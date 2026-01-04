@@ -17,6 +17,7 @@ pub mod txn;
 pub mod snap;
 pub mod btree;
 pub mod db;
+pub mod refmodel;
 
 // Re-exports for convenience
 pub use error::{DbError, Error, Result};
@@ -26,3 +27,4 @@ pub use pager::Pager;
 pub use wal::Wal;
 pub use db::Db;
 pub use txn::{ReadTxn, WriteTxn};
+pub use refmodel::RefModel;

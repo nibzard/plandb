@@ -13,6 +13,111 @@
 
 ---
 
+## Phase 6 Complete: B+Tree Merge/Borrow Implementation (2026-01-04)
+
+**Commit**: 6a08aa0effbaee53984c6bb2523fd1a5f364e5f3
+
+**Description**: Implemented complete merge and borrow operations for B+Tree delete underflow handling. All 338 tests passing.
+
+**Implementation Summary**:
+
+**Files Created**:
+- `northstar-core/src/btree/merge.rs` (488 lines) - Leaf and internal node merge operations
+- `northstar-core/src/btree/borrow.rs` (505 lines) - Borrow from sibling operations
+
+**Files Modified**:
+- `northstar-core/src/btree/mod.rs` - Added merge/borrow modules
+- `northstar-core/src/btree/tree.rs` - Integrated handle_leaf_underflow() with borrow/merge
+
+**Core Operations Implemented**:
+
+1. **Leaf Node Merge** (merge.rs:27-135)
+   - merge_leaf_right_into_left(): Merge right leaf into left leaf
+   - merge_leaf_left_into_right(): Merge left leaf into right leaf
+   - Preserves order and separators, updates parent
+
+2. **Internal Node Merge** (merge.rs:169-301)
+   - merge_internal_right_into_left(): Merge right internal into left internal
+   - merge_internal_left_into_right(): Merge left internal into right internal
+   - Pulls down separator from parent, combines child arrays
+   - Recursively merges subtree if needed
+
+3. **Leaf Borrow** (borrow.rs:26-143)
+   - borrow_from_left_leaf(): Take rightmost entry from left sibling
+   - borrow_from_right_leaf(): Take leftmost entry from right sibling
+   - Updates parent separator to maintain ordering
+
+4. **Internal Node Borrow** (borrow.rs:189-343)
+   - borrow_from_left_internal(): Rotate rightmost child from left sibling
+   - borrow_from_right_internal(): Rotate leftmost child from right sibling
+   - Moves separators and children to maintain tree structure
+
+5. **Tree Integration** (tree.rs)
+   - handle_leaf_underflow(): Main underflow handler
+   - Borrow-first strategy: Try borrow from neighbors before merging
+   - propagate_merge(): Propagates merge result up the tree
+   - Handles root reduction when tree shrinks
+
+**Algorithm Details**:
+- **Borrow Strategy**: Preferred over merge (O(1) vs O(log n))
+- **Merge Conditions**: Both siblings at minimum capacity (MIN_ENTRIES)
+- **Separator Handling**: Internal nodes pull down parent separator during merge
+- **Parent Updates**: Separators updated after borrow, removed after merge
+- **Root Reduction**: When root has one child, replace root with that child
+- **Recursive Merging**: If merge creates underflow in parent, propagate upward
+
+**Test Status**: All 338 tests passing (was 327)
+- 11 new merge/borrow tests in merge.rs
+- 12 new borrow tests in borrow.rs
+- Existing 315 tests still passing
+
+**Performance Characteristics**:
+- Borrow: O(log n) - single path traversal + neighbor access
+- Merge: O(log n) - traversal + node combination + possible propagation
+- Worst case: Single delete can trigger O(log^2 n) merges cascading up
+
+**Blockers Resolved**:
+- ~~Merge operations~~ - Completed: Full leaf/internal merge
+- ~~Borrow operations~~ - Completed: Full leaf/internal borrow
+- ~~Tree integration~~ - Completed: handle_leaf_underflow() in tree.rs
+
+**Next Steps**: Phase 6 complete. Ready for:
+- Phase 7: Public API module (already implemented)
+- Performance optimization: Bulk operations, cached lookups
+- Advanced features: Prefix compression, variable-length keys
+
+---
+
+## Recent Work: Doc Test Fixes - All 338 Tests + 12 Doc Tests Passing (2026-01-04)
+
+**Completed**: Fixed all 3 failing doc tests in snap module. All 338 unit tests + 12 doc tests now pass.
+
+**What Was Fixed**:
+
+1. **snap/mod.rs: Pager API and Async Syntax**
+   - Problem: Doc test used outdated `Pager::new_in_memory()` and incorrect async syntax
+   - Fixed: Changed to `Pager::create_memory()?`, removed `.await` from `snapshot()` call
+   - Added: Missing `SnapshotOps` trait import for snapshot operations
+   - Impact: Doc test now correctly demonstrates in-memory pager creation and snapshot usage
+
+2. **snap/registry.rs: Pager API (2 locations)**
+   - Problem: Doc tests used `Pager::create_memory()` without error propagation
+   - Fixed: Changed to `Pager::create_memory()?` to properly handle Result
+   - Impact: Doc tests demonstrate correct error handling with `?` operator
+
+**Test Results**:
+- All 338 unit tests passing (unchanged)
+- All 12 doc tests passing (was 9/12)
+- Total: 350 tests passing
+
+**Files Modified**:
+- `northstar-core/src/snap/mod.rs` - Fixed Pager API usage and added trait import
+- `northstar-core/src/snap/registry.rs` - Fixed Pager API error propagation
+
+**Commit**: 6e4cebf
+
+---
+
 ## Recent Work: B+Tree Test Fixes - All 327 Tests Passing (2026-01-04)
 
 **Completed**: Fixed all 9 failing B+Tree and database tests. All 327 tests now pass.
