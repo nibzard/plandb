@@ -2250,7 +2250,139 @@
 
 ---
 
-## Phase 10-15: Future Phases
+## Phase 10: Distributed Consensus & Replication (13 tasks)
+
+**Dependencies**: [spec/replication_v1.md](../spec/replication_v1.md), [spec/raft_v1.md](../spec/raft_v1.md), Phases 0-9 complete
+
+**Phase Overview**: Transform single-node database into distributed system with Raft consensus and multi-region replication. Leverages existing commit record and WAL infrastructure as foundation.
+
+- [x] **10.1** Create `10-replication-overview.md` - **[DONE]**
+  - **DESCRIBE**: Replication system architecture and goals for NorthstarDB distributed features
+  - **LIST**: Components (Publisher, Subscriber, Protocol, Config, Server, Client)
+  - **EXPLAIN**: Primary-replica topology, consistency model, failure handling
+  - **DEFINE**: Rust module structure for replication crate
+  - **Completed**: 2026-01-04
+  - **Blockers**: None
+
+  **Work Summary**:
+  - Complete replication architecture overview with 8 type descriptions
+  - 15+ function specifications with detailed algorithms
+  - Consistency model with 3 levels (Strong, Bounded Staleness, Eventual)
+  - Failure mode handling for network partition, primary failure, replica failure, corruption
+  - Integration points mapping existing components to replication needs
+  - Rust implementation guidance with module structure, concurrency model, error handling
+  - Security considerations (TLS 1.3, certificate auth, encryption at rest)
+  - Monitoring and observability with 6 key metrics and health checks
+  - Benchmark targets (100K commits/sec, <10ms same-region lag, <100ms cross-region lag)
+
+  **Key Deliverables**:
+  - ReplicationRole, ReplicationMessage, ReplicationConfig, PrimaryConfig, ReplicaConfig types
+  - ReplicaInfo runtime state tracking
+  - ConnectionState state machine (Disconnected, Connecting, Connected, Catchup, Error)
+  - Publisher API (new, publish, send_heartbeat, track_replica_position)
+  - Subscriber API (new, connect, receive, apply, bootstrap, reconnect)
+  - Write path and read path consistency guarantees
+  - Failure recovery procedures for all failure modes
+  - Complete Rust implementation guidance with tokio async I/O
+  - Comprehensive monitoring and security specifications
+
+- [ ] **10.2** Create `10-replication-protocol.md` - **[PENDING]**
+  - **LIST**: Message types (Handshake, Data, Ack, Heartbeat, Snapshot, Error)
+  - **DESCRIBE**: Binary format for each message type with field offsets and sizes
+  - **EXPLAIN**: Message serialization/deserialization, versioning, checksums
+  - **DEFINE**: Rust enums and structs with repr(C) for wire format
+  - **Blockers**: None
+
+- [ ] **10.3** Create `10-replication-publisher.md` - **[PENDING]**
+  - **DESCRIBE**: Publisher for streaming commits to replicas from primary node
+  - **LIST**: Functions (publish, send_heartbeat, manage_connections, track_positions)
+  - **EXPLAIN**: Connection management, retry logic, backpressure, position tracking
+  - **DEFINE**: Rust Publisher struct with tokio async I/O
+  - **Blockers**: None
+
+- [ ] **10.4** Create `10-replication-subscriber.md` - **[PENDING]**
+  - **DESCRIBE**: Subscriber for receiving and applying commits from primary
+  - **LIST**: Functions (connect, receive, apply, bootstrap, reconnect)
+  - **EXPLAIN**: Bootstrap protocol, reconnection with exponential backoff, ordering guarantees
+  - **DEFINE**: Rust Subscriber struct with state machine
+  - **Blockers**: None
+
+- [ ] **10.5** Create `10-replication-config.md` - **[PENDING]**
+  - **LIST**: Configuration parameters (timeouts, batch sizes, buffer limits, lag targets)
+  - **DESCRIBE**: ReplicationConfig, ReplicaInfo, roles (primary vs replica)
+  - **EXPLAIN**: Validation rules and defaults, hot reload considerations
+  - **DEFINE**: Rust config types with serde
+  - **Blockers**: None
+
+- [ ] **10.6** Create `10-raft-overview.md` - **[PENDING]**
+  - **DESCRIBE**: Raft consensus algorithm and goals for automatic leader election
+  - **LIST**: Components (Leader, Follower, Candidate, state machine, RPC layer)
+  - **EXPLAIN**: Leader election, log replication, safety properties
+  - **DEFINE**: Rust module structure for consensus crate
+  - **Blockers**: None
+
+- [ ] **10.7** Create `10-raft-state.md` - **[PENDING]**
+  - **LIST**: Raft state types (NodeId, Term, LogEntry, ServerState, PersistentState, VolatileState)
+  - **DESCRIBE**: Persistent vs volatile state, log entry structure
+  - **EXPLAIN**: State transitions and invariants, WAL as Raft log
+  - **DEFINE**: Rust types with Copy/Clone semantics
+  - **Blockers**: None
+
+- [ ] **10.8** Create `10-raft-rpc.md` - **[PENDING]**
+  - **LIST**: RPC types (RequestVote, AppendEntries, InstallSnapshot)
+  - **DESCRIBE**: Request/response formats with all fields
+  - **EXPLAIN**: RPC handling and timeout logic, conflict hints
+  - **DEFINE**: Rust RPC enums with serde for network transport
+  - **Blockers**: None
+
+- [ ] **10.9** Create `10-raft-leader-election.md` - **[PENDING]**
+  - **DESCRIBE**: Leader election algorithm with randomized timeouts
+  - **EXPLAIN**: Timeout randomization, vote granting, term changes
+  - **LIST**: Election states and transitions
+  - **DEFINE**: Rust election logic with timer management
+  - **Blockers**: None
+
+- [ ] **10.10** Create `10-raft-log-replication.md` - **[PENDING]**
+  - **DESCRIBE**: Log replication flow from leader to followers
+  - **EXPLAIN**: AppendEntries RPC, commit index, consistency checks
+  - **LIST**: Log conflict resolution strategies with backtracking
+  - **DEFINE**: Rust replication logic with majority tracking
+  - **Blockers**: None
+
+- [ ] **10.11** Create `10-raft-snapshot.md` - **[PENDING]**
+  - **LIST**: Snapshot operations (create, install, truncate)
+  - **DESCRIBE**: Snapshot format and storage with MVCC integration
+  - **EXPLAIN**: Log truncation after snapshot, bootstrap from snapshot
+  - **DEFINE**: Rust snapshot management with file I/O
+  - **Blockers**: None
+
+- [ ] **10.12** Create `10-raft-config-changes.md` - **[PENDING]**
+  - **DESCRIBE**: Joint consensus for safe reconfiguration
+  - **LIST**: Operations (add_node, remove_node, promote_learner)
+  - **EXPLAIN**: C_old/new transitioning, quorum calculations
+  - **DEFINE**: Rust config change state machine
+  - **Blockers**: None
+
+- [ ] **10.13** Create `10-distributed-tests.md` - **[PENDING]**
+  - **LIST**: Test scenarios (election, replication, partition, crash, bootstrap)
+  - **DESCRIBE**: Cluster testing framework for multi-node scenarios
+  - **EXPLAIN**: Hardening tests (network partitions, node failures, chaos)
+  - **DEFINE**: Rust test utilities for multi-node clusters
+  - **Blockers**: None
+
+**Phase 10 Completion Criteria**:
+- All 13 specification files created in spec/ directory
+- Natural language only (no code snippets)
+- Complete type descriptions with field offsets and sizes
+- Algorithm explanations in step-by-step plain English
+- Rust implementation guidance for each component
+- Test scenarios documented
+
+**Estimated Effort**: 13 specification tasks, 20-40 hours total
+
+---
+
+## Phase 11-15: Future Phases
 
 **Template for each task**:
 - **DESCRIBE**: The component's purpose and behavior
@@ -2258,36 +2390,31 @@
 - **EXPLAIN**: Algorithms in step-by-step plain English
 - **DEFINE**: Rust implementation approach
 
-**Phase 10**: Advanced Analytics & Visualization
+**Phase 11**: Advanced Analytics & Visualization
 - Time-series aggregation queries
 - Visualization data generators
 - Multi-agent session correlation
 - Trend analysis and anomaly detection
 
-**Phase 11**: Query Optimization
+**Phase 12**: Query Optimization
 - Query plan visualization
 - Index usage statistics
 - Hot path identification
 
-**Phase 12**: Distributed Consensus
-- Raft implementation
-- Leader election
-- Log replication
-
-**Phase 13**: Replication
-- Multi-region replication
-- Conflict detection and resolution
-- Network partition tolerance
-
-**Phase 14**: Performance Optimization
+**Phase 13**: Performance Optimization
 - Caching strategies
 - I/O batching
 - Memory pooling
 
-**Phase 15**: Production Hardening
+**Phase 14**: Production Hardening
 - Monitoring and alerting
 - Graceful degradation
 - Disaster recovery
+
+**Phase 15**: Ecosystem Integration
+- Cloud provider adapters
+- Backup and restore tools
+- Migration utilities
 
 ---
 
