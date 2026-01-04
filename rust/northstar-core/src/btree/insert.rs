@@ -120,7 +120,7 @@ pub fn insert_into_internal(
 
 /// Split a leaf node into two nodes
 pub fn split_leaf_node(
-    node: &LeafNode,
+    node: &mut LeafNode,
     pager: &mut impl PagerTrait,
 ) -> Result<(LeafNode, Vec<u8>)> {
     // Calculate split point
@@ -137,9 +137,19 @@ pub fn split_leaf_node(
         new_node.insert(entry)?;
     }
 
+    // CRITICAL FIX: Trim the original node by removing moved entries
+    node.entries.truncate(split_point);
+    node.header.num_keys = node.entries.len() as u16;
+    node.header.set_flag(NodeFlags::DIRTY);
+    node.header.increment_generation();
+    node.header.free_space = node.calculate_free_space();
+
     // Update linked list
     new_node.next_leaf = node.next_leaf;
     new_node.prev_leaf = node.header.node_id;
+
+    // CRITICAL FIX: Write the new node to storage!
+    pager.write_node(new_page_id, &new_node.clone().into())?;
 
     // Get separator key (first key in new node)
     let separator = new_node.entries.first()
@@ -151,7 +161,7 @@ pub fn split_leaf_node(
 
 /// Split an internal node into two nodes
 pub fn split_internal_node(
-    node: &InternalNode,
+    node: &mut InternalNode,
     pager: &mut impl PagerTrait,
 ) -> Result<(InternalNode, Vec<u8>)> {
     // Calculate split point
@@ -169,8 +179,19 @@ pub fn split_internal_node(
     }
     new_node.set_rightmost_child(*node.children.last().unwrap());
 
-    // Get separator to promote (the separator at split point)
+    // Get separator to promote (the separator at split point) - MUST be before truncation!
     let separator = node.separators[split_point].clone();
+
+    // CRITICAL FIX: Trim the original node
+    node.separators.truncate(split_point);
+    node.children.truncate(split_point + 1);
+    node.header.num_keys = node.separators.len() as u16;
+    node.header.set_flag(NodeFlags::DIRTY);
+    node.header.increment_generation();
+    node.header.free_space = node.calculate_free_space();
+
+    // CRITICAL FIX: Write the new node to storage!
+    pager.write_node(new_page_id, &new_node.clone().into())?;
 
     Ok((new_node, separator))
 }

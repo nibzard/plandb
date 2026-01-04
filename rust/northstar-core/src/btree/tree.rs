@@ -149,6 +149,8 @@ impl<'a> BTree<'a> {
                             return Ok(());
                         }
                         InsertResult::Split { new_page_id, separator } => {
+                            // CRITICAL FIX: Write the trimmed original leaf node!
+                            self.pager.write_btree_node(current_page_id, &leaf.clone().into())?;
                             // Propagate split up the tree
                             self.propagate_split(path, separator, new_page_id)?;
                             return Ok(());

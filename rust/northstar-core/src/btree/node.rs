@@ -260,7 +260,8 @@ impl LeafNode {
     /// Calculate actual free space
     pub fn calculate_free_space(&self) -> u16 {
         let used: usize = self.entries.iter().map(|e| e.serialized_size()).sum();
-        (DEFAULT_PAGE_SIZE - HEADER_SIZE - used) as u16
+        // Account for linked list pointers (16 bytes at end of page)
+        (DEFAULT_PAGE_SIZE - HEADER_SIZE - 16 - used) as u16
     }
 
     /// Validate node invariants
