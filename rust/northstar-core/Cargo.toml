@@ -19,6 +19,8 @@ crc32c = { workspace = true }
 parking_lot = { workspace = true }
 crossbeam = { workspace = true }
 num_cpus = { workspace = true }
+chrono = { workspace = true }
+regex = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

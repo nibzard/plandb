@@ -21,6 +21,7 @@ pub mod refmodel;
 pub mod events;
 pub mod replication;
 pub mod cache;
+pub mod analytics;
 
 // Re-exports for convenience
 pub use error::{DbError, Error, Result};

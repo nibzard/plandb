@@ -37,6 +37,10 @@ num_cpus = "1.16"
 proptest = "1.5"
 tempfile = "3.10"
 
+# Time series
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1.10"
+
 [profile.dev]
 opt-level = 0
 
