@@ -901,7 +901,7 @@
 - [x] **4.15** Create `04-txn-tests.md` - **[DONE]**
   - **LIST**: Isolation level tests
   - **DESCRIBE**: Concurrency test patterns
-  - **Completed**: 2026-01-04 (commit [TBD])
+  - **Completed**: 2026-01-04 (commit 92c076c)
   - **Blockers**: None - comprehensive transaction test specification complete
 
 **Work Summary**:
