@@ -231,6 +231,244 @@ The memory pooling specification provides a complete design for three pool types
 
 ---
 
+## Phase 13.4 Complete: Lock-Free Data Structures Specification (2026-01-04)
+
+**Status**: Specification complete
+
+**Description**: Created comprehensive natural language specification for lock-free data structures to maximize concurrency and eliminate lock contention.
+
+**Specification Summary**:
+
+The lock-free data structures specification provides complete designs for three core primitives:
+- **AtomicPtr<T>:** Lock-free pointer with CAS (Compare-And-Swap) operations
+- **AtomicUsize/AAtomicIsize:** Lock-free counters and sequence numbers
+- **ConcurrentStack<T>:** Lock-free stack for node free lists and work queues
+- **ConcurrentQueue<T>:** MPMC queue for cross-thread work distribution
+
+**Core Types**:
+
+1. **AtomicPtr<T>**
+   - Wrapper around raw pointer with atomic operations
+   - load() with memory ordering (Relaxed, Acquire, SeqCst)
+   - store() with memory ordering (Release, SeqCst)
+   - compare_exchange() for CAS operations (strong/weak variants)
+   - fetch_* operations (add, sub, and, or, xor) for arithmetic
+
+2. **AtomicNode<T>**
+   - Node with next pointer for concurrent collections
+   - Markable reference (optional tagged pointer for ABA prevention)
+   - Padding to avoid false sharing (64-byte cache line alignment)
+
+3. **ConcurrentStack<T>**
+   - Lock-free push/pop using head CAS
+   - Treiber stack algorithm
+   - Optional cleanup phase for memory reclamation
+
+4. **ConcurrentQueue<T>**
+   - Multi-producer multi-consumer design
+   - Bounded or unbounded variants
+   - Separated head and tail pointers to minimize contention
+   - Optional batch operations for bulk enqueue/dequeue
+
+**Key Operations**:
+
+1. **atomic.compare_exchange()**: CAS loop for lock-free updates
+2. **stack.push()**: Insert at head with head CAS loop
+3. **stack.pop()**: Remove from head with head CAS loop
+4. **queue.enqueue()**: Add to tail with tail CAS loop
+5. **queue.dequeue()**: Remove from head with head CAS loop
+
+**Memory Ordering**:
+
+- **Relaxed**: No synchronization guarantees (counters, statistics)
+- **Acquire/Release**: Synchronizes-with relationship (mutex locks)
+- **SeqCst**: Sequentially consistent (default, strongest guarantee)
+
+**ABA Problem Solutions**:
+
+- **Versioned Tagging**: Combine pointer with counter (64-bit: 48-bit ptr + 16-bit tag)
+- **Hazard Pointers**: Thread-local list of protected nodes
+- **Epoch-Based Reclamation**: Global epochs with deferred reclamation
+
+**Performance Targets**:
+
+- **CAS Success Rate**: >95% under low-to-moderate contention
+- **Stack Throughput**: >10M ops/sec per thread
+- **Queue Throughput**: >5M ops/sec with 8 producers/8 consumers
+- **Latency**: <100ns at p99 for uncontended operations
+- **Cache Coherency**: False sharing eliminated with padding
+- **CI Thresholds**: >15% throughput improvement in 2+ concurrent benchmarks
+
+**Testing Requirements**:
+
+- Unit tests for all atomic operations (load, store, CAS, fetch)
+- Concurrency stress tests (16 threads, 10M operations)
+- ABA problem tests (long sequences with node reuse)
+- Memory reclamation tests (leak detection, use-after-free)
+- Performance benchmarks (throughput vs contention, latency percentiles)
+
+**File Created**:
+- `rust/13-lock-free.md` (1,126 lines)
+  - Complete type descriptions with memory ordering semantics
+  - Algorithm specifications for all operations
+  - Rust implementation guidance with unsafe patterns
+  - ABA prevention strategies and memory reclamation
+  - Testing requirements and performance targets
+  - Integration points with Pager, B+Tree, Transaction pools
+
+**Commit**: 697009e
+
+**Next Steps**: Phase 13 complete. Begin Phase 14: Production Hardening
+
+---
+
+## Phase 14 Complete: Production Hardening Specification (2026-01-04)
+
+**Status**: Specification complete
+
+**Description**: Created comprehensive natural language specifications for production hardening covering monitoring/alerting, graceful degradation, and disaster recovery.
+
+**Specification Summary**:
+
+The production hardening specifications provide complete designs for three critical production capabilities:
+
+### 1. Monitoring and Alerting (`14-monitoring.md`)
+
+**Core Components**:
+
+- **Metric Registry**: Centralized metric storage with counter, gauge, histogram, summary types
+- **Health Checker**: Aggregated health status from multiple health checks
+- **Alert Engine**: Rule-based alerting with thresholds and cooldowns
+- **Export Formats**: Prometheus, OpenTelemetry, JSON
+
+**Key Types**:
+
+1. **MetricType**: Counter, Gauge, Histogram, Summary variants
+2. **MetricRegistry**: Central metric storage with concurrent access
+3. **HealthStatus**: Healthy, Degraded, Unhealthy, Unknown variants
+4. **AlertRule**: Metric monitoring with conditions and thresholds
+5. **MonitoringConfig**: Scraping, retention, cardinality limits
+
+**Key Operations**:
+
+- `register_counter/gauge/histogram()`: Metric registration
+- `scrape_metrics()`: Export metrics in Prometheus format
+- `run_health_checks()`: Execute all checks with timeout
+- `evaluate_alert_rules()`: Check thresholds and trigger alerts
+
+**Performance Targets**:
+
+- **CPU Overhead**: <1% for metric collection
+- **Scrape Latency**: <100ms p99
+- **Alert Latency**: <5 seconds from threshold breach to alert
+
+**File**: `rust/14-monitoring.md` (593 lines)
+
+### 2. Graceful Degradation (`14-graceful-degradation.md`)
+
+**Core Components**:
+
+- **Degradation Levels**: Full, Reduced, Minimal, Maintenance, Emergency
+- **Triggers**: Memory pressure, disk space, CPU saturation, latency spikes
+- **Actions**: Cache reduction, write throttling, read-only mode, AI disable
+- **Circuit Breaker**: External service protection (AI plugins, storage)
+- **Throttler**: Rate limiting for operation throttling
+
+**Key Types**:
+
+1. **DegradationLevel**: Five operating levels with clear transitions
+2. **DegradationTrigger**: Resource conditions triggering level changes
+3. **DegradationAction**: Actions taken when entering degraded state
+4. **DegradationPolicy**: Mapping of triggers to actions with recovery conditions
+5. **CircuitBreaker**: Open/Closed/HalfOpen states for external services
+6. **Throttler**: Token bucket rate limiting
+
+**Key Operations**:
+
+- `monitor_resources()`: Detect degradation triggers
+- `evaluate_degradation_level()`: Determine appropriate level
+- `execute_degradation_actions()`: Activate fallback modes
+- `check_recovery_conditions()`: Validate recovery readiness
+- `circuit_breaker_call()`: Protected external service calls
+- `throttler_acquire()`: Rate-limited operation execution
+
+**Degradation Levels**:
+
+- **Full**: All functionality available
+- **Reduced**: Cache halved, background tasks paused, writes throttled 50%
+- **Minimal**: Critical operations only, non-critical queries rejected
+- **Maintenance**: Read-only mode, all writes rejected
+- **Emergency**: Safe shutdown in progress
+
+**File**: `rust/14-graceful-degradation.md` (651 lines)
+
+### 3. Disaster Recovery (`14-disaster-recovery.md`)
+
+**Core Components**:
+
+- **Backup Manager**: Full and incremental backup creation
+- **Recovery Manager**: Restore and point-in-time recovery
+- **Replication Manager**: Primary-replica replication (async/sync/semi-sync)
+- **Failover Manager**: Automatic failover to replicas
+
+**Key Types**:
+
+1. **BackupType**: Full, Incremental, Differential, Snapshot variants
+2. **Backup**: Metadata with LSN range, checksum, encryption status
+3. **RecoveryType**: Full restore, point-in-time, incremental, replica promote
+4. **ReplicationMode**: Async, Sync, SemiSync variants
+5. **ReplicaStatus**: Connecting, InSync, Lagging, Disconnected, Failed
+6. **FailoverMode**: Automatic, Manual, Planned variants
+
+**Key Operations**:
+
+- `create_full_backup()`: Complete database backup with compression/encryption
+- `create_incremental_backup()`: Log-based incremental from last backup
+- `restore_backup()`: Restore from full or incremental chain
+- `point_in_time_recovery()`: Recover to specific LSN using backup + WAL
+- `start_replication()`: Primary-side replication streaming
+- `replicate_from_primary()`: Replica-side log application
+- `initiate_failover()`: Automatic failover election and promotion
+
+**Backup Features**:
+
+- **Compression**: flate2 with configurable level (0-9, default 6)
+- **Encryption**: AES-256-GCM authenticated encryption
+- **Verification**: SHA-256 checksum validation after backup
+- **Retention**: Configurable count and period-based retention
+- **Scheduling**: Automatic full (weekly) and incremental (hourly) backups
+
+**Replication Features**:
+
+- **Modes**: Async (low latency), Sync (high durability), SemiSync (balance)
+- **Failure Detection**: Heartbeat-based with configurable threshold (default 6 misses)
+- **Election**: LSN-based selection of most up-to-date replica
+- **Lag Tracking**: Byte and second-based lag metrics
+
+**RPO/RTO Targets**:
+
+- **RPO (Recovery Point Objective)**:
+  - Async replication: Up to 1 minute data loss
+  - Sync replication: Zero data loss
+- **RTO (Recovery Time Objective)**:
+  - From local backup: <5 minutes
+  - From replica failover: <30 seconds
+
+**File**: `rust/14-disaster-recovery.md` (668 lines)
+
+**Files Created**:
+- `rust/14-monitoring.md` (593 lines)
+- `rust/14-graceful-degradation.md` (651 lines)
+- `rust/14-disaster-recovery.md` (668 lines)
+
+**Total Lines**: 1,912 lines of production hardening specifications
+
+**Commit**: (pending)
+
+**Next Steps**: Phase 14 complete. All production hardening specified. Ready for implementation.
+
+---
+
 ## Phase 8 Complete: Reference Model Implementation (2026-01-04)
 
 **Status**: Implementation complete, all 62 tests passing
