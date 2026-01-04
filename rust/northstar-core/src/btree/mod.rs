@@ -16,6 +16,7 @@ pub mod scan;
 pub mod version;
 pub mod overflow;
 pub mod delta;
+pub mod recovery;
 
 // Re-exports for convenience
 pub use header::{NodeHeader, NodeType, NodeFlags};
@@ -28,3 +29,4 @@ pub use overflow::{OverflowPage, ValueStorage, OVERFLOW_MAGIC, INLINE_THRESHOLD,
 pub use delta::{DeltaLayer, MutationEntry, DeltaStats,
                 MAX_KEY_SIZE, MAX_OPERATIONS_PER_TXN, MAX_DELTA_SIZE,
                 MUTATION_TYPE_PUT, MUTATION_TYPE_DELETE};
+pub use recovery::{RecoveryState, RecoveryStats, RecoveryContext, recover_btree};
