@@ -927,13 +927,37 @@
 
 ## Phase 5: Snapshot/MVCC (10 tasks)
 
-- [ ] **5.1** Create `05-snapshot-overview.md`
+- [x] **5.1** Create `05-snapshot-overview.md` - **[DONE]**
   - **DESCRIBE**: MVCC design
   - **EXPLAIN**: Snapshot purpose
+  - **Completed**: 2026-01-04 (commit 978fa06)
+  - **Blockers**: None - comprehensive snapshot overview specification complete
 
-- [ ] **5.2** Create `05-snapshot-registry.md`
+- [x] **5.2** Create `05-snapshot-registry.md` - **[DONE]**
   - **DESCRIBE**: SnapshotRegistry implementation
   - **EXPLAIN**: Snapshot bookkeeping
+  - **Completed**: 2026-01-04 (commit e1a9a71)
+  - **Blockers**: None
+
+  **Work Summary**:
+  - **SnapshotRegistry struct** fully specified with 4 fields (allocator, snapshots HashMap, current_txn_id, current_root_page_id)
+  - **SnapshotStats type** defined for monitoring (4 fields: total_snapshots, current_txn_id, oldest_txn_id, newest_txn_id)
+  - **8 public functions** documented (init, deinit, registerSnapshot, getSnapshotRoot, getLatestSnapshot, getCurrentTxnId, hasSnapshot, cleanupOldSnapshots, getStats)
+  - **MVCC bookkeeping** explained with transaction ID to root page ID mapping
+  - **6 core invariants** documented (genesis exists, monotonic current, consistency, valid page IDs, ordering, no duplicates)
+
+  **Key Deliverables**:
+  - SnapshotRegistry type definition with HashMap<u64, u64> for snapshot mapping
+  - init() algorithm with genesis snapshot initialization
+  - registerSnapshot() for new committed transactions with monotonic ID check
+  - getSnapshotRoot() with special handling for future txn_ids (returns current)
+  - cleanupOldSnapshots() with two-parameter garbage collection (keep_txns, keep_count)
+  - hasSnapshot() for existence checking
+  - getStats() for monitoring and introspection
+  - Rust implementation guidance with concurrency strategy (RwLock vs DashMap)
+  - 50+ test scenarios across unit, property, and integration tests
+  - Performance analysis (O(1) reads, O(1) writes, O(n) cleanup)
+  - Memory overhead estimation (~32-40 bytes per snapshot)
 
 - [ ] **5.3** Create `05-snapshot-create.md`
   - **DESCRIBE**: Snapshot creation process
