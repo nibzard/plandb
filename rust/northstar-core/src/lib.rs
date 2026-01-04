@@ -18,6 +18,7 @@ pub mod snap;
 pub mod btree;
 pub mod db;
 pub mod refmodel;
+pub mod events;
 
 // Re-exports for convenience
 pub use error::{DbError, Error, Result};
