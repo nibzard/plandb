@@ -1720,25 +1720,144 @@
 
 ## Phase 7: Public API (10 tasks)
 
-- [ ] **7.1** Create `07-db-overview.md`
+- [x] **7.1** Create `07-db-overview.md` - **[DONE]**
   - **DESCRIBE**: Public API design
   - **LIST**: User-facing types
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive overview specification complete
 
-- [ ] **7.2** Create `07-db-struct.md`
+  **Work Summary**:
+  - **Public API design philosophy** documented with safety, ergonomics, and performance principles
+  - **4 core user-facing types** specified (Db, ReadTxn, WriteTxn, Config, Error, Stats)
+  - **API usage patterns** explained for basic operations, error handling, and concurrent access
+  - **Integration points** defined with Pager, WAL, B+Tree, and SnapshotRegistry
+  - **6 database-level invariants** specified for validity, atomicity, and resource management
+  - **3 transaction-level invariants** defined for snapshot isolation and write serialization
+
+  **Key Deliverables**:
+  - Db type with lifecycle management (open, close, transaction creation)
+  - ReadTxn type with snapshot isolation and non-blocking reads
+  - WriteTxn type with mutation tracking and two-phase commit
+  - Config type with builder pattern and validation
+  - Error type with comprehensive error categories
+  - Stats type for monitoring and introspection
+  - Thread-safety analysis (Send + Sync for Db and ReadTxn, !Send for WriteTxn)
+  - 1300+ lines of detailed natural language specification (no code)
+
+- [x] **7.2** Create `07-db-struct.md` - **[DONE]**
   - **LIST**: Db struct fields
   - **EXPLAIN**: Builder pattern
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive struct and builder specification complete
 
-- [ ] **7.3** Create `07-db-open.md`
+  **Work Summary**:
+  - **DbInner struct** fully specified with 10 fields (config, pager, wal, btree, snapshot_registry, current_txn_id, current_root_page_id, write_lock, stats, is_open, file_lock)
+  - **Db handle** documented with Arc<RwLock<DbInner>> wrapper
+  - **DbBuilder pattern** complete with 9 fluent configuration methods
+  - **Helper types** defined (Config, FlushPolicy, RetentionPolicy, Compression, DbStats)
+  - **6 Db invariants** specified for consistency and correctness
+
+  **Key Deliverables**:
+  - DbInner fields with types, purposes, invariants, and coordination details
+  - DbBuilder methods (new, path, cache_size, page_size, wal_size_threshold, flush_policy, snapshot_retention, auto_checkpoint, compression, build)
+  - Config type with 7 configuration options
+  - FlushPolicy enum (Immediate, Batch, Periodic)
+  - RetentionPolicy enum (CountBased, AgeBased, Hybrid, Manual)
+  - Compression enum (None, Lz4, Zstd, Snappy)
+  - DbStats type with 10 metrics
+  - Db methods (construction, transaction creation, database operations, clone and drop)
+  - Rust implementation guidance with concurrency strategies and key decisions
+  - 1300+ lines of detailed natural language specification (no code)
+
+- [x] **7.3** Create `07-db-open.md` - **[DONE]**
   - **DESCRIBE**: Database opening process
   - **LIST**: Open options
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive open process specification complete
 
-- [ ] **7.4** Create `07-db-read.md`
+  **Work Summary**:
+  - **11-step open algorithm** documented with detailed logic
+  - **3 open modes** specified (new database, clean shutdown, dirty shutdown)
+  - **Configuration validation** defined with 7 validation rules
+  - **File lock acquisition** explained with platform-specific behavior
+  - **Component initialization** detailed for Pager, WAL, B+Tree, SnapshotRegistry
+  - **Crash recovery process** specified for dirty shutdown
+  - **3 open methods** documented (open, open_with_config, builder pattern)
+  - **Error handling** comprehensive with ConfigError, DatabaseInUse, IoError, CorruptedData, RecoveryFailed
+
+  **Key Deliverables**:
+  - Step-by-step open algorithm (configuration → file lock → file handles → Pager → WAL → recovery → B+Tree → SnapshotRegistry → assembly → return)
+  - Db::open(path) for default configuration
+  - Db::open_with_config(path, config) for explicit configuration
+  - Db::builder().path(path).build() for fluent API
+  - New database initialization (header pages, root allocation)
+  - Clean shutdown loading (meta pages, snapshot registry)
+  - Dirty shutdown recovery (WAL replay, B+Tree rebuild, snapshot reconstruction)
+  - Error recovery strategies for all error types
+  - Performance considerations and optimization strategies
+  - Rust implementation guidance with OpenContext and OpenResult types
+  - 1400+ lines of detailed natural language specification (no code)
+
+- [x] **7.4** Create `07-db-read.md` - **[DONE]**
   - **DESCRIBE**: Read transaction creation
   - **LIST**: Read API methods
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive read transaction specification complete
 
-- [ ] **7.5** Create `07-db-write.md`
+  **Work Summary**:
+  - **ReadTxn characteristics** documented (read-only, snapshot isolation, non-blocking, thread-safe)
+  - **2 transaction creation methods** specified (begin_read, begin_read_at)
+  - **ReadTxn struct** fully defined with 6 fields (db, snapshot_lsn, root_page_id, txn_id, state, phantom)
+  - **7 API methods** detailed (get, scan, commit, rollback, id, snapshot_lsn)
+  - **Read transaction lifecycle** explained (creation, active state, termination)
+  - **Concurrency model** defined for concurrent reads and read-write interactions
+  - **Implicit cleanup** via Drop trait specified
+
+  **Key Deliverables**:
+  - db.begin_read() algorithm for latest snapshot (O(1), shared lock)
+  - db.begin_read_at(txn_id) for time-travel queries
+  - ReadTxn type with lifetime parameter 'db and Send + Sync bounds
+  - txn.get(key) algorithm with snapshot visibility rules
+  - txn.scan(start, end) returning ScanIterator with Iterator trait
+  - txn.commit() for explicit resource release
+  - txn.rollback() as no-op equivalent to commit
+  - txn.id() and txn.snapshot_lsn() for introspection
+  - Snapshot immutability and read-only invariants
+  - Visibility rules (LSN <= snapshot_lsn, tombstone filtering)
+  - Concurrency invariants (readers don't block, snapshot isolation)
+  - Rust implementation guidance with PhantomData for lifetime, no Clone trait
+  - 1200+ lines of detailed natural language specification (no code)
+
+- [x] **7.5** Create `07-db-write.md` - **[DONE]**
   - **DESCRIBE**: Write transaction creation
   - **LIST**: Write API methods
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive write transaction specification complete
+
+  **Work Summary**:
+  - **WriteTxn characteristics** documented (read-write, exclusive write access, read-your-writes, two-phase commit, !Send)
+  - **Transaction creation method** specified (begin_write with blocking behavior)
+  - **WriteTxn struct** fully defined with 9 fields (db, snapshot_lsn, root_page_id, txn_id, pending_ops, pending_size, state, phantom, write_lock)
+  - **8 API methods** detailed (put, delete, get, scan, commit, rollback, id, mutation_count)
+  - **Transaction lifecycle** explained with 5 states (Active, Preparing, Committing, Committed, Aborted)
+  - **Two-phase commit** specified with 5 phases (Prepare, WAL Append, B+Tree Apply, SnapshotRegistry Register, Meta Update, Finalize)
+  - **Mutation buffering** via PendingOpsMap (HashMap) documented
+  - **Read-your-writes** implementation via pending_ops priority lookup
+
+  **Key Deliverables**:
+  - db.begin_write() algorithm with exclusive write lock acquisition
+  - WriteTxn type with MutexGuard<'db, ()> enforcing !Send
+  - txn.put(key, value) with last-write-wins and size tracking
+  - txn.delete(key) with idempotent behavior and tombstone markers
+  - txn.get(key) with pending_ops priority (read-your-writes)
+  - txn.scan(start, end) integrating pending_ops with B+Tree scan
+  - txn.commit() with 5-phase two-phase commit (WAL → B+Tree → Registry → Meta)
+  - txn.rollback() discarding mutations and releasing lock
+  - PendingOpsMap (HashMap<Key, PendingOp>) for O(1) mutation lookup
+  - Crash recovery points for each commit phase
+  - Exclusive write access invariants
+  - Rust implementation guidance with !Send via MutexGuard, HashMap for pending_ops
+  - 1500+ lines of detailed natural language specification (no code)
 
 - [ ] **7.6** Create `07-db-close.md`
   - **DESCRIBE**: Shutdown sequence
