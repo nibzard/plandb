@@ -29,6 +29,7 @@ mod error;
 mod types;
 mod visualize;
 
+pub mod hot_path;
 pub mod index_stats;
 
 pub use compare::{

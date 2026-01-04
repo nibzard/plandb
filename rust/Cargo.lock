@@ -583,6 +583,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "sqlparser",
  "tempfile",
  "thiserror",
  "tokio",
@@ -1012,6 +1013,15 @@ checksum = "17129e116933cf371d018bb80ae557e889637989d8638274fb25622827b03881"
 dependencies = [
  "libc",
  "windows-sys 0.60.2",
+]
+
+[[package]]
+name = "sqlparser"
+version = "0.50.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b2e5b515a2bd5168426033e9efbfd05500114833916f1d5c268f938b4ee130ac"
+dependencies = [
+ "log",
 ]
 
 [[package]]

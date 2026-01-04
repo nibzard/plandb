@@ -21,6 +21,7 @@ crossbeam = { workspace = true }
 num_cpus = { workspace = true }
 chrono = { workspace = true }
 regex = { workspace = true }
+sqlparser = "0.50"
 
 [dev-dependencies]
 proptest = { workspace = true }
