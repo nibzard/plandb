@@ -10,7 +10,7 @@ use std::fmt;
 pub const NODE_MAGIC: u32 = 0x4E535452;
 
 /// Node header size in bytes
-pub const HEADER_SIZE: usize = 64;
+pub const HEADER_SIZE: usize = std::mem::size_of::<NodeHeader>();
 
 /// Default page size (16KB)
 pub const DEFAULT_PAGE_SIZE: usize = 16384;

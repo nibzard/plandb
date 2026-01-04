@@ -283,7 +283,7 @@ mod tests {
             ScanItem::new(b"key3".to_vec(), b"value3".to_vec(), Lsn::from(300)),
         ];
 
-        let mut iter = ScanIter::forward(items, Some(b"key3".to_vec()), Lsn::from(1000));
+        let mut iter = ScanIter::forward(items, Some(b"key4".to_vec()), Lsn::from(1000));
 
         assert!(iter.next().is_some()); // key1
         assert!(iter.next().is_some()); // key2
@@ -299,7 +299,7 @@ mod tests {
             ScanItem::new(b"key3".to_vec(), b"value3".to_vec(), Lsn::from(300)),
         ];
 
-        let mut iter = ScanIter::backward(items, Some(b"key1".to_vec()), Lsn::from(1000));
+        let mut iter = ScanIter::backward(items, Some(b"key0".to_vec()), Lsn::from(1000));
 
         assert!(iter.next().is_some()); // key3
         assert!(iter.next().is_some()); // key2

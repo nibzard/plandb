@@ -370,7 +370,7 @@ mod tests {
 
         assert_eq!(pager.page_size(), PAGE_SIZE as u16);
         assert_eq!(pager.committed_txn_id(), TransactionId::INITIAL);
-        assert_eq!(pager.root_page_id().as_u64(), 0);
+        assert_eq!(pager.root_page_id(), crate::PageId::FIRST_DATA);
     }
 
     #[test]

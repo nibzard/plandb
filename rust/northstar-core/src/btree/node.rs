@@ -99,7 +99,13 @@ impl InternalNode {
             .binary_search_by(|probe| probe.as_slice().cmp(key))
             .unwrap_or_else(|pos| pos);
 
-        self.children[pos]
+        // In B+Tree, if key matches a separator, go to the right child
+        // This is because all actual keys are stored in leaf nodes
+        if pos < self.separators.len() && self.separators[pos] == key {
+            self.children[pos + 1]
+        } else {
+            self.children[pos]
+        }
     }
 
     /// Calculate actual free space

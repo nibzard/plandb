@@ -175,7 +175,8 @@ mod tests {
         node.insert(entry).unwrap();
 
         let result = delete_from_leaf(&mut node, b"key1").unwrap();
-        assert!(matches!(result, DeleteResult::Success));
+        // After deleting the only entry, node is underfull
+        assert!(matches!(result, DeleteResult::Underfull { .. }));
         assert_eq!(node.entries.len(), 0);
     }
 

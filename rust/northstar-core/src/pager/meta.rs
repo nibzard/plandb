@@ -44,7 +44,7 @@ impl Default for MetaPayload {
             format_version: 0,
             page_size: crate::page::PAGE_SIZE as u16,
             committed_txn_id: 0,
-            root_page_id: 0,
+            root_page_id: crate::PageId::FIRST_DATA.as_u64(),
             freelist_head_page_id: 0,
             log_tail_lsn: 0,
             meta_crc32c: 0,
@@ -395,7 +395,7 @@ mod tests {
         assert_eq!(payload.format_version, 0);
         assert_eq!(payload.page_size, crate::page::PAGE_SIZE as u16);
         assert_eq!(payload.committed_txn_id, 0);
-        assert_eq!(payload.root_page_id, 0);
+        assert_eq!(payload.root_page_id, crate::PageId::FIRST_DATA.as_u64());
     }
 
     #[test]

@@ -277,8 +277,8 @@ mod tests {
         // Should be limited to 10 versions
         assert_eq!(chain.len(), 10);
 
-        // Reclaim old versions
-        let reclaimed = chain.reclaim_old(Lsn::from(100));
+        // Reclaim old versions (LSNs 110-200, reclaim LSNs < 150)
+        let reclaimed = chain.reclaim_old(Lsn::from(150));
         assert!(reclaimed > 0);
         assert!(chain.len() < 10);
     }
