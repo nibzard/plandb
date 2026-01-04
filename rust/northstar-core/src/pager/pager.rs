@@ -248,6 +248,20 @@ impl Pager {
         Ok(())
     }
 
+    /// Read a B+Tree node from storage
+    pub fn read_btree_node(&mut self, page_id: PageId) -> Result<crate::btree::node::Node> {
+        use crate::btree::node::Node;
+
+        let bytes = self.read_page_cached(page_id)?;
+        Node::from_bytes(&bytes)
+    }
+
+    /// Write a B+Tree node to storage
+    pub fn write_btree_node(&mut self, page_id: PageId, node: &crate::btree::node::Node) -> Result<()> {
+        let bytes = node.to_bytes();
+        self.write_page(page_id, &bytes)
+    }
+
     /// Get the root page ID
     pub fn root_page_id(&self) -> PageId {
         self.current_meta.root_page_id()

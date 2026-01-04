@@ -21,24 +21,26 @@ pub enum InsertResult {
 pub fn insert_into_leaf(
     node: &mut LeafNode,
     entry: Entry,
-    _pager: &mut impl PagerTrait,
+    pager: &mut impl PagerTrait,
 ) -> Result<InsertResult> {
-    // Try to insert
-    let was_full = !node.header.has_space(entry.serialized_size());
+    // Check if node would be full after insert
+    let would_be_full = !node.header.has_space(entry.serialized_size());
 
+    // Try to insert
     let is_update = node.insert(entry)?;
 
-    // If node wasn't full before insert, we're done
-    if !was_full {
+    // If it's an update or node wasn't full, we're done
+    if is_update || !would_be_full {
         return Ok(InsertResult::Success);
     }
 
-    // Node is full after insert - check if we need to split
+    // Node is full after insert - split the node
     if node.needs_split(SPLIT_THRESHOLD) {
-        // TODO: Implement split
-        return Err(Error::Feature(FeatureError::NotImplemented {
-            feature: "Leaf node split".to_string(),
-        }));
+        let (new_node, separator) = split_leaf_node(node, pager)?;
+        return Ok(InsertResult::Split {
+            new_page_id: PageId::from(new_node.header.node_id),
+            separator,
+        });
     }
 
     Ok(InsertResult::Success)
@@ -49,24 +51,26 @@ pub fn insert_into_internal(
     node: &mut InternalNode,
     separator: Vec<u8>,
     child_id: u64,
-    _pager: &mut impl PagerTrait,
+    pager: &mut impl PagerTrait,
 ) -> Result<InsertResult> {
-    // Try to insert
-    let was_full = !node.header.has_space(1 + separator.len() + 8);
+    // Check if node would be full after insert
+    let would_be_full = !node.header.has_space(1 + separator.len() + 8);
 
+    // Try to insert
     node.insert(separator, child_id)?;
 
     // If node wasn't full before insert, we're done
-    if !was_full {
+    if !would_be_full {
         return Ok(InsertResult::Success);
     }
 
-    // Node is full after insert - check if we need to split
+    // Node is full after insert - split the node
     if node.needs_split(SPLIT_THRESHOLD) {
-        // TODO: Implement split
-        return Err(Error::Feature(FeatureError::NotImplemented {
-            feature: "Internal node split".to_string(),
-        }));
+        let (new_node, separator) = split_internal_node(node, pager)?;
+        return Ok(InsertResult::Split {
+            new_page_id: PageId::from(new_node.header.node_id),
+            separator,
+        });
     }
 
     Ok(InsertResult::Success)
@@ -98,11 +102,7 @@ pub fn split_leaf_node(
     // Get separator key (first key in new node)
     let separator = new_node.entries.first()
         .map(|e| e.key.clone())
-        .ok_or_else(|| Error::Validation(ValidationError::Generic)("Split leaf has no entries".to_string()))?;
-
-    // Write both nodes
-    pager.write_node(Node::Leaf(new_node.clone()))?;
-    pager.write_node(Node::Leaf(node.clone()))?;
+        .ok_or_else(|| Error::Validation(ValidationError::Generic("Split leaf has no entries".to_string())))?;
 
     Ok((new_node, separator))
 }
@@ -130,17 +130,29 @@ pub fn split_internal_node(
     // Get separator to promote (the separator at split point)
     let separator = node.separators[split_point].clone();
 
-    // Write both nodes
-    pager.write_node(Node::Internal(new_node.clone()))?;
-    pager.write_node(Node::Internal(node.clone()))?;
-
     Ok((new_node, separator))
 }
 
 /// Trait for pager operations needed by insert
 pub trait PagerTrait {
     fn allocate_page(&mut self) -> Result<PageId>;
-    fn write_node(&mut self, node: Node) -> Result<()>;
+    fn write_node(&mut self, page_id: PageId, node: &Node) -> Result<()>;
+    fn read_node(&mut self, page_id: PageId) -> Result<Node>;
+}
+
+// Implement PagerTrait for Pager
+impl<'a> PagerTrait for &'a mut crate::pager::Pager {
+    fn allocate_page(&mut self) -> Result<PageId> {
+        crate::pager::Pager::allocate_page(self)
+    }
+
+    fn write_node(&mut self, page_id: PageId, node: &Node) -> Result<()> {
+        crate::pager::Pager::write_btree_node(self, page_id, node)
+    }
+
+    fn read_node(&mut self, page_id: PageId) -> Result<Node> {
+        crate::pager::Pager::read_btree_node(self, page_id)
+    }
 }
 
 #[cfg(test)]
@@ -151,11 +163,15 @@ mod tests {
 
     impl PagerTrait for MockPager {
         fn allocate_page(&mut self) -> Result<PageId> {
-            Ok(PageId::from(999))
+            Ok(PageId::from(999u64))
         }
 
-        fn write_node(&mut self, _node: Node) -> Result<()> {
+        fn write_node(&mut self, _page_id: PageId, _node: &Node) -> Result<()> {
             Ok(())
+        }
+
+        fn read_node(&mut self, _page_id: PageId) -> Result<Node> {
+            Err(Error::Validation(ValidationError::Generic("MockPager does not support read_node".to_string())))
         }
     }
 

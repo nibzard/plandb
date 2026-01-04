@@ -2,7 +2,7 @@
 //!
 //! Internal and leaf node implementations for the B+Tree.
 
-use crate::{types::Lsn, error::{ValidationError, StorageError}, Error, Result};
+use crate::{types::{Lsn, PageId}, error::{ValidationError, StorageError}, Error, Result};
 use super::header::{NodeHeader, NodeType, NodeFlags, HEADER_SIZE, DEFAULT_PAGE_SIZE};
 
 /// Maximum key length in bytes
@@ -355,6 +355,208 @@ impl From<InternalNode> for Node {
 impl From<LeafNode> for Node {
     fn from(node: LeafNode) -> Self {
         Node::Leaf(node)
+    }
+}
+
+impl Node {
+    /// Serialize node to bytes
+    pub fn to_bytes(&self) -> Vec<u8> {
+        match self {
+            Node::Internal(node) => {
+                let mut bytes = vec![0u8; DEFAULT_PAGE_SIZE];
+
+                // Write header
+                let header_bytes = unsafe {
+                    std::slice::from_raw_parts(
+                        &node.header as *const NodeHeader as *const u8,
+                        HEADER_SIZE
+                    )
+                };
+                bytes[0..HEADER_SIZE].copy_from_slice(header_bytes);
+
+                // Write separators and children
+                let mut offset = HEADER_SIZE;
+                for (sep, child) in node.separators.iter().zip(node.children.iter()) {
+                    // Write separator key length and key
+                    bytes[offset] = sep.len() as u8;
+                    offset += 1;
+                    bytes[offset..offset + sep.len()].copy_from_slice(sep);
+                    offset += sep.len();
+
+                    // Write child pointer
+                    bytes[offset..offset + 8].copy_from_slice(&child.to_le_bytes());
+                    offset += 8;
+                }
+
+                // Write last child pointer if exists
+                if node.children.len() > node.separators.len() {
+                    let last_child = node.children.last().unwrap();
+                    bytes[offset..offset + 8].copy_from_slice(&last_child.to_le_bytes());
+                }
+
+                // Calculate and write checksum
+                let checksum = node.header.calculate_checksum(&bytes);
+                bytes[44..48].copy_from_slice(&checksum.to_le_bytes());
+
+                bytes
+            }
+            Node::Leaf(node) => {
+                let mut bytes = vec![0u8; DEFAULT_PAGE_SIZE];
+
+                // Write header
+                let header_bytes = unsafe {
+                    std::slice::from_raw_parts(
+                        &node.header as *const NodeHeader as *const u8,
+                        HEADER_SIZE
+                    )
+                };
+                bytes[0..HEADER_SIZE].copy_from_slice(header_bytes);
+
+                // Write entries
+                let mut offset = HEADER_SIZE;
+                for entry in &node.entries {
+                    // Write key length and key
+                    bytes[offset] = entry.key.len() as u8;
+                    offset += 1;
+                    bytes[offset..offset + entry.key.len()].copy_from_slice(&entry.key);
+                    offset += entry.key.len();
+
+                    // Write value length and value
+                    let value_len = entry.value.len() as u16;
+                    bytes[offset..offset + 2].copy_from_slice(&value_len.to_le_bytes());
+                    offset += 2;
+                    bytes[offset..offset + entry.value.len()].copy_from_slice(&entry.value);
+                    offset += entry.value.len();
+
+                    // Write LSN
+                    bytes[offset..offset + 8].copy_from_slice(&entry.lsn.as_u64().to_le_bytes());
+                    offset += 8;
+                }
+
+                // Write linked list pointers
+                bytes[48..56].copy_from_slice(&node.next_leaf.to_le_bytes());
+                bytes[56..64].copy_from_slice(&node.prev_leaf.to_le_bytes());
+
+                // Calculate and write checksum
+                let checksum = node.header.calculate_checksum(&bytes);
+                bytes[44..48].copy_from_slice(&checksum.to_le_bytes());
+
+                bytes
+            }
+        }
+    }
+
+    /// Deserialize node from bytes
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() < HEADER_SIZE {
+            return Err(Error::Validation(ValidationError::Generic(
+                format!("Node bytes too short: {} < {}", bytes.len(), HEADER_SIZE)
+            )));
+        }
+
+        // Read header
+        let header = unsafe {
+            (bytes.as_ptr() as *const NodeHeader).read_unaligned()
+        };
+
+        header.validate(PageId::from(header.node_id))?;
+
+        let node_type = header.get_node_type()
+            .ok_or_else(|| Error::Validation(ValidationError::Generic(
+                format!("Invalid node type: {}", header.node_type)
+            )))?;
+
+        match node_type.base_type() {
+            NodeType::Internal => {
+                let mut separators = Vec::new();
+                let mut children = Vec::new();
+                let mut offset = HEADER_SIZE;
+
+                // Read separators and children (up to num_keys)
+                for _ in 0..header.num_keys {
+                    // Read separator key
+                    let key_len = bytes[offset] as usize;
+                    offset += 1;
+                    let key = bytes[offset..offset + key_len].to_vec();
+                    offset += key_len;
+
+                    // Read child pointer
+                    let child_bytes = bytes[offset..offset + 8].try_into()
+                        .unwrap_or_else(|_| [0u8; 8]);
+                    let child = u64::from_le_bytes(child_bytes);
+                    offset += 8;
+
+                    separators.push(key);
+                    children.push(child);
+                }
+
+                // Read last child pointer
+                if offset + 8 <= bytes.len() {
+                    let child_bytes = bytes[offset..offset + 8].try_into()
+                        .unwrap_or_else(|_| [0u8; 8]);
+                    let last_child = u64::from_le_bytes(child_bytes);
+                    children.push(last_child);
+                }
+
+                let mut internal_node = InternalNode {
+                    header,
+                    separators,
+                    children,
+                };
+
+                Ok(Node::Internal(internal_node))
+            }
+            NodeType::Leaf => {
+                let mut entries = Vec::new();
+                let mut offset = HEADER_SIZE;
+
+                // Read entries
+                for _ in 0..header.num_keys {
+                    // Read key
+                    let key_len = bytes[offset] as usize;
+                    offset += 1;
+                    let key = bytes[offset..offset + key_len].to_vec();
+                    offset += key_len;
+
+                    // Read value
+                    let value_len_bytes = bytes[offset..offset + 2].try_into()
+                        .unwrap_or_else(|_| [0u8; 2]);
+                    let value_len = u16::from_le_bytes(value_len_bytes) as usize;
+                    offset += 2;
+                    let value = bytes[offset..offset + value_len].to_vec();
+                    offset += value_len;
+
+                    // Read LSN
+                    let lsn_bytes = bytes[offset..offset + 8].try_into()
+                        .unwrap_or_else(|_| [0u8; 8]);
+                    let lsn = Lsn::from(u64::from_le_bytes(lsn_bytes));
+                    offset += 8;
+
+                    entries.push(Entry { key, value, lsn });
+                }
+
+                // Read linked list pointers
+                let next_leaf_bytes = bytes[48..56].try_into()
+                    .unwrap_or_else(|_| [0u8; 8]);
+                let next_leaf = u64::from_le_bytes(next_leaf_bytes);
+
+                let prev_leaf_bytes = bytes[56..64].try_into()
+                    .unwrap_or_else(|_| [0u8; 8]);
+                let prev_leaf = u64::from_le_bytes(prev_leaf_bytes);
+
+                let mut leaf_node = LeafNode {
+                    header,
+                    entries,
+                    next_leaf,
+                    prev_leaf,
+                };
+
+                Ok(Node::Leaf(leaf_node))
+            }
+            _ => Err(Error::Validation(ValidationError::Generic(
+                "Unsupported node type".to_string()
+            )))
+        }
     }
 }
 

@@ -78,8 +78,8 @@ pub fn merge_leaf_nodes(
 ) -> Result<()> {
     // Check if combined entries fit
     let total_entries = left.entries.len() + right.entries.len();
-    let total_size: usize = left.entries.iter().map(|e| e.serialized_size()).sum()
-        + right.entries.iter().map(|e| e.serialized_size()).sum();
+    let total_size: usize = left.entries.iter().map(|e| e.serialized_size()).sum::<usize>()
+        + right.entries.iter().map(|e| e.serialized_size()).sum::<usize>();
     let available_space = DEFAULT_PAGE_SIZE - HEADER_SIZE;
 
     if total_size > available_space {
@@ -126,7 +126,7 @@ pub fn borrow_from_leaf_sibling(
     if is_left_sibling {
         // Borrow last entry from left sibling
         let entry = sibling.entries.pop()
-            .ok_or_else(|| Error::Validation(ValidationError::Generic)("Left sibling is empty".to_string()))?;
+            .ok_or_else(|| Error::Validation(ValidationError::Generic("Left sibling is empty".to_string())))?;
 
         let separator = entry.key.clone();
         underfull.insert(entry)?;
@@ -134,8 +134,10 @@ pub fn borrow_from_leaf_sibling(
         Ok(separator)
     } else {
         // Borrow first entry from right sibling
-        let entry = sibling.entries.remove(0)
-            .ok_or_else(|| Error::Validation(ValidationError::Generic)("Right sibling is empty".to_string()))?;
+        if sibling.entries.is_empty() {
+            return Err(Error::Validation(ValidationError::Generic("Right sibling is empty".to_string())));
+        }
+        let entry = sibling.entries.remove(0);
 
         let separator = entry.key.clone();
         underfull.insert(entry)?;

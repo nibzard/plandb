@@ -251,8 +251,8 @@ pub fn merge_sorted_items(mut item_vectors: Vec<Vec<ScanItem>>) -> Vec<ScanItem>
 
         for (i, iter) in iterators.iter().enumerate() {
             if let Some(item) = iter.as_slice().first() {
-                if smallest_key.is_none() || item.key < smallest_key.unwrap() {
-                    smallest_key = Some(&item.key);
+                if smallest_key.is_none() || item.key < *smallest_key.as_ref().unwrap() {
+                    smallest_key = Some(item.key.clone());
                     smallest_index = Some(i);
                 }
             }
@@ -325,8 +325,8 @@ mod tests {
 
     #[test]
     fn test_scan_state() {
-        let state = ScanState::forward(
-            PageId::from(1),
+        let mut state = ScanState::forward(
+            PageId::from(1u64),
             Some(b"key1".to_vec()),
             Some(b"key5".to_vec()),
             Lsn::from(100),
@@ -334,7 +334,7 @@ mod tests {
 
         assert!(!state.started);
         assert!(!state.ended);
-        assert_eq!(state.current_page, PageId::from(1));
+        assert_eq!(state.current_page, PageId::from(1u64));
 
         state.mark_started();
         assert!(state.started);
@@ -347,7 +347,7 @@ mod tests {
     #[test]
     fn test_scan_state_range_check() {
         let state = ScanState::forward(
-            PageId::from(1),
+            PageId::from(1u64),
             Some(b"key2".to_vec()),
             Some(b"key5".to_vec()),
             Lsn::from(100),

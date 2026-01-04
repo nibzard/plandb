@@ -164,17 +164,17 @@ mod tests {
     fn test_search_context() {
         let mut ctx = SearchContext::new();
 
-        ctx.push(PageId::from(1), 0);
-        ctx.push(PageId::from(2), 1);
-        ctx.push(PageId::from(3), 2);
+        ctx.push(PageId::from(1u64), 0);
+        ctx.push(PageId::from(2u64), 1);
+        ctx.push(PageId::from(3u64), 2);
 
         assert_eq!(ctx.path.len(), 3);
-        assert_eq!(ctx.parent(), Some(PageId::from(2)));
+        assert_eq!(ctx.parent(), Some(PageId::from(2u64)));
 
         let (page_id, index) = ctx.pop().unwrap();
-        assert_eq!(page_id, PageId::from(3));
+        assert_eq!(page_id, PageId::from(3u64));
         assert_eq!(index, 2);
-        assert_eq!(ctx.parent(), Some(PageId::from(1)));
+        assert_eq!(ctx.parent(), Some(PageId::from(1u64)));
     }
 
     #[test]
@@ -262,10 +262,10 @@ mod tests {
         assert_eq!(found.value(), Some(&b"value"[..]));
 
         let traverse = SearchResult::Traverse {
-            child_id: PageId::from(42),
+            child_id: PageId::from(42u64),
         };
         assert!(!traverse.is_found());
         assert!(traverse.should_traverse());
-        assert_eq!(traverse.child_id(), Some(PageId::from(42)));
+        assert_eq!(traverse.child_id(), Some(PageId::from(42u64)));
     }
 }

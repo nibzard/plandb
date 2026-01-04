@@ -28,16 +28,16 @@ pub struct BTree {
 
 impl BTree {
     /// Create a new B+Tree instance
-    pub fn new(pager: Pager, root_page_id: PageId) -> Result<Self> {
+    pub fn new(mut pager: Pager, root_page_id: PageId) -> Result<Self> {
         // Load root node to determine height and type
-        let root_node = pager.read_page(root_page_id)?;
+        let root_node = pager.read_btree_node(root_page_id)?;
 
         let (height, is_leaf) = match root_node.header().get_node_type() {
             Some(NodeType::Leaf) | Some(NodeType::RootLeaf) => (0, true),
             Some(NodeType::Internal) | Some(NodeType::RootInternal) => {
                 (root_node.header().level, false)
             },
-            None => return Err(Error::Validation(ValidationError::Generic)("Invalid root node type".to_string())),
+            None => return Err(Error::Validation(ValidationError::Generic("Invalid root node type".to_string()))),
         };
 
         Ok(Self {
@@ -54,7 +54,7 @@ impl BTree {
         // Allocate root page (leaf node)
         let root_page_id = pager.allocate_page()?;
         let root_node = LeafNode::new(root_page_id.as_u64());
-        pager.write_page(root_page_id, &root_node)?;
+        pager.write_btree_node(root_page_id, &root_node.into())?;
 
         Ok(Self {
             pager,
@@ -66,13 +66,13 @@ impl BTree {
     }
 
     /// Get a value by key
-    pub fn get(&self, key: &[u8], snapshot_lsn: Lsn) -> Result<Option<Vec<u8>>> {
+    pub fn get(&mut self, key: &[u8], snapshot_lsn: Lsn) -> Result<Option<Vec<u8>>> {
         let mut current_page_id = self.root_page_id;
         let mut ctx = SearchContext::new();
 
         // Traverse from root to leaf
         loop {
-            let node = self.pager.read_page(current_page_id)?;
+            let node = self.pager.read_btree_node(current_page_id)?;
 
             match node {
                 Node::Internal(internal) => {
@@ -99,12 +99,12 @@ impl BTree {
         let entry = Entry::new(key.clone(), value, lsn);
 
         // If tree is empty (root is empty leaf), just insert
-        let root_node = self.pager.read_page(self.root_page_id)?;
+        let root_node = self.pager.read_btree_node(self.root_page_id)?;
         if let Some(leaf) = root_node.as_leaf() {
             if leaf.entries.is_empty() {
                 let mut leaf = leaf.clone();
                 leaf.insert(entry)?;
-                self.pager.write_page(self.root_page_id, &leaf)?;
+                self.pager.write_btree_node(self.root_page_id, &leaf.clone().into())?;
                 return Ok(());
             }
         }
@@ -114,7 +114,7 @@ impl BTree {
         let mut path: Vec<(PageId, Node)> = Vec::new();
 
         loop {
-            let node = self.pager.read_page(current_page_id)?;
+            let node = self.pager.read_btree_node(current_page_id)?;
             path.push((current_page_id, node.clone()));
 
             match node {
@@ -126,9 +126,9 @@ impl BTree {
                     let mut leaf = leaf.clone();
 
                     // Try to insert
-                    match insert_into_leaf(&mut leaf, entry, &mut self.pager)? {
+                    match insert_into_leaf(&mut leaf, entry, &mut &mut self.pager)? {
                         InsertResult::Success => {
-                            self.pager.write_page(current_page_id, &leaf)?;
+                            self.pager.write_btree_node(current_page_id, &leaf.clone().into())?;
                             return Ok(());
                         }
                         InsertResult::Split { new_page_id, separator } => {
@@ -149,7 +149,7 @@ impl BTree {
         let mut path: Vec<(PageId, Node)> = Vec::new();
 
         loop {
-            let node = self.pager.read_page(current_page_id)?;
+            let node = self.pager.read_btree_node(current_page_id)?;
             path.push((current_page_id, node.clone()));
 
             match node {
@@ -163,12 +163,12 @@ impl BTree {
                     // Try to delete
                     match delete_from_leaf(&mut leaf, key)? {
                         DeleteResult::Success => {
-                            self.pager.write_page(current_page_id, &leaf)?;
+                            self.pager.write_btree_node(current_page_id, &leaf.clone().into())?;
                             return Ok(());
                         }
                         DeleteResult::Underfull { .. } | DeleteResult::Merged { .. } => {
                             // Handle underflow/merge
-                            self.pager.write_page(current_page_id, &leaf)?;
+                            self.pager.write_btree_node(current_page_id, &leaf.clone().into())?;
                             // TODO: Implement merge/borrow logic
                             return Ok(());
                         }
@@ -180,7 +180,7 @@ impl BTree {
 
     /// Create a range scan iterator
     pub fn scan(
-        &self,
+        &mut self,
         start: Option<&[u8]>,
         end: Option<&[u8]>,
         snapshot_lsn: Lsn,
@@ -197,20 +197,20 @@ impl BTree {
         let mut current_page_id = start_page;
 
         while current_page_id.as_u64() != 0 {
-            let node = self.pager.read_page(current_page_id)?;
+            let node = self.pager.read_btree_node(current_page_id)?;
 
             if let Some(leaf) = node.as_leaf() {
                 for entry in &leaf.entries {
                     // Check if entry is within range
                     if let Some(start_key) = start {
-                        if entry.key < start_key {
+                        if entry.key.as_slice() < start_key {
                             continue;
                         }
                     }
 
                     if let Some(end_key) = end {
-                        if entry.key >= end_key {
-                            current_page_id = PageId::from(0); // Stop
+                        if entry.key.as_slice() >= end_key {
+                            current_page_id = PageId::from(0u64); // Stop
                             break;
                         }
                     }
@@ -244,9 +244,9 @@ impl BTree {
     }
 
     /// Verify tree invariants
-    pub fn verify(&self) -> Result<()> {
+    pub fn verify(&mut self) -> Result<()> {
         // Verify root exists
-        let root = self.pager.read_page(self.root_page_id)?;
+        let root = self.pager.read_btree_node(self.root_page_id)?;
 
         // Verify root is valid
         root.validate()?;
@@ -259,8 +259,8 @@ impl BTree {
     fn propagate_split(
         &mut self,
         mut path: Vec<(PageId, Node)>,
-        separator: Vec<u8>,
-        new_child_id: PageId,
+        mut separator: Vec<u8>,
+        mut new_child_id: PageId,
     ) -> Result<()> {
         while let Some((page_id, node)) = path.pop() {
             match node {
@@ -270,14 +270,14 @@ impl BTree {
                         &mut internal,
                         separator.clone(),
                         new_child_id.as_u64(),
-                        &mut self.pager,
+                        &mut &mut self.pager,
                     )? {
                         InsertResult::Success => {
-                            self.pager.write_page(page_id, &internal)?;
+                            self.pager.write_btree_node(page_id, &internal.clone().into())?;
                             return Ok(());
                         }
                         InsertResult::Split { new_page_id, separator: new_sep } => {
-                            self.pager.write_page(page_id, &internal)?;
+                            self.pager.write_btree_node(page_id, &internal.clone().into())?;
                             separator = new_sep;
                             new_child_id = new_page_id;
                         }
@@ -306,14 +306,14 @@ impl BTree {
         new_root.header.num_keys = 1;
 
         // Update old root to not be root
-        let old_root = self.pager.read_page(self.root_page_id)?;
+        let old_root = self.pager.read_btree_node(self.root_page_id)?;
         let mut old_root = old_root.clone();
         old_root.header_mut().is_root = 0;
         old_root.header_mut().parent_page_id = new_root_id.as_u64();
-        self.pager.write_page(self.root_page_id, old_root.as_ref().as_leaf().unwrap())?;
+        self.pager.write_btree_node(self.root_page_id, &old_root)?;
 
         // Write new root
-        self.pager.write_page(new_root_id, &new_root)?;
+        self.pager.write_btree_node(new_root_id, &new_root.clone().into())?;
 
         // Update tree state
         self.root_page_id = new_root_id;
@@ -324,11 +324,11 @@ impl BTree {
     }
 
     /// Find leaf node containing a key
-    fn find_leaf_for_key(&self, key: &[u8]) -> Result<PageId> {
+    fn find_leaf_for_key(&mut self, key: &[u8]) -> Result<PageId> {
         let mut current_page_id = self.root_page_id;
 
         loop {
-            let node = self.pager.read_page(current_page_id)?;
+            let node = self.pager.read_btree_node(current_page_id)?;
 
             match node {
                 Node::Internal(internal) => {
@@ -343,16 +343,16 @@ impl BTree {
     }
 
     /// Find leftmost leaf node
-    fn find_leftmost_leaf(&self) -> Result<PageId> {
+    fn find_leftmost_leaf(&mut self) -> Result<PageId> {
         let mut current_page_id = self.root_page_id;
 
         loop {
-            let node = self.pager.read_page(current_page_id)?;
+            let node = self.pager.read_btree_node(current_page_id)?;
 
             match node {
                 Node::Internal(internal) => {
                     let leftmost = *internal.children.first()
-                        .ok_or_else(|| Error::Validation(ValidationError::Generic)("Internal node has no children".to_string()))?;
+                        .ok_or_else(|| Error::Validation(ValidationError::Generic("Internal node has no children".to_string())))?;
                     current_page_id = PageId::from(leftmost);
                 }
                 Node::Leaf(_) => {
@@ -390,7 +390,7 @@ mod tests {
             height: 2,
             leaf_count: 10,
             internal_count: 3,
-            root_page_id: PageId::from(1),
+            root_page_id: PageId::from(1u64),
         };
 
         assert_eq!(stats.height, 2);
