@@ -8,7 +8,51 @@
 
 **Latest Commit**: `90d7d80` - "docs(todo-rust): Document integration test fixes"
 
-**Git Status**: UNCOMMITTED - B+Tree search bug fix complete
+**Git Status**: UNCOMMITTED - Cache coherency issue investigation
+
+### BLOCKER: Cache Coherency Issue (2026-01-04)
+
+**Status**: [ ] INVESTIGATING - Root cause identified, fix incomplete
+
+**Issue**: Integration tests failing with InvalidMagic errors (NSFB vs NSTR)
+
+**Symptoms**:
+- `test_memory_pressure` (2 variants): InvalidMagic errors
+  - Expected: NODE_MAGIC (0x4E535452 = "NSTR")
+  - Actual: PAGE_MAGIC (0x4E534442 = "NSDB") being read from cache
+- `test_database_size_growth`: size_after > size_before assertion fails
+- `test_large_dataset_workflow`: Too many mutations error (1000 limit hit)
+- `test_large_dataset_persistence`: InvalidMagic + key at position 1000 not found
+- `test_batch_insert_pattern`: Only 340/500 items found (32% data loss)
+
+**Root Cause Identified**:
+Cache is returning stale PAGE_MAGIC data even after NODE_MAGIC is written. Investigation revealed:
+
+1. **Pin count corruption**: `read_page_cached_raw()` was calling `cache.unpin()` after `cache.get()` had already unpinned internally
+2. **Failed cache invalidation**: `cache.remove()` returns `false` when page is pinned, leaving stale data
+3. **Page allocation confusion**: `allocate_page()` writes PAGE_MAGIC to storage, then `write_btree_node()` writes NODE_MAGIC, but cache may have stale PAGE_MAGIC data
+
+**Attempted Fixes**:
+1. Fixed pin count management in `read_page_cached()` and `read_page_cached_raw()` - removed extra `unpin()` call
+2. Changed `write_page()` and `write_page_raw()` to use `cache.put()` instead of `cache.remove()` to ensure cache is updated
+3. Updated `allocate_page()` to also update the cache after writing PAGE_MAGIC
+
+**Results**: Tests still failing, indicating deeper cache coherency issue
+
+**Next Steps**:
+- Need deeper investigation of cache behavior
+- May need to redesign cache invalidation strategy
+- Consider whether `allocate_page()` should write PAGE_MAGIC at all
+- Investigate if there's a race condition or LRU eviction issue
+
+**Files Under Investigation**:
+- `northstar-core/src/pager/pager.rs` - Page cache management
+- `northstar-core/src/cache/page.rs` - PageCache wrapper
+- `northstar-core/src/cache/shard.rs` - Cache shard with LRU
+- `northstar-core/src/cache/mod.rs` - Cache trait
+- `northstar-core/src/cache/types.rs` - Cache entry types
+
+---
 
 ### Latest Work: B+Tree Split Node Persistence Fix (2026-01-04)
 
