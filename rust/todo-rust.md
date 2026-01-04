@@ -835,7 +835,7 @@
 - [x] **4.12** Create `04-txn-serialize.md` - **[DONE]**
   - **DESCRIBE**: CommitRecord serialization
   - **EXPLAIN**: Binary format
-  - **Completed**: 2026-01-04
+  - **Completed**: 2026-01-04 (commit 1918481)
   - **Blockers**: None
 
   **Work Summary**:
@@ -851,9 +851,35 @@
   - **Rust implementation** with type definitions, serialization/deserialization functions, testing
   - **50+ test scenarios** across unit, integration, property, WAL integration, and validation tests
 
-- [ ] **4.13** Create `04-txn-state.md`
+- [x] **4.13** Create `04-txn-state.md` - **[DONE]**
   - **LIST**: TransactionState variants
   - **DESCRIBE**: Valid state transitions
+  - **Completed**: 2026-01-04 (commit TBD)
+  - **Blockers**: None
+
+  **Work Summary**:
+  - **TransactionState enum** fully specified with 4 variants (Active, Preparing, Committed, Aborted)
+  - **State machine responsibilities** documented (transition enforcement, operation validation, recovery support)
+  - **Valid state transitions** detailed with diagrams (Active→Preparing, Preparing→Committed, Active/Preparing→Aborted)
+  - **Operation-state matrix** created showing which operations allowed in each state
+  - **State validation rules** specified for all transaction operations (put, delete, get, scan, prepare, commit, abort)
+  - **Terminal state properties** explained (no transitions out, no operations allowed, resource cleanup)
+  - **Concurrency considerations** documented (single-threaded state, no synchronization needed)
+  - **Error handling** specified with InvalidState error type
+  - **Rust implementation** provided with enum definition, state field integration, validation functions
+  - **50+ test scenarios** across unit, integration, property, and hardening tests
+
+  **Key Deliverables**:
+  - TransactionState enum with Debug, Clone, Copy, PartialEq, Eq traits
+  - State transition diagram with all valid and invalid transitions
+  - Operation validation rules (mutations in Active only, commit in Preparing only, abort in Active/Preparing)
+  - State initialization (always starts as Active)
+  - State termination (Committed/Aborted are terminal)
+  - Concurrency model (single-threaded, no locks needed)
+  - State machine implementation with validation and transition functions
+  - State predicates (is_active, is_preparing, is_committed, is_aborted, is_terminal, is_mutable)
+  - InvalidState error type with state and required fields
+  - Complete testing strategy with state machine invariants
 
 - [ ] **4.14** Create `04-txn-concurrency.md`
   - **DESCRIBE**: Concurrent transaction handling
