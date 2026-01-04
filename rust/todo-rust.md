@@ -1039,6 +1039,37 @@ Implemented Phase 1 core primitives in Rust:
 
 **Phase 4 Complete**: All 15 tasks finished. Transaction System fully specified.
 
+### Phase 4 Implementation Status: COMPLETE - 2026-01-04 (commit 98ddaf6)
+
+**Implementation Summary**:
+- **TransactionContext**: State tracking, mutation buffering, page allocation tracking, modified page before-images
+- **TransactionState**: State machine (Active, Preparing, Committed, Aborted) with transition validation
+- **Mutation**: Put and Delete operations with size limits (4KB keys, 16MB values, 1000 ops/txn)
+- **CommitRecord**: WAL commit record with CRC32C checksums for transaction durability
+- **ReadTxn**: Placeholder for read-only transactions with snapshot isolation (Send + Sync)
+- **WriteTxn**: Placeholder for write transactions with two-phase commit protocol (non-Send)
+
+**Tests**: 150 passing (all new transaction tests)
+
+**Rust Module**: `northstar-core/src/txn/`
+- `mod.rs` - Transaction module exports
+- `context.rs` - TransactionContext with mutation buffering and page tracking
+- `state.rs` - TransactionState enum with state machine validation
+- `mutation.rs` - Mutation enum (Put/Delete) with validation
+- `commit.rs` - CommitRecord for WAL serialization with checksums
+- `read_txn.rs` - ReadTxn placeholder for snapshot reads
+- `write_txn.rs` - WriteTxn placeholder for two-phase commit
+
+**Key Features**:
+- State machine enforcement (no mutations in Preparing/Committed/Aborted)
+- Size limit validation (MAX_KEY_SIZE=4KB, MAX_VALUE_SIZE=16MB, MAX_OPERATIONS=1000)
+- Page tracking for rollback (allocated_pages Vec, modified_pages HashMap)
+- Checksum verification for commit records (CRC32C over mutations)
+- Thread-safe read transactions (Send + Sync bounds)
+- Exclusive write transactions (non-Send, single writer)
+
+**Next Phase**: Phase 5 (Snapshot/MVCC) - specifications complete, implementation pending
+
 ---
 
 ## Phase 5: Snapshot/MVCC (10 tasks)
