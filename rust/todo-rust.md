@@ -1043,9 +1043,39 @@
   - 40+ test scenarios covering unit, integration, property, and performance tests
   - Invariants documented (reference count accuracy, monotonic cleanup, safety)
 
-- [ ] **5.6** Create `05-snapshot-state.md`
+- [x] **5.6** Create `05-snapshot-state.md` - **[DONE]**
   - **LIST**: SnapshotState fields
   - **DESCRIBE**: LSN range tracking
+  - **Completed**: 2026-01-04 (commit 4904b83)
+  - **Blockers**: None
+
+  **Work Summary**:
+  - **SnapshotState internal structure** fully specified with 6 core fields
+  - **LSN range tracking** documented with visible_lsn (start) and last_committed_lsn (end)
+  - **Metadata persistence** explained with 8 fields (txn_id, root_page_id, timestamp, reference_count, state, creation_order, cleanup_eligible, snapshot_metadata)
+  - **State lifecycle** detailed with 4 transitions (Initializing → Active → Quiescent → CleanupEligible)
+  - **Memory layout** specified at 72 bytes with field-level breakdown
+  - **Concurrency semantics** defined for state transitions and read operations
+  - **Atomic operations** documented for reference counting and state updates
+  - **5 accessor methods** specified (get_txn_id, get_root_page_id, get_visible_range, get_reference_count, get_state)
+  - **3 mutation methods** defined (increment_reference, decrement_reference, mark_for_cleanup)
+  - **State validation** explained with invariants (txn_id monotonicity, reference count accuracy, LSN ordering)
+  - **Snapshot metadata** extensible via HashMap<String, Vec<u8>> for custom attributes
+  - **Creation order tracking** with 64-bit sequence for FIFO cleanup policies
+  - **Thread safety** guaranteed with atomic operations and appropriate memory ordering
+
+  **Key Deliverables**:
+  - SnapshotState struct with 6 core fields (txn_id, root_page_id, visible_lsn, last_committed_lsn, creation_timestamp, snapshot_state)
+  - LSN range tracking with visible_lsn (8B) and last_committed_lsn (8B)
+  - SnapshotState enum with 4 variants (Initializing, Active, Quiescent, CleanupEligible)
+  - Atomic reference counting with AtomicU64 and fetch_add/fetch_sub operations
+  - State transition validation with isValidStateTransition() function
+  - Memory layout specification (72 bytes total, field-by-field breakdown)
+  - 8 accessor and mutation methods with thread-safe implementations
+  - Rust implementation guidance with atomics, Ordering constraints, and derive traits
+  - Concurrency analysis (read-heavy workloads, no blocking on state reads)
+  - 20+ test scenarios covering state transitions, LSN tracking, reference counting, and edge cases
+  - Invariants documented (transaction ID monotonicity, LSN ordering, reference count accuracy, state machine validity)
 
 - [ ] **5.7** Create `05-mvcc-isolation.md`
   - **DESCRIBE**: Isolation guarantees
