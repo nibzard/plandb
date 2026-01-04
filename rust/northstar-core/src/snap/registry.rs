@@ -297,6 +297,11 @@ impl SnapshotRegistry {
         self.pager.close()
     }
 
+    /// Sync pager data to stable storage.
+    pub(crate) fn sync(&self) -> Result<()> {
+        self.pager.sync()
+    }
+
     /// Apply mutations to the B+Tree and return the new root page ID.
     ///
     /// This method takes a closure that receives a mutable B+Tree reference

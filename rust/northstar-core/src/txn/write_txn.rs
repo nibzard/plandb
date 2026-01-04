@@ -146,6 +146,9 @@ impl<'a> WriteTxn<'a> {
             Ok(())
         })?;
 
+        // Sync to ensure mutations are persisted to disk
+        self.db.sync()?;
+
         // Register new snapshot with updated root page ID
         self.db.register_snapshot(txn_id, new_root_page_id)?;
 

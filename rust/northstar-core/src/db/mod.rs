@@ -431,6 +431,32 @@ impl Db {
         Ok(())
     }
 
+    /// Sync all pending writes to stable storage.
+    ///
+    /// This ensures that all mutations are persisted to disk before returning.
+    /// This is automatically called during transaction commit, but can also
+    /// be called explicitly for manual control.
+    ///
+    /// # Returns
+    ///
+    /// Ok(()) if sync succeeds
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Lock is poisoned
+    /// - I/O error occurs during sync
+    pub fn sync(&self) -> Result<()> {
+        let inner = self.inner.read()
+            .map_err(|_| Error::Transaction(TransactionError::LockPoisoned))?;
+
+        if inner.is_closed {
+            return Err(Error::Transaction(TransactionError::DatabaseClosed));
+        }
+
+        inner.snap_registry.sync()
+    }
+
     /// Check if the database is closed.
     pub fn is_closed(&self) -> bool {
         self.inner.read()
@@ -648,7 +674,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // TODO: Fix this test - commit now actually applies mutations and exposes file handling issues
     fn test_reopen_existing_database() {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("test.db");

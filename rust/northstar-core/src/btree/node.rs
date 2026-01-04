@@ -400,9 +400,9 @@ impl Node {
                     bytes[offset..offset + 8].copy_from_slice(&last_child.to_le_bytes());
                 }
 
-                // Calculate and write checksum
+                // Calculate and write checksum at offset 28 (correct field location)
                 let checksum = node.header.calculate_checksum(&bytes);
-                bytes[44..48].copy_from_slice(&checksum.to_le_bytes());
+                bytes[28..32].copy_from_slice(&checksum.to_le_bytes());
 
                 bytes
             }
@@ -443,9 +443,9 @@ impl Node {
                 bytes[48..56].copy_from_slice(&node.next_leaf.to_le_bytes());
                 bytes[56..64].copy_from_slice(&node.prev_leaf.to_le_bytes());
 
-                // Calculate and write checksum
+                // Calculate and write checksum at offset 28 (correct field location)
                 let checksum = node.header.calculate_checksum(&bytes);
-                bytes[44..48].copy_from_slice(&checksum.to_le_bytes());
+                bytes[28..32].copy_from_slice(&checksum.to_le_bytes());
 
                 bytes
             }

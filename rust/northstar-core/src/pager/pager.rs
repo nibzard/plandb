@@ -14,6 +14,7 @@ use crate::page::{Page, PageHeader, PageType, PAGE_MAGIC, PAGE_SIZE};
 use crate::types::{Lsn, PageId, TransactionId};
 use std::fs::File;
 use std::path::Path;
+use std::fs::OpenOptions;
 
 /// Main Pager struct - manages page-based storage
 pub struct Pager {
@@ -61,10 +62,17 @@ impl Pager {
 
     /// Create a new file-based database
     pub fn create_file(path: &Path) -> Result<Self> {
-        // Create new file
-        let file = File::create(path).map_err(|_e| Error::Io(IoError::FileNotFound {
-            path: path.display().to_string(),
-        }))?;
+        // Create new file in read-write mode
+        // File::create() opens in write-only mode, which fails on read
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .map_err(|_e| Error::Io(IoError::FileNotFound {
+                path: path.display().to_string(),
+            }))?;
 
         let storage = Storage::file(file);
         let page_size = PAGE_SIZE as u16;
@@ -90,15 +98,28 @@ impl Pager {
         // Write initial meta pages
         pager.write_meta_pages()?;
 
+        // Initialize empty B+Tree root page (page 2 = FIRST_DATA)
+        // This is needed because BTree::new() expects to read the root page
+        let root_page_id = PageId::FIRST_DATA;
+        let root_node = crate::btree::node::Node::Leaf(crate::btree::node::LeafNode::new(root_page_id.as_u64()));
+        pager.write_btree_node(root_page_id, &root_node)?;
+
+        // Sync to ensure everything is persisted
+        pager.storage.sync()?;
+
         Ok(pager)
     }
 
     /// Open an existing database file
     pub fn open_file(path: &Path) -> Result<Self> {
-        // Open file
-        let file = File::open(path).map_err(|_e| Error::Io(IoError::FileNotFound {
-            path: path.display().to_string(),
-        }))?;
+        // Open file in read-write mode
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .map_err(|_e| Error::Io(IoError::FileNotFound {
+                path: path.display().to_string(),
+            }))?;
 
         let storage = Storage::file(file);
 
@@ -169,6 +190,22 @@ impl Pager {
         Ok(())
     }
 
+    /// Read a page without validation (for B+Tree nodes which use NODE_MAGIC)
+    fn read_page_raw(&mut self, page_id: PageId, buffer: &mut [u8]) -> Result<()> {
+        // Validate buffer size
+        if buffer.len() != PAGE_SIZE {
+            return Err(Error::Validation(ValidationError::InvalidHeaderSize {
+                expected: PAGE_SIZE,
+                actual: buffer.len(),
+            }));
+        }
+
+        // Read from storage without validation
+        self.storage.read_page(page_id.as_u64(), buffer)?;
+
+        Ok(())
+    }
+
     /// Write a page from buffer to storage
     pub fn write_page(&mut self, page_id: PageId, buffer: &[u8]) -> Result<()> {
         // Validate buffer size
@@ -183,6 +220,25 @@ impl Pager {
         Self::validate_page_buffer(page_id, buffer)?;
 
         // Write to storage
+        self.storage.write_page(page_id.as_u64(), buffer)?;
+
+        // Invalidate cache entry
+        self.cache.remove(page_id);
+
+        Ok(())
+    }
+
+    /// Write a page without validation (for B+Tree nodes which use NODE_MAGIC)
+    fn write_page_raw(&mut self, page_id: PageId, buffer: &[u8]) -> Result<()> {
+        // Validate buffer size
+        if buffer.len() != PAGE_SIZE {
+            return Err(Error::Validation(ValidationError::InvalidHeaderSize {
+                expected: PAGE_SIZE,
+                actual: buffer.len(),
+            }));
+        }
+
+        // Write to storage without validation
         self.storage.write_page(page_id.as_u64(), buffer)?;
 
         // Invalidate cache entry
@@ -210,6 +266,31 @@ impl Pager {
         // Cache miss - read from storage
         let mut buffer = vec![0u8; PAGE_SIZE];
         self.read_page(page_id, &mut buffer)?;
+
+        // Insert into cache
+        self.cache.put(page_id, &buffer)?;
+
+        // Unpin and return copy
+        self.cache.unpin(page_id);
+        Ok(buffer)
+    }
+
+    /// Read a page without validation (for B+Tree nodes which use NODE_MAGIC)
+    fn read_page_cached_raw(&mut self, page_id: PageId) -> Result<Vec<u8>> {
+        // Check cache first
+        if self.cache.contains(page_id) {
+            // Get the data and immediately copy it to avoid borrow issues
+            let data = {
+                let cached_data = self.cache.get(page_id).unwrap();
+                cached_data.to_vec()
+            };
+            self.cache.unpin(page_id);
+            return Ok(data);
+        }
+
+        // Cache miss - read from storage without validation
+        let mut buffer = vec![0u8; PAGE_SIZE];
+        self.read_page_raw(page_id, &mut buffer)?;
 
         // Insert into cache
         self.cache.put(page_id, &buffer)?;
@@ -253,14 +334,16 @@ impl Pager {
     pub fn read_btree_node(&mut self, page_id: PageId) -> Result<crate::btree::node::Node> {
         use crate::btree::node::Node;
 
-        let bytes = self.read_page_cached(page_id)?;
+        // Use raw read to skip PAGE_MAGIC validation (B+Tree nodes use NODE_MAGIC)
+        let bytes = self.read_page_cached_raw(page_id)?;
         Node::from_bytes(&bytes)
     }
 
     /// Write a B+Tree node to storage
     pub fn write_btree_node(&mut self, page_id: PageId, node: &crate::btree::node::Node) -> Result<()> {
         let bytes = node.to_bytes();
-        self.write_page(page_id, &bytes)
+        // Use raw write to skip PAGE_MAGIC validation (B+Tree nodes use NODE_MAGIC)
+        self.write_page_raw(page_id, &bytes)
     }
 
     /// Get the root page ID
