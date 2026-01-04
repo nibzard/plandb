@@ -2368,10 +2368,8 @@ pub const Pager = struct {
             try addEntryToBtreeLeaf(&buffer, key, value);
             try self.writePage(new_root_id, &buffer);
 
-            // Update meta to point to new root
-            var new_meta = self.current_meta.meta;
-            new_meta.root_page_id = new_root_id;
-            try self.updateMeta(new_meta);
+            // Update in-memory meta only (executeTwoPhaseCommit will handle meta page write)
+            self.current_meta.meta.root_page_id = new_root_id;
             return;
         }
 
@@ -2450,10 +2448,8 @@ pub const Pager = struct {
 
                     try self.writePage(new_root_id, &new_root_buffer);
 
-                    // Update meta to point to new root
-                    var new_meta = self.current_meta.meta;
-                    new_meta.root_page_id = new_root_id;
-                    try self.updateMeta(new_meta);
+                    // Update in-memory meta only (executeTwoPhaseCommit will handle meta page write)
+                    self.current_meta.meta.root_page_id = new_root_id;
                 } else {
                     // Need to insert separator into parent internal node
                     const parent_info = path.pageAt(leaf_index - 1);
@@ -2503,10 +2499,8 @@ pub const Pager = struct {
 
                                 try self.writePage(new_root_id, &new_root_buffer);
 
-                                // Update meta to point to new root
-                                var new_meta = self.current_meta.meta;
-                                new_meta.root_page_id = new_root_id;
-                                try self.updateMeta(new_meta);
+                                // Update in-memory meta only (executeTwoPhaseCommit will handle meta page write)
+                                self.current_meta.meta.root_page_id = new_root_id;
                             } else {
                                 // Need to insert separator into grandparent
                                 const grandparent_info = path.pageAt(leaf_index - 2);

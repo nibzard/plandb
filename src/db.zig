@@ -537,10 +537,9 @@ pub const WriteTxn = struct {
         // Track mutation in transaction context
         try self.txn_ctx.put(key, value);
 
-        // For file-based databases, use B+tree operations
-        if (self.db.pager) |*pager| {
-            try pager.putBtreeValue(key, value, self.txn_ctx.txn_id);
-        }
+        // NOTE: For file-based databases, B+tree modifications happen in executeTwoPhaseCommit
+        // to ensure proper two-phase commit with fsync ordering
+        // We only update the in-memory model here
 
         // Also update in-memory model
         try self.inner.put(key, value);
@@ -554,10 +553,9 @@ pub const WriteTxn = struct {
         // Track mutation in transaction context
         try self.txn_ctx.delete(key);
 
-        // For file-based databases, use B+tree operations
-        if (self.db.pager) |*pager| {
-            _ = try pager.deleteBtreeValue(key, self.txn_ctx.txn_id);
-        }
+        // NOTE: For file-based databases, B+tree modifications happen in executeTwoPhaseCommit
+        // to ensure proper two-phase commit with fsync ordering
+        // We only update the in-memory model here
 
         // Also update in-memory model
         try self.inner.del(key);
