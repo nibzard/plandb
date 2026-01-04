@@ -182,6 +182,15 @@ impl TransactionContext {
         self.mutations.iter().map(|m| m.size()).sum()
     }
 
+    /// Find the most recent mutation for a given key.
+    ///
+    /// Returns None if the key is not in the mutations list.
+    /// Used for implementing read-your-own-writes in WriteTxn.
+    pub fn find_mutation(&self, key: &[u8]) -> Option<&Mutation> {
+        // Search in reverse order to find the most recent mutation
+        self.mutations.iter().rev().find(|m| m.get_key() == key)
+    }
+
     /// Transition to Preparing state.
     pub fn transition_to_preparing(&mut self) -> Result<()> {
         self.state.transition_to_preparing()

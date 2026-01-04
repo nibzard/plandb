@@ -332,6 +332,27 @@ impl SnapshotRegistry {
 
         Ok(new_root_page_id)
     }
+
+    /// Execute a read-only operation on the B+Tree at a specific snapshot.
+    ///
+    /// # Arguments
+    ///
+    /// * `root_page_id` - Root page ID for the snapshot to read
+    /// * `f` - Function to execute with B+Tree access
+    ///
+    /// # Returns
+    ///
+    /// The result of the function
+    pub(crate) fn with_btree<F, R>(&mut self, root_page_id: PageId, f: F) -> Result<R>
+    where
+        F: FnOnce(&mut crate::btree::BTree) -> Result<R>,
+    {
+        // Create a BTree with a mutable reference to the pager
+        let mut btree = crate::btree::BTree::new(&mut self.pager, root_page_id)?;
+
+        // Execute the read operation
+        f(&mut btree)
+    }
 }
 
 impl super::SnapshotOps for SnapshotRegistry {

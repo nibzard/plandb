@@ -55,9 +55,20 @@ impl<'a> WriteTxn<'a> {
 
     /// Get a value by key, seeing own writes if applicable.
     ///
-    /// TODO: Implement read-your-own-writes
-    pub fn get(&self, _key: &[u8]) -> Result<Option<Vec<u8>>> {
-        Ok(None)
+    /// Implements read-your-own-writes: checks transaction's mutations first,
+    /// then falls back to reading from the committed database state.
+    pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        // First check if we have a pending mutation for this key
+        if let Some(mutation) = self.ctx.find_mutation(key) {
+            // Return the value if it's a Put, None if it's a Delete
+            return Ok(mutation.get_value().map(|v| v.to_vec()));
+        }
+
+        // Fall back to reading from the database at latest snapshot
+        self.db.with_btree(self.db.get_snapshot_root(self.db.current_txn_id()).unwrap_or(crate::PageId::FIRST_DATA), |btree| {
+            let snapshot_lsn = crate::types::Lsn::from(self.db.current_txn_id().as_u64());
+            btree.get(key, snapshot_lsn)
+        })
     }
 
     /// Insert or update a key-value pair.

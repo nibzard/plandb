@@ -503,6 +503,15 @@ impl Db {
         let mut inner = self.inner_mut()?;
         inner.snap_registry.apply_mutations(f)
     }
+
+    /// Execute a read-only operation on the B+Tree (internal use).
+    pub(crate) fn with_btree<F, R>(&self, root_page_id: crate::PageId, f: F) -> Result<R>
+    where
+        F: FnOnce(&mut crate::btree::BTree) -> Result<R>,
+    {
+        let mut inner = self.inner_mut()?;
+        inner.snap_registry.with_btree(root_page_id, f)
+    }
 }
 
 /// Clone implementation for Db (creates a new handle to the same database)

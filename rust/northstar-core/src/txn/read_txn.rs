@@ -33,16 +33,37 @@ impl<'a> ReadTxn<'a> {
 
     /// Get a value by key from this snapshot.
     ///
-    /// TODO: Implement B+tree lookup
-    pub fn get(&self, _key: &[u8]) -> Result<Option<Vec<u8>>> {
-        Ok(None)
+    /// Performs a B+tree lookup using this transaction's snapshot.
+    /// Returns None if the key doesn't exist.
+    pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        self.db.with_btree(self.root_page_id, |btree| {
+            let snapshot_lsn = crate::types::Lsn::from(self.txn_id.as_u64());
+            btree.get(key, snapshot_lsn)
+        })
     }
 
     /// Scan all keys with the given prefix.
     ///
-    /// TODO: Implement prefix scan
-    pub fn scan(&self, _prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
-        Ok(Vec::new())
+    /// Returns all key-value pairs where keys start with the prefix.
+    pub fn scan(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        self.db.with_btree(self.root_page_id, |btree| {
+            let snapshot_lsn = crate::types::Lsn::from(self.txn_id.as_u64());
+
+            // Scan from prefix to next possible prefix (prefix + 0xFF...)
+            let start = Some(prefix);
+            let mut end_prefix = prefix.to_vec();
+            end_prefix.push(0xFF);
+            let end = Some(end_prefix.as_slice());
+
+            let iter = btree.scan(start, end, snapshot_lsn)?;
+
+            // Collect all items from the iterator
+            let mut results = Vec::new();
+            for item in iter {
+                results.push((item.key, item.value));
+            }
+            Ok(results)
+        })
     }
 
     /// Close the transaction and release resources.
