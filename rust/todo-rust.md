@@ -3592,6 +3592,92 @@ Implemented Phase 1 core primitives in Rust:
 
 **Phase Overview**: Transform single-node database into distributed system with Raft consensus and multi-region replication. Leverages existing commit record and WAL infrastructure as foundation.
 
+---
+
+## Phase 10.1 Complete: Replication Overview Module Implementation (2026-01-04)
+
+**Status**: [x] [DONE]
+
+**Task**: Implement Phase 10.1 replication overview module with core types
+
+**Description**: Implemented the foundational replication module with core types and structures:
+
+**Files Created**:
+- `rust/northstar-core/src/replication/mod.rs` - Module entry point with constants and re-exports
+- `rust/northstar-core/src/replication/config.rs` - Core configuration types
+- `rust/northstar-core/src/replication/state.rs` - State machine and replica tracking
+- `rust/northstar-core/src/replication/protocol.rs` - Wire protocol message types
+- `rust/northstar-core/src/replication/error.rs` - Comprehensive error handling
+
+**Key Types Implemented**:
+
+1. **Configuration Types** (`config.rs`):
+   - `ReplicationRole` enum (Primary, Replica)
+   - `ReplicationConfig` with role-specific configs
+   - `PrimaryConfig` (listen_address, max_replicas, buffer_size)
+   - `ReplicaConfig` (primary_address, lag_target, reconnect_interval, bootstrap_on_start)
+   - Validation methods for all configs
+   - Exponential backoff calculation for reconnection
+
+2. **State Machine** (`state.rs`):
+   - `ConnectionState` enum (Disconnected, Connecting, Connected, Catchup, Error)
+   - `ReplicaInfo` struct with runtime tracking:
+     - replica_id, connected, last_ack_sequence, replication_lag_ms
+     - connect_time, last_heartbeat (Instant fields skipped from serialization)
+     - state, bytes_sent, messages_sent, error_count
+   - Helper methods for state transitions and monitoring
+
+3. **Protocol Types** (`protocol.rs`):
+   - `MessageType` enum (Heartbeat, CommitRecord, Snapshot, Error)
+   - `ReplicationMessage` struct:
+     - version, message_type, sequence
+     - commit_record (Option<Box<CommitRecord>>)
+     - checksum for integrity validation
+   - Message constructors (heartbeat, commit_record, snapshot, error)
+   - Checksum validation and size hints
+
+4. **Error Handling** (`error.rs`):
+   - `ReplicationError` enum with 15+ error variants:
+     - Io, Config, ProtocolVersionMismatch, InvalidMessage, ChecksumError
+     - SequenceError, ConnectionLost, ConnectionTimeout, HandshakeFailed
+     - AuthenticationFailed, LsnNotFound, BufferOverflow, LagExceeded
+     - BootstrapFailed, MaxReconnectAttemptsExceeded, ReplicaNotFound
+     - PrimaryNotAvailable, NetworkPartition, CorruptedData
+   - Result type alias for convenience
+   - Error classification (is_retryable, is_terminal)
+
+**Module Exports** (`lib.rs`):
+- Added `pub mod replication;`
+- Exported all public types: ReplicationRole, ReplicationConfig, PrimaryConfig, ReplicaConfig
+- Exported state types: ConnectionState, ReplicaInfo
+- Exported protocol types: MessageType, ReplicationMessage
+- Exported error types: ReplicationError, ReplicationResult
+- Exported PROTOCOL_VERSION constant
+
+**Constants Defined**:
+- `PROTOCOL_VERSION: u16 = 1`
+- `DEFAULT_BUFFER_SIZE: u64 = 100MB`
+- `DEFAULT_MAX_REPLICAS: u32 = 10`
+- `DEFAULT_HEARTBEAT_INTERVAL_SECS: u64 = 5`
+- `DEFAULT_LAG_TARGET_MS: u64 = 100`
+- `DEFAULT_RECONNECT_INTERVAL_MS: u64 = 1000`
+- `MAX_RECONNECT_ATTEMPTS: u32 = 10`
+- `BUFFER_HIGH_WATERMARK_PCT: u64 = 80`
+- `BUFFER_LOW_WATERMARK_PCT: u64 = 60`
+
+**Testing**: All 519 tests passing (including 44 new tests for replication module)
+
+**Commit**: eec4a906f52ac5a18c621002e58879a8add4b74b
+
+**Blockers**: None
+
+**Next Steps**:
+- 10.2: Implement replication protocol binary format and serialization
+- 10.3: Implement Publisher for streaming commits to replicas
+- 10.4: Implement Subscriber for receiving and applying commits
+
+---
+
 - [x] **10.1** Create `10-replication-overview.md` - **[DONE]**
   - **DESCRIBE**: Replication system architecture and goals for NorthstarDB distributed features
   - **LIST**: Components (Publisher, Subscriber, Protocol, Config, Server, Client)
