@@ -10,6 +10,8 @@ pub mod tree;
 pub mod search;
 pub mod insert;
 pub mod delete;
+pub mod merge;
+pub mod borrow;
 pub mod scan;
 pub mod version;
 
