@@ -843,7 +843,7 @@ mod tests {
 
         let mut backup2 = Backup::new(
             BackupType::Incremental,
-            Lsn(200),
+            Lsn::new(200),
             PathBuf::from("/test/2"),
             Some(backup1.id),
             Some(6),
@@ -888,7 +888,7 @@ mod tests {
 
         let mut inc1 = Backup::new(
             BackupType::Incremental,
-            Lsn(200),
+            Lsn::new(200),
             PathBuf::from("/test/inc1"),
             Some(full.id),
             Some(6),
@@ -898,19 +898,20 @@ mod tests {
 
         let mut inc2 = Backup::new(
             BackupType::Incremental,
-            Lsn(300),
+            Lsn::new(300),
             PathBuf::from("/test/inc2"),
             Some(inc1.id),
             Some(6),
             false,
         );
         inc2.mark_completed(Lsn::new(400), 256, "ghi789".into());
+        let inc2_id = inc2.id;
 
         manager.backups.insert(full.id, full);
         manager.backups.insert(inc1.id, inc1);
         manager.backups.insert(inc2.id, inc2);
 
-        let chain = manager.get_backup_chain(inc2.id);
+        let chain = manager.get_backup_chain(inc2_id);
         assert_eq!(chain.len(), 3);
         assert_eq!(chain[0].backup_type, BackupType::Full);
         assert_eq!(chain[1].backup_type, BackupType::Incremental);

@@ -468,7 +468,7 @@ mod tests {
     #[test]
     fn test_hot_query_validation() {
         let query = HotQuery {
-            query_pattern: Arc::from("SELECT * FROM users WHERE age > $LIT"),
+            query_pattern: "SELECT * FROM users WHERE age > $LIT".to_string(),
             query_hash: 123,
             execution_count: 100,
             total_execution_time_ms: 500.0,

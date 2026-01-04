@@ -430,10 +430,8 @@ mod tests {
 
     #[test]
     fn test_suggest_pin_hot_page() {
-        use crate::page::PageId;
-
         let page = HotPage {
-            page_id: PageId::new(100),
+            page_id: crate::types::PageId::new(100),
             page_type: PageType::DataPage,
             table_name: "users".to_string(),
             access_count: 1000,
@@ -477,9 +475,9 @@ mod tests {
     }
 
     #[test]
-    fn test_benefit_calculation() {
+    fn test_benefit_calculation_with_arc() {
         let query = HotQuery {
-            query_pattern: Arc::from("SELECT * FROM users WHERE email = $LIT"),
+            query_pattern: "SELECT * FROM users WHERE email = $LIT".to_string(),
             query_hash: 123,
             execution_count: 10000,
             total_execution_time_ms: 50000.0,

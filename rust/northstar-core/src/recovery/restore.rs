@@ -597,9 +597,9 @@ mod tests {
             Uuid::new_v4(),
             PathBuf::from("/target/db"),
         )
-        .with_target_lsn(Lsn(500));
+        .with_target_lsn(Lsn::new(500));
 
-        assert_eq!(recovery.target_lsn, Some(Lsn(500)));
+        assert_eq!(recovery.target_lsn, Some(Lsn::new(500)));
     }
 
     #[test]

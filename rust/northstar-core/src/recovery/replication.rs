@@ -525,7 +525,7 @@ mod tests {
         );
 
         assert_eq!(replica.status, ReplicaStatus::Connecting);
-        assert_eq!(replica.current_lsn, Lsn(0));
+        assert_eq!(replica.current_lsn, Lsn::new(0));
         assert_eq!(replica.lsn_lag, 0);
         assert!(replica.connected_at.is_none());
     }
@@ -556,12 +556,12 @@ mod tests {
             ReplicationMode::Async,
         );
 
-        replica.update_lsn(Lsn(1000), Lsn(900));
-        assert_eq!(replica.current_lsn, Lsn(900));
+        replica.update_lsn(Lsn::new(1000), Lsn::new(900));
+        assert_eq!(replica.current_lsn, Lsn::new(900));
         assert_eq!(replica.lsn_lag, 100);
         assert_eq!(replica.status, ReplicaStatus::InSync);
 
-        replica.update_lsn(Lsn(2000), Lsn(500));
+        replica.update_lsn(Lsn::new(2000), Lsn::new(500));
         assert_eq!(replica.lsn_lag, 1500);
         assert_eq!(replica.status, ReplicaStatus::Lagging);
     }
@@ -658,11 +658,11 @@ mod tests {
         let mut manager = ReplicationManager::new_primary();
         let replica_id = manager.add_replica("localhost:5433".into(), ReplicationMode::Async).unwrap();
 
-        manager.update_lsn(Lsn(1000));
-        manager.process_replica_ack(replica_id, Lsn(900)).unwrap();
+        manager.update_lsn(Lsn::new(1000));
+        manager.process_replica_ack(replica_id, Lsn::new(900)).unwrap();
 
         let replica = manager.get_replica(replica_id).unwrap();
-        assert_eq!(replica.current_lsn, Lsn(900));
+        assert_eq!(replica.current_lsn, Lsn::new(900));
         assert_eq!(replica.lsn_lag, 100);
     }
 
@@ -681,9 +681,9 @@ mod tests {
         let replica1 = manager.add_replica("localhost:5433".into(), ReplicationMode::Async).unwrap();
         let replica2 = manager.add_replica("localhost:5434".into(), ReplicationMode::Async).unwrap();
 
-        manager.update_lsn(Lsn(1000));
-        manager.process_replica_ack(replica1, Lsn(900)).unwrap();
-        manager.process_replica_ack(replica2, Lsn(800)).unwrap();
+        manager.update_lsn(Lsn::new(1000));
+        manager.process_replica_ack(replica1, Lsn::new(900)).unwrap();
+        manager.process_replica_ack(replica2, Lsn::new(800)).unwrap();
 
         let (max_lsn, avg_lsn, max_time) = manager.lag_stats();
         assert_eq!(max_lsn, 200);
@@ -698,8 +698,8 @@ mod tests {
 
         let mut manager = ReplicationManager::new_primary();
         let replica_id = manager.add_replica("localhost:5433".into(), ReplicationMode::Async).unwrap();
-        manager.update_lsn(Lsn(1000));
-        manager.process_replica_ack(replica_id, Lsn(900)).unwrap();
+        manager.update_lsn(Lsn::new(1000));
+        manager.process_replica_ack(replica_id, Lsn::new(900)).unwrap();
 
         assert!(manager.is_healthy());
     }

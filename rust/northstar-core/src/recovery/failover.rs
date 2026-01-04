@@ -494,17 +494,17 @@ mod tests {
     #[test]
     fn test_heartbeat_new() {
         let node_id = Uuid::new_v4();
-        let heartbeat = Heartbeat::new(node_id, Lsn(100), ReplicationRole::Primary);
+        let heartbeat = Heartbeat::new(node_id, Lsn::new(100), ReplicationRole::Primary);
 
         assert_eq!(heartbeat.node_id, node_id);
-        assert_eq!(heartbeat.lsn, Lsn(100));
+        assert_eq!(heartbeat.lsn, Lsn::new(100));
         assert_eq!(heartbeat.role, ReplicationRole::Primary);
     }
 
     #[test]
     fn test_heartbeat_is_stale() {
         let node_id = Uuid::new_v4();
-        let mut heartbeat = Heartbeat::new(node_id, Lsn(100), ReplicationRole::Primary);
+        let mut heartbeat = Heartbeat::new(node_id, Lsn::new(100), ReplicationRole::Primary);
 
         // Fresh heartbeat is not stale
         assert!(!heartbeat.is_stale(Duration::from_secs(10)));
@@ -593,7 +593,7 @@ mod tests {
     fn test_failover_manager_process_heartbeat() {
         let mut manager = FailoverManager::new();
         let node_id = Uuid::new_v4();
-        let heartbeat = Heartbeat::new(node_id, Lsn(100), ReplicationRole::Primary);
+        let heartbeat = Heartbeat::new(node_id, Lsn::new(100), ReplicationRole::Primary);
 
         manager.process_heartbeat(heartbeat).unwrap();
         assert!(manager.heartbeats.contains_key(&node_id));
@@ -610,13 +610,13 @@ mod tests {
     #[test]
     fn test_failover_manager_set_primary() {
         let manager = FailoverManager::new();
-        assert!(!manager.is_primary.read());
+        assert!(!*manager.is_primary.read());
 
         manager.set_primary(true);
-        assert!(manager.is_primary.read());
+        assert!(*manager.is_primary.read());
 
         manager.set_primary(false);
-        assert!(!manager.is_primary.read());
+        assert!(!*manager.is_primary.read());
     }
 
     #[test]

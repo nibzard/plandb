@@ -376,12 +376,10 @@ mod tests {
 
     #[test]
     fn test_format_report_text_with_content() {
-        use crate::page::PageId;
-
         let mut report = HotPathReport::new(1, Utc::now(), Utc::now(), Utc::now());
 
         report.hot_queries.push(HotQuery {
-            query_pattern: Arc::from("SELECT * FROM users WHERE id = $LIT"),
+            query_pattern: "SELECT * FROM users WHERE id = $LIT".to_string(),
             query_hash: 123,
             execution_count: 1000,
             total_execution_time_ms: 5000.0,
@@ -403,7 +401,7 @@ mod tests {
         });
 
         report.hot_pages.push(HotPage {
-            page_id: PageId::new(100),
+            page_id: crate::types::PageId::new(100),
             page_type: PageType::DataPage,
             table_name: "users".to_string(),
             access_count: 10000,
