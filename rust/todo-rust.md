@@ -898,9 +898,30 @@
   - **Thread safety** analysis with Send/Sync bounds for transaction types
   - **20+ test scenarios** covering concurrent reads, writes, conflicts, and edge cases
 
-- [ ] **4.15** Create `04-txn-tests.md`
+- [x] **4.15** Create `04-txn-tests.md` - **[DONE]**
   - **LIST**: Isolation level tests
   - **DESCRIBE**: Concurrency test patterns
+  - **Completed**: 2026-01-04 (commit [TBD])
+  - **Blockers**: None - comprehensive transaction test specification complete
+
+**Work Summary**:
+- **6 test categories** documented (unit, isolation, concurrency, hardening, performance, integration)
+- **80+ test scenarios** specified across all categories
+- **Isolation level tests** defined for ReadCommitted and Serializable
+- **Concurrency patterns** documented with race condition detection
+- **Test implementation** guidance provided for Rust
+
+**Key Deliverables**:
+- Basic transaction operations (begin, commit, rollback, read-your-writes)
+- Isolation level tests (dirty reads, non-repeatable reads, phantom reads)
+- Concurrency tests (readers scaling, single writer, conflicts, deadlocks)
+- State machine tests (valid transitions, invalid transitions, recovery)
+- Hardening tests (crash during commit, rollback on error, orphan cleanup)
+- Performance tests (throughput, latency, contention)
+- Property-based tests with invariants
+- Test utilities and helpers
+
+**Phase 4 Complete**: All 15 tasks finished. Transaction System fully specified.
 
 ---
 
