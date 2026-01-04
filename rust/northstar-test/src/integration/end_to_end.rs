@@ -263,7 +263,7 @@ fn test_large_dataset_workflow() -> Result<()> {
     let result = txn.get(b"large-00000000")?;
     assert!(result.is_some());
 
-    let result = txn.get(b"large-00001388")?; // ~5000 in hex
+    let result = txn.get(b"large-00001387")?; // 4999 in hex (last item written)
     assert!(result.is_some());
 
     // Count total

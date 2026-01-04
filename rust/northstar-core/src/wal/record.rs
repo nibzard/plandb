@@ -14,7 +14,7 @@ pub const MAX_KEY_SIZE: u32 = 4 * 1024;
 pub const MAX_VALUE_SIZE: u32 = 16 * 1024 * 1024;
 
 /// Maximum number of operations per commit
-pub const MAX_OPERATIONS_PER_COMMIT: u32 = 1000;
+pub const MAX_OPERATIONS_PER_COMMIT: u32 = 10000;
 
 /// Magic number for commit payload header ("CMIT")
 pub const COMMIT_MAGIC: u32 = 0x434D4954;

@@ -141,18 +141,28 @@ fn test_database_size_growth() -> Result<()> {
     let size_before = fs::metadata(db_path)
         .map_err(|e| northstar_core::error::IoError::from(e))?
         .len();
+    eprintln!("test_database_size_growth: size_before = {} bytes", size_before);
 
-    // Add data
-    populate_db(&db, 100, "size-")?;
+    // Add enough data to force page allocation beyond initial capacity
+    // 1000 items should cause B+Tree to split and allocate new pages
+    populate_db(&db, 1000, "size-")?;
     db.sync()?;
 
     // Get new size
     let size_after = fs::metadata(db_path)
         .map_err(|e| northstar_core::error::IoError::from(e))?
         .len();
+    eprintln!("test_database_size_growth: size_after = {} bytes", size_after);
 
-    // Database should have grown
-    assert!(size_after > size_before);
+    // Database should have grown after adding 1000 items
+    if size_after <= size_before {
+        eprintln!("WARNING: File did not grow! before={}, after={}", size_before, size_after);
+        // Check if data was actually written by querying
+        let txn = db.begin_read()?;
+        let result = txn.get(b"size-00000000")?;
+        eprintln!("Can read key 'size-00000000': {:?}", result.is_some());
+    }
+    assert!(size_after > size_before, "File size should grow after inserting 1000 items: before={}, after={}", size_before, size_after);
 
     db.close()?;
     Ok(())
@@ -234,12 +244,12 @@ fn test_large_dataset_persistence() -> Result<()> {
         let mut db = create_test_db(&db_path)?;
         let txn = db.begin_read()?;
 
-        // Check first, middle, and last
+        // Check first, middle, and last (999 since we write 0..1000)
         let result = txn.get(b"large-00000000")?;
-        assert!(result.is_some());
+        assert!(result.is_some(), "First key should exist");
 
-        let result = txn.get(b"large-000003e8")?; // 1000 in hex
-        assert!(result.is_some());
+        let result = txn.get(b"large-000003e7")?; // 999 in hex (last item written)
+        assert!(result.is_some(), "Last key (999) should exist");
 
         db.close()?;
     }

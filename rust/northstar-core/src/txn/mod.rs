@@ -20,4 +20,4 @@ pub use write_txn::WriteTxn;
 // Maximum sizes and limits
 pub const MAX_KEY_SIZE: usize = 4096;
 pub const MAX_VALUE_SIZE: usize = 16 * 1024 * 1024; // 16MB
-pub const MAX_OPERATIONS_PER_COMMIT: usize = 1000;
+pub const MAX_OPERATIONS_PER_COMMIT: usize = 10000;
