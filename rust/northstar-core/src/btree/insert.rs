@@ -23,27 +23,52 @@ pub fn insert_into_leaf(
     entry: Entry,
     pager: &mut impl PagerTrait,
 ) -> Result<InsertResult> {
-    // Check if node would be full after insert
-    let would_be_full = !node.header.has_space(entry.serialized_size());
+    let entry_size = entry.serialized_size();
 
-    // Try to insert
-    let is_update = node.insert(entry)?;
+    // Check if there's space for this entry
+    if node.header.has_space(entry_size) {
+        // There's space - try to insert
+        let is_update = node.insert(entry)?;
 
-    // If it's an update or node wasn't full, we're done
-    if is_update || !would_be_full {
+        // If it's an update, we're done
+        if is_update {
+            return Ok(InsertResult::Success);
+        }
+
+        // Check if we now need to split after insert
+        if node.needs_split(SPLIT_THRESHOLD) {
+            let (new_node, separator) = split_leaf_node(node, pager)?;
+            return Ok(InsertResult::Split {
+                new_page_id: PageId::from(new_node.header.node_id),
+                separator,
+            });
+        }
+
         return Ok(InsertResult::Success);
     }
 
-    // Node is full after insert - split the node
+    // Not enough space - need to split first, then insert
     if node.needs_split(SPLIT_THRESHOLD) {
         let (new_node, separator) = split_leaf_node(node, pager)?;
+
+        // Determine which node should receive the new entry
+        if entry.key.as_slice() < separator.as_slice() {
+            // Entry goes into the original (now smaller) node
+            let _is_update = node.insert(entry)?;
+        } else {
+            // Entry goes into the new node - but we can't insert it here
+            // because the new node isn't written yet. Return the split result
+            // and let the caller handle retry.
+        }
+
         return Ok(InsertResult::Split {
             new_page_id: PageId::from(new_node.header.node_id),
             separator,
         });
     }
 
-    Ok(InsertResult::Success)
+    // No split needed but no space - this shouldn't happen
+    Err(Error::Storage(StorageError::Pager("Leaf node full and cannot split".to_string())))
 }
 
 /// Insert separator into internal node
@@ -53,27 +78,44 @@ pub fn insert_into_internal(
     child_id: u64,
     pager: &mut impl PagerTrait,
 ) -> Result<InsertResult> {
-    // Check if node would be full after insert
-    let would_be_full = !node.header.has_space(1 + separator.len() + 8);
+    let entry_size = 1 + separator.len() + 8;
 
-    // Try to insert
-    node.insert(separator, child_id)?;
+    // Check if there's space for this entry
+    if node.header.has_space(entry_size) {
+        // There's space - insert it
+        node.insert(separator.clone(), child_id)?;
 
-    // If node wasn't full before insert, we're done
-    if !would_be_full {
+        // Check if we now need to split after insert
+        if node.needs_split(SPLIT_THRESHOLD) {
+            let (new_node, sep) = split_internal_node(node, pager)?;
+            return Ok(InsertResult::Split {
+                new_page_id: PageId::from(new_node.header.node_id),
+                separator: sep,
+            });
+        }
+
         return Ok(InsertResult::Success);
     }
 
-    // Node is full after insert - split the node
+    // Not enough space - need to split first, then insert
     if node.needs_split(SPLIT_THRESHOLD) {
-        let (new_node, separator) = split_internal_node(node, pager)?;
+        let (new_node, sep) = split_internal_node(node, pager)?;
+
+        // Determine which node should receive the new entry
+        if separator.as_slice() < sep.as_slice() {
+            // Entry goes into the original (now smaller) node
+            node.insert(separator, child_id)?;
+        }
+        // else: Entry goes into the new node - caller will handle retry
+
         return Ok(InsertResult::Split {
             new_page_id: PageId::from(new_node.header.node_id),
-            separator,
+            separator: sep,
         });
     }
 
-    Ok(InsertResult::Success)
+    // No split needed but no space - this shouldn't happen
+    Err(Error::Storage(StorageError::Pager("Internal node full and cannot split".to_string())))
 }
 
 /// Split a leaf node into two nodes
