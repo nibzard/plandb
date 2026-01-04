@@ -13,6 +13,132 @@
 
 ---
 
+## Phase 13 Complete: Caching Strategies Specification (2026-01-04)
+
+**Status**: Specification complete
+
+**Description**: Created comprehensive natural language specification for multi-level caching system to minimize disk I/O and reduce latency.
+
+**Specification Summary**:
+
+The caching specification provides a complete design for three-level caching:
+- **L1 Page Cache**: 16KB disk pages with checksum validation (default 256MB)
+- **L2 Node Cache**: Decoded B+Tree nodes for faster traversal (default 64MB)
+- **L3 Query Cache**: Completed query results for repeated queries (default 32MB)
+
+**Core Types**:
+
+1. **CacheEntry<K, V>**
+   - Generic cache entry with key, value, and access metadata
+   - Pin count for eviction protection during active use
+   - Dirty flag for write-back tracking
+
+2. **CachePolicy**
+   - LRU (Least Recently Used)
+   - LFU (Least Frequently Used)
+   - ARC (Adaptive Replacement Cache) - default
+   - FIFO, LIFO variants
+
+3. **CacheStats & CacheConfig**
+   - Performance metrics: hits, misses, evictions, hit rate
+   - Configuration: max_size, max_entries, shard_count, TTL
+   - Sharding for lock scalability (default: number of CPU cores)
+
+**Key Operations**:
+
+1. **cache_get()**: Retrieve with access pattern tracking
+2. **cache_put()**: Insert with automatic eviction when full
+3. **cache_invalidate()**: Remove with dirty page write-back
+4. **cache_pin()**: RAII guard preventing eviction
+5. **cache_clear()**: Empty all entries with write-back
+6. **cache_stats()**: Performance monitoring snapshot
+
+**Eviction Algorithms**:
+
+- **LRU**: Evict oldest access time entries
+- **LFU**: Evict lowest access count entries
+- **ARC**: Adaptive balancing between recency and frequency
+  - T1 (recently used) and T2 (frequently used) lists
+  - Ghost lists (t1, t2) for tracking evicted entries
+  - Adaptive increments (delta_t1, delta_t2) for policy tuning
+
+**Concurrency Model**:
+
+- **Sharded Design**: Each shard operates independently
+- **Lock Strategy**: parking_lot::RwLock (read locks for gets, write for puts)
+- **Lock-Free Statistics**: Atomic counters for hits/misses/evictions
+- **Pin Safety**: AtomicUsize pin_count prevents in-use eviction
+
+**Advanced Features**:
+
+- **Prefetching**: Asynchronous page loading before needed
+- **Write-Back**: Lazy dirty page flushing with background task
+- **Query Invalidation**: Dependency tracking for query results
+- **TTL Expiration**: Optional time-based invalidation (query cache)
+
+**File Created**:
+- `rust/13-caching.md` (589 lines)
+  - Complete type descriptions with sizes and invariants
+  - Algorithm specifications for all operations
+  - Rust implementation guidance with module structure
+  - Testing requirements and example usage
+
+**Commit**: 3e7b922
+
+**Next Steps**: Continue Phase 13 with I/O batching specification
+
+---
+
+## Phase 8 Complete: Reference Model Implementation (2026-01-04)
+
+**Status**: Implementation complete, all 62 tests passing
+
+**Description**: Completed Phase 8 reference model implementation providing in-memory B+Tree for correctness validation and testing.
+
+**Implementation Summary**:
+
+The reference model provides a simplified in-memory B+Tree implementation that serves as:
+- Correctness oracle for production implementation testing
+- Test infrastructure for randomized operations
+- Performance baseline for algorithm validation
+
+**Core Components**:
+
+1. **Reference B+Tree Structure**
+   - In-memory node storage with leaf/internal node types
+   - Simple split/merge operations for tree maintenance
+   - Order-preserving iteration for range query validation
+
+2. **Test Infrastructure**
+   - Randomized operation generation (insert, delete, point lookup, range scan)
+   - State comparison between reference and production trees
+   - Property-based testing framework
+
+3. **Integration with Test Suite**
+   - Fuzz test harness using libFuzzer for randomized operations
+   - Deterministic test fixtures for edge cases
+   - Validation suite covering all B+Tree operations
+
+**Test Coverage**: 62 tests covering
+- Basic insert/delete operations
+- Split and merge correctness
+- Range query validation
+- Underflow/overflow handling
+- Randomized operation sequences
+
+**Completion Status**:
+- All reference model operations implemented
+- Full test suite passing (62/62 tests)
+- Integration with production test infrastructure
+- Property-based testing framework operational
+
+**Next Steps**: Reference model complete and operational. Ready for:
+- Extended fuzz testing campaigns
+- Performance regression testing
+- Advanced feature development using reference model as oracle
+
+---
+
 ## Phase 6 Complete: B+Tree Merge/Borrow Implementation (2026-01-04)
 
 **Commit**: 6a08aa0effbaee53984c6bb2523fd1a5f364e5f3
