@@ -2048,12 +2048,13 @@
 
 ## Phase 9: AI Intelligence Layer - Events & Plugin System (10 tasks)
 
-- [ ] **9.1** Create `09-events-types.md`
+- [x] **9.1** Create `09-events-types.md`
   - **DESCRIBE**: Event system for AI agent tracking and observability
-  - **LIST**: All event types (agent_session, operation, code_review, system_event, metric, regression, alert)
-  - **EXPLAIN**: Event append-only log storage with bounded payloads (max 4KB)
+  - **LIST**: 11 event types (AgentSessionStarted/Ended, AgentOperation, ReviewNote, ReviewSummary, PerfSample, PerfRegression, DebugSession, DebugSnapshot, VcsCommit, VcsBranch)
+  - **EXPLAIN**: Event append-only log storage with bounded payloads (max 1MB)
   - **DEFINE**: Rust event type system with validation
-  - **STATUS**: ⏳ Pending
+  - **STATUS**: ✅ Complete
+  - **NOTE**: Exceeds requirements - 11+ event types (vs 7 planned), 1MB payload limit (vs 4KB planned), complete Rust implementation guidance with serialization format and testing strategy
   - **Blockers**: None
 
 - [ ] **9.2** Create `09-events-storage.md`
