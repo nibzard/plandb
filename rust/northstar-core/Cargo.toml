@@ -16,6 +16,9 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 byteorder = { workspace = true }
 crc32c = { workspace = true }
+parking_lot = { workspace = true }
+crossbeam = { workspace = true }
+num_cpus = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
