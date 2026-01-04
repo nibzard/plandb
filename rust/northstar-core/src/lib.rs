@@ -26,6 +26,7 @@ pub mod query_plan;
 pub mod monitoring;
 pub mod degradation;
 pub mod recovery;
+pub mod cloud;
 
 // Re-exports for convenience
 pub use error::{DbError, Error, Result};
