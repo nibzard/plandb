@@ -7,12 +7,13 @@ use crate::cache::{PrefetchPriority, SequentialScanDetector};
 use super::{
     node::{Node, InternalNode, LeafNode, Entry},
     search::{SearchResult, SearchContext},
-    insert::{InsertResult, insert_into_leaf, insert_into_internal},
+    insert::{InsertResult, insert_into_leaf, insert_into_internal, prepare_entry_value, is_overflow_value},
     delete::{DeleteResult, delete_from_leaf},
     merge::{MergeResult, MergeDirection, get_leaf_merge_candidates, merge_leaf_right_into_left, merge_leaf_left_into_right},
     borrow::{BorrowResult, BorrowDirection, get_leaf_borrow_candidates, borrow_from_right_leaf, borrow_from_left_leaf},
     scan::{ScanIter, ScanState, ScanItem, ScanDirection},
     header::NodeType,
+    overflow::ValueStorage,
 };
 
 /// B+Tree index structure
@@ -98,6 +99,15 @@ impl<'a> BTree<'a> {
                     if let Some(entry) = leaf.find(key) {
                         println!("  Found entry: lsn={}, value_len={}", entry.lsn, entry.value.len());
                         if entry.lsn <= snapshot_lsn {
+                            // Check if value is stored in overflow pages
+                            if is_overflow_value(&entry) {
+                                // Decode overflow page ID and read the value
+                                let overflow_ref = ValueStorage::decode(&entry.value)?;
+                                if let ValueStorage::Overflow(page_id) = overflow_ref {
+                                    let value = self.pager.read_overflow_chain(page_id)?;
+                                    return Ok(Some(value));
+                                }
+                            }
                             return Ok(Some(entry.value.clone()));
                         } else {
                             println!("  LSN check failed: entry.lsn={} > snapshot_lsn={}", entry.lsn, snapshot_lsn.as_u64());
@@ -113,7 +123,8 @@ impl<'a> BTree<'a> {
 
     /// Insert or update a key-value pair
     pub fn put(&mut self, key: Vec<u8>, value: Vec<u8>, lsn: Lsn) -> Result<()> {
-        let entry = Entry::new(key.clone(), value, lsn);
+        // Prepare entry value - handles overflow for large values
+        let entry = prepare_entry_value(key.clone(), value, lsn, &mut *self.pager)?;
 
         // If tree is empty (root is empty leaf), just insert
         let root_node = self.pager.read_btree_node(self.root_page_id)?;

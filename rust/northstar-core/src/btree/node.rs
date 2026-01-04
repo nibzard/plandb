@@ -170,7 +170,9 @@ pub struct LeafNode {
 impl LeafNode {
     /// Create a new leaf node
     pub fn new(page_id: u64) -> Self {
-        let header = NodeHeader::new(NodeType::Leaf, page_id.into(), 0);
+        let mut header = NodeHeader::new(NodeType::Leaf, page_id.into(), 0);
+        // Account for linked list pointers (16 bytes: next_leaf + prev_leaf)
+        header.free_space = header.free_space.saturating_sub(16);
         Self {
             header,
             entries: Vec::new(),
