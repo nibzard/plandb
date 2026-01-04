@@ -598,7 +598,7 @@ mod tests {
     #[test]
     fn test_error_handler_handle_message() {
         let mut handler = ErrorHandler::new();
-        let msg = ReplicationMessage::error(100, 500, "Test error".to_string());
+        let msg = ReplicationMessage::error("Test error".to_string());
 
         let result = handler.handle_message(&msg);
         assert!(result.is_ok());

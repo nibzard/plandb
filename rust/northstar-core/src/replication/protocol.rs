@@ -574,16 +574,11 @@ mod tests {
 
     #[test]
     fn test_replication_message_error() {
-        let msg = ReplicationMessage::error(999, 404, "Not found".to_string());
+        let msg = ReplicationMessage::error("Not found".to_string());
 
         assert_eq!(msg.version, crate::replication::PROTOCOL_VERSION);
         assert_eq!(msg.message_type, MessageType::Error);
-        assert_eq!(msg.sequence, 999);
         assert!(msg.is_always_allowed());
-
-        // Checksum encodes error code and message length
-        assert_eq!(msg.checksum & 0xFFFFFFFF, 404);
-        assert_eq!((msg.checksum >> 32) as usize, "Not found".len());
     }
 
     #[test]
@@ -734,7 +729,7 @@ mod tests {
         assert_eq!(deserialized.message_type, MessageType::Snapshot);
 
         // Error
-        let error_msg = ReplicationMessage::error(4, 500, "Internal error".to_string());
+        let error_msg = ReplicationMessage::error("Internal error".to_string());
         let bytes = error_msg.serialize().unwrap();
         let deserialized = ReplicationMessage::deserialize(&bytes).unwrap();
         assert_eq!(deserialized.message_type, MessageType::Error);

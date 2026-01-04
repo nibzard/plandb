@@ -647,7 +647,8 @@ impl ReplicationServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::txn::{CommitRecord, TransactionId, Lsn};
+    use crate::txn::CommitRecord;
+    use crate::TransactionId;
 
     #[tokio::test]
     async fn test_server_creation() {
@@ -740,9 +741,8 @@ mod tests {
 
         // Create a dummy commit record
         let record = CommitRecord {
-            txn_id: TransactionId::new(),
-            lsn: Lsn::new(1),
-            timestamp: std::time::SystemTime::now(),
+            txn_id: TransactionId::new(1),
+            root_page_id: 1,
             mutations: Vec::new(),
             checksum: 0,
         };
