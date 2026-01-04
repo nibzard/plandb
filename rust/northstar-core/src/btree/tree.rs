@@ -15,9 +15,9 @@ use super::{
 };
 
 /// B+Tree index structure
-pub struct BTree {
+pub struct BTree<'a> {
     /// Pager for node I/O
-    pager: Pager,
+    pager: &'a mut Pager,
     /// Root page ID
     root_page_id: PageId,
     /// Tree height (0 = root is leaf)
@@ -28,9 +28,9 @@ pub struct BTree {
     internal_count: usize,
 }
 
-impl BTree {
-    /// Create a new B+Tree instance
-    pub fn new(mut pager: Pager, root_page_id: PageId) -> Result<Self> {
+impl<'a> BTree<'a> {
+    /// Create a new B+Tree instance with a mutable reference to a pager
+    pub fn new(pager: &'a mut Pager, root_page_id: PageId) -> Result<Self> {
         // Load root node to determine height and type
         let root_node = pager.read_btree_node(root_page_id)?;
 
@@ -52,7 +52,7 @@ impl BTree {
     }
 
     /// Create a new empty B+Tree
-    pub fn create(mut pager: Pager) -> Result<Self> {
+    pub fn create(pager: &'a mut Pager) -> Result<Self> {
         // Allocate root page (leaf node)
         let root_page_id = pager.allocate_page()?;
         let root_node = LeafNode::new(root_page_id.as_u64());
@@ -128,7 +128,7 @@ impl BTree {
                     let mut leaf = leaf.clone();
 
                     // Try to insert
-                    match insert_into_leaf(&mut leaf, entry, &mut &mut self.pager)? {
+                    match insert_into_leaf(&mut leaf, entry, &mut *self.pager)? {
                         InsertResult::Success => {
                             self.pager.write_btree_node(current_page_id, &leaf.clone().into())?;
                             return Ok(());
@@ -187,7 +187,7 @@ impl BTree {
         mut path: Vec<(PageId, Node)>,
     ) -> Result<()> {
         // Try to borrow first (more efficient than merge)
-        if let Ok(borrow_candidates) = get_leaf_borrow_candidates(&underfull, &mut &mut self.pager) {
+        if let Ok(borrow_candidates) = get_leaf_borrow_candidates(&underfull, &mut *self.pager) {
             if borrow_candidates.can_borrow() {
                 if let Some(direction) = borrow_candidates.recommended_direction {
                     match direction {
@@ -225,7 +225,7 @@ impl BTree {
         }
 
         // If borrow not possible, try to merge
-        if let Ok(merge_candidates) = get_leaf_merge_candidates(&underfull, &mut &mut self.pager) {
+        if let Ok(merge_candidates) = get_leaf_merge_candidates(&underfull, &mut *self.pager) {
             if merge_candidates.can_merge() {
                 if let Some(direction) = merge_candidates.recommended_direction {
                     match direction {
@@ -233,7 +233,7 @@ impl BTree {
                             if let Some(sibling_page_id) = merge_candidates.left_page_id {
                                 if let Ok(Node::Leaf(mut sibling)) = self.pager.read_btree_node(sibling_page_id) {
                                     if let Ok(MergeResult::Success { freed_page_id }) =
-                                        merge_leaf_right_into_left(&mut sibling, &mut underfull, &mut &mut self.pager)
+                                        merge_leaf_right_into_left(&mut sibling, &mut underfull, &mut *self.pager)
                                     {
                                         // Write merged node
                                         self.pager.write_btree_node(sibling_page_id, &sibling.clone().into())?;
@@ -248,7 +248,7 @@ impl BTree {
                             if let Some(sibling_page_id) = merge_candidates.right_page_id {
                                 if let Ok(Node::Leaf(mut sibling)) = self.pager.read_btree_node(sibling_page_id) {
                                     if let Ok(MergeResult::Success { freed_page_id }) =
-                                        merge_leaf_left_into_right(&mut underfull, &mut sibling, &mut &mut self.pager)
+                                        merge_leaf_left_into_right(&mut underfull, &mut sibling, &mut *self.pager)
                                     {
                                         // Write merged node
                                         self.pager.write_btree_node(sibling_page_id, &sibling.clone().into())?;
@@ -402,7 +402,7 @@ impl BTree {
                         &mut internal,
                         separator.clone(),
                         new_child_id.as_u64(),
-                        &mut &mut self.pager,
+                        &mut *self.pager,
                     )? {
                         InsertResult::Success => {
                             self.pager.write_btree_node(page_id, &internal.clone().into())?;
@@ -492,6 +492,11 @@ impl BTree {
                 }
             }
         }
+    }
+
+    /// Get the current root page ID
+    pub fn root_page_id(&self) -> PageId {
+        self.root_page_id
     }
 }
 

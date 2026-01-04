@@ -296,6 +296,42 @@ impl SnapshotRegistry {
     pub(crate) fn close(&mut self) -> Result<()> {
         self.pager.close()
     }
+
+    /// Apply mutations to the B+Tree and return the new root page ID.
+    ///
+    /// This method takes a closure that receives a mutable B+Tree reference
+    /// and applies mutations. After the mutations are applied, the new root
+    /// page ID is returned for snapshot registration.
+    ///
+    /// # Arguments
+    ///
+    /// * `f` - Closure that takes `&mut BTree` and applies mutations
+    ///
+    /// # Returns
+    ///
+    /// The new root page ID after mutations are applied
+    pub(crate) fn apply_mutations<F>(&mut self, f: F) -> Result<PageId>
+    where
+        F: FnOnce(&mut crate::btree::BTree) -> Result<()>,
+    {
+        // Get the current root page ID
+        let root_page_id = self
+            .get_latest_snapshot()
+            .map(|(_, id)| id)
+            .ok_or_else(|| Error::Transaction(TransactionError::SnapshotNotFound { txn_id: 0 }))?;
+
+        // Create a BTree with a mutable reference to the pager
+        // BTree now borrows the pager instead of owning it
+        let mut btree = crate::btree::BTree::new(&mut self.pager, root_page_id)?;
+
+        // Apply mutations
+        f(&mut btree)?;
+
+        // Get the new root page ID
+        let new_root_page_id = btree.root_page_id();
+
+        Ok(new_root_page_id)
+    }
 }
 
 impl super::SnapshotOps for SnapshotRegistry {

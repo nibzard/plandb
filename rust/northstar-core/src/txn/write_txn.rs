@@ -4,15 +4,14 @@
 
 use crate::db::Db;
 use crate::error::Result;
-use crate::types::TransactionId;
+use crate::types::{TransactionId, Lsn};
 use super::context::TransactionContext;
 
 /// Write transaction with two-phase commit protocol.
 ///
-/// TODO: This is a placeholder implementation. Full implementation needs:
-/// - Integration with Pager and WAL
-/// - Two-phase commit protocol
-/// - Rollback support
+/// Provides atomic mutations with two-phase commit:
+/// 1. Prepare phase: write mutations to WAL
+/// 2. Commit phase: apply mutations to B+Tree
 pub struct WriteTxn<'a> {
     /// Transaction context tracking state and mutations.
     pub ctx: TransactionContext,
@@ -99,7 +98,8 @@ impl<'a> WriteTxn<'a> {
 
     /// Commit phase: apply mutations to database.
     ///
-    /// TODO: Implement B+tree mutation application
+    /// Applies all buffered mutations to the B+Tree atomically.
+    /// After successful commit, a new snapshot is registered.
     pub fn commit(mut self) -> Result<()> {
         // Must be in Preparing state
         if !self.is_preparing() {
@@ -107,7 +107,36 @@ impl<'a> WriteTxn<'a> {
             self.prepare()?;
         }
 
-        // TODO: Apply mutations to B+tree
+        // If no mutations, just transition to committed
+        if !self.ctx.has_mutations() {
+            self.ctx.transition_to_committed()?;
+            return Ok(());
+        }
+
+        // Apply mutations to B+Tree and get new root page ID
+        let txn_id = self.txn_id();
+        let mutations = std::mem::take(&mut self.ctx.mutations);
+
+        let new_root_page_id = self.db.apply_mutations(|btree| {
+            // Apply each mutation with this transaction's LSN
+            let lsn = Lsn::from(txn_id.as_u64());
+
+            for mutation in &mutations {
+                match mutation {
+                    super::Mutation::Put { key, value } => {
+                        btree.put(key.clone(), value.clone(), lsn)?;
+                    }
+                    super::Mutation::Delete { key } => {
+                        btree.delete(key, lsn)?;
+                    }
+                }
+            }
+
+            Ok(())
+        })?;
+
+        // Register new snapshot with updated root page ID
+        self.db.register_snapshot(txn_id, new_root_page_id)?;
 
         // Transition to Committed state
         self.ctx.transition_to_committed()?;

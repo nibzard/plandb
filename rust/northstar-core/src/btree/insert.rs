@@ -144,7 +144,30 @@ pub trait PagerTrait {
     fn free_overflow_chain(&mut self, first_page_id: PageId) -> Result<()>;
 }
 
-// Implement PagerTrait for Pager
+// Implement PagerTrait for Pager directly
+impl PagerTrait for crate::pager::Pager {
+    fn allocate_page(&mut self) -> Result<PageId> {
+        self.allocate_page()
+    }
+
+    fn write_node(&mut self, page_id: PageId, node: &Node) -> Result<()> {
+        self.write_btree_node(page_id, node)
+    }
+
+    fn read_node(&mut self, page_id: PageId) -> Result<Node> {
+        self.read_btree_node(page_id)
+    }
+
+    fn allocate_overflow_chain(&mut self, value: &[u8]) -> Result<PageId> {
+        self.allocate_overflow_chain(value)
+    }
+
+    fn free_overflow_chain(&mut self, first_page_id: PageId) -> Result<()> {
+        self.free_overflow_chain(first_page_id)
+    }
+}
+
+// Implement PagerTrait for references to Pager (for backwards compatibility)
 impl<'a> PagerTrait for &'a mut crate::pager::Pager {
     fn allocate_page(&mut self) -> Result<PageId> {
         crate::pager::Pager::allocate_page(self)
