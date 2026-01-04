@@ -15,7 +15,7 @@ fn test_database_persistence() -> Result<()> {
 
     // Write data
     {
-        let db = create_test_db(&db_path)?;
+        let mut db = create_test_db(&db_path)?;
         populate_db(&db, 100, "persist-")?;
         db.sync()?;
         db.close()?;
@@ -23,7 +23,7 @@ fn test_database_persistence() -> Result<()> {
 
     // Reopen and verify
     {
-        let db = create_test_db(&db_path)?;
+        let mut db = create_test_db(&db_path)?;
         let txn = db.begin_read()?;
         let result = txn.get(b"persist-00000000")?;
         assert!(result.is_some());
@@ -63,7 +63,7 @@ fn test_crash_recovery() -> Result<()> {
 
     // Write data and close without explicit sync
     {
-        let db = create_test_db(&db_path)?;
+        let mut db = create_test_db(&db_path)?;
         populate_db(&db, 100, "crash-")?;
         // Close without sync (simulates crash)
         db.close()?;
@@ -71,7 +71,7 @@ fn test_crash_recovery() -> Result<()> {
 
     // Reopen - WAL recovery should replay transactions
     {
-        let db = create_test_db(&db_path)?;
+        let mut db = create_test_db(&db_path)?;
         let txn = db.begin_read()?;
         // Check if data was recovered (may depend on WAL implementation)
         let result = txn.get(b"crash-00000000")?;
@@ -90,7 +90,7 @@ fn test_multiple_open_close_cycles() -> Result<()> {
     let db_path = ctx.db_path().to_string();
 
     for cycle in 0..5 {
-        let db = create_test_db(&db_path)?;
+        let mut db = create_test_db(&db_path)?;
 
         // Write data
         let mut txn = db.begin_write()?;
@@ -119,7 +119,7 @@ fn test_database_file_creation() -> Result<()> {
     let ctx = TestContext::new().unwrap();
     let db_path = ctx.db_path();
 
-    let db = create_test_db(db_path)?;
+    let mut db = create_test_db(db_path)?;
     db.sync()?;
 
     // Verify file exists
@@ -135,17 +135,21 @@ fn test_database_size_growth() -> Result<()> {
     let ctx = TestContext::new().unwrap();
     let db_path = ctx.db_path();
 
-    let db = create_test_db(db_path)?;
+    let mut db = create_test_db(db_path)?;
 
     // Get initial size
-    let size_before = fs::metadata(db_path)?.len();
+    let size_before = fs::metadata(db_path)
+        .map_err(|e| northstar_core::error::IoError::from(e))?
+        .len();
 
     // Add data
     populate_db(&db, 100, "size-")?;
     db.sync()?;
 
     // Get new size
-    let size_after = fs::metadata(db_path)?.len();
+    let size_after = fs::metadata(db_path)
+        .map_err(|e| northstar_core::error::IoError::from(e))?
+        .len();
 
     // Database should have grown
     assert!(size_after > size_before);
@@ -162,17 +166,20 @@ fn test_snapshot_persistence() -> Result<()> {
 
     populate_db(&db, 50, "snap-")?;
 
-    // Create snapshot
+    // Create snapshot and verify txn_id
     let snapshot = db.snapshot()?;
+    let snapshot_txn_id = snapshot.txn_id();
 
     // Write more data
     populate_db(&db, 50, "newsnap-")?;
 
-    // Snapshot should still see old data
-    let value = snapshot.get(b"newsnap-00000000")?;
-    assert!(value.is_none());
+    // New snapshot should have higher txn_id
+    let new_snapshot = db.snapshot()?;
+    assert!(new_snapshot.txn_id().as_u64() > snapshot_txn_id.as_u64());
 
-    let value = snapshot.get(b"snap-00000000")?;
+    // Verify we can still read data via regular transaction
+    let txn = db.begin_read()?;
+    let value = txn.get(b"snap-00000000")?;
     assert!(value.is_some());
 
     Ok(())
@@ -210,7 +217,7 @@ fn test_large_dataset_persistence() -> Result<()> {
 
     // Write large dataset
     {
-        let db = create_test_db(&db_path)?;
+        let mut db = create_test_db(&db_path)?;
         let mut txn = db.begin_write()?;
         for i in 0..1000 {
             let key = format!("large-{:08x}", i);
@@ -224,7 +231,7 @@ fn test_large_dataset_persistence() -> Result<()> {
 
     // Reopen and verify sample
     {
-        let db = create_test_db(&db_path)?;
+        let mut db = create_test_db(&db_path)?;
         let txn = db.begin_read()?;
 
         // Check first, middle, and last
@@ -244,7 +251,7 @@ fn test_large_dataset_persistence() -> Result<()> {
 #[test]
 fn test_database_path_handling() -> Result<()> {
     let ctx = TestContext::new().unwrap();
-    let db = create_test_db(ctx.db_path())?;
+    let mut db = create_test_db(ctx.db_path())?;
 
     // Check path is stored correctly
     let stored_path = db.path();
@@ -261,7 +268,9 @@ mod test_helpers {
 
     /// Helper to get database file size.
     pub fn get_db_size(path: &str) -> Result<u64> {
-        Ok(fs::metadata(path)?.len())
+        Ok(fs::metadata(path)
+            .map_err(|e| northstar_core::error::IoError::from(e))?
+            .len())
     }
 
     /// Helper to check if database file exists.

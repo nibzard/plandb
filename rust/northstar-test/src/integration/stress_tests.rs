@@ -142,7 +142,7 @@ fn test_memory_pressure() -> Result<()> {
 fn test_rapid_open_close_cycles() -> Result<()> {
     for cycle in 0..10 {
         let ctx = TestContext::new().unwrap();
-        let db = create_test_db(ctx.db_path())?;
+        let mut db = create_test_db(ctx.db_path())?;
 
         populate_db(&db, 20, &format!("cycle{}-", cycle))?;
 

@@ -3,6 +3,7 @@
 //! Tests various query patterns and access scenarios.
 
 use northstar_core::{db::Db, error::Result};
+use rand::seq::SliceRandom;
 use std::time::Instant;
 
 use super::{create_test_db, populate_db, TestContext};

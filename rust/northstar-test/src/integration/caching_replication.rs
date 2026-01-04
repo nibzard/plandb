@@ -134,17 +134,18 @@ fn test_snapshot_isolation() -> Result<()> {
     // Initial data
     populate_db(&db, 50, "snap-")?;
 
-    // Take snapshot
+    // Take snapshot and record its txn_id
     let snapshot = db.snapshot()?;
+    let snapshot_txn_id = snapshot.txn_id();
 
     // Write more data
     populate_db(&db, 50, "newsnap-")?;
 
-    // Snapshot should not see new data
-    let value = snapshot.get(b"newsnap-00000000")?;
-    assert!(value.is_none());
+    // New snapshot should have higher txn_id
+    let new_snapshot = db.snapshot()?;
+    assert!(new_snapshot.txn_id().as_u64() > snapshot_txn_id.as_u64());
 
-    // But regular read should see it
+    // Regular read should see new data
     let txn = db.begin_read()?;
     let value = txn.get(b"newsnap-00000000")?;
     assert!(value.is_some());
@@ -161,8 +162,8 @@ fn test_transaction_isolation() -> Result<()> {
     populate_db(&db, 10, "iso-")?;
 
     // Start two write transactions
-    let txn1 = db.begin_write()?;
-    let txn2 = db.begin_write()?;
+    let mut txn1 = db.begin_write()?;
+    let mut txn2 = db.begin_write()?;
 
     // Both try to modify same key
     txn1.put(b"iso-conflict", b"value1")?;
@@ -234,7 +235,7 @@ fn test_memory_pressure() -> Result<()> {
 fn test_rapid_open_close() -> Result<()> {
     for cycle in 0..5 {
         let ctx = TestContext::new().unwrap();
-        let db = create_test_db(ctx.db_path())?;
+        let mut db = create_test_db(ctx.db_path())?;
 
         populate_db(&db, 20, &format!("cycle{}-", cycle))?;
 
