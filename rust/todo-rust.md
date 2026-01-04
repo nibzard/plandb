@@ -785,43 +785,36 @@
   - Rust implementation guidance with type definitions and concurrency patterns
   - 40+ test scenarios across unit, integration, property, hardening, concurrency, and performance tests
 
-- [ ] **4.10** Create `04-txn-rollback.md` - **[IN PROGRESS]**
+- [x] **4.10** Create `04-txn-rollback.md` - **[DONE]**
   - **DESCRIBE**: Rollback process
   - **LIST**: Cleanup steps
   - **EXPLAIN**: State transition on rollback
   - **DESCRIBE**: Resource release (locks, buffers, handles)
   - **EXPLAIN**: Implicit rollback via Drop trait
   - **DESCRIBE**: Error rollback from failed commit
+  - **Completed**: 2026-01-04 (commit TBD)
+  - **Blockers**: None - completed successfully
 
-  **Task Description**:
-  Document the rollback operation for WriteTxn, including:
-  - Explicit rollback via rollback() method
-  - Implicit rollback via Drop trait when WriteTxn goes out of scope
-  - Rollback from failed commit operations
-  - Resource cleanup (mutation buffers, write lock, transaction handle)
-  - State transitions (Active → RolledBack)
-  - Idempotency (multiple rollback calls are safe)
+  **Work Summary**:
+  - **Explicit rollback** fully documented with rollback() method specification
+  - **Implicit rollback** via Drop trait detailed with automatic cleanup on scope exit
+  - **Rollback from commit errors** explained with partial commit handling and recovery considerations
+  - **Resource cleanup** comprehensive (mutation buffers, write lock, transaction registry, handles)
+  - **State transitions** documented (Active → RolledBack transition with idempotency)
+  - **Error rollback scenarios** detailed (prepare phase, apply phase, append phase, meta phase)
+  - **Testing requirements** specified (unit, integration, panic safety, property tests)
 
-  **Key Requirements**:
-  - No mutations become visible after rollback
-  - Write lock is always released (even on panic/drop)
-  - All resources are cleaned up (no leaks)
-  - Rollback is idempotent (safe to call multiple times)
-  - Rollback can be called at any point during transaction lifecycle
-
-  **Dependencies**:
-  - Task 4.4 (WriteTxn spec) - for transaction structure and mutation tracking
-  - Task 4.9 (Commit spec) - for error rollback from failed commit
-  - Task 4.2 (TransactionContext) - for state management
-
-  **Implementation Approach**:
-  1. Document rollback() method signature and return type
-  2. Explain state validation (Active → RolledBack transition)
-  3. Detail cleanup steps (clear buffers, release lock, invalidate handle)
-  4. Explain Drop trait implementation for implicit rollback
-  5. Describe rollback from commit errors (leaving durable state for recovery)
-  6. Document idempotency (multiple rollback calls)
-  7. Explain rollback during different phases (before commit, during commit)
+  **Key Deliverables**:
+  - rollback() function specification with 7-step cleanup algorithm
+  - Drop trait implementation for implicit rollback with panic safety
+  - Rollback from commit errors with 4 phase-specific handling strategies
+  - Resource cleanup sequence (mutation buffers → write lock → registry → metrics)
+  - State transition validation (Active only, idempotent RolledBack)
+  - RollbackError structured error type with thiserror
+  - Recovery analysis for partial commits (WAL cleanup, orphan detection)
+  - Thread-safety analysis (write lock release, panic safety)
+  - Rust implementation guidance with Drop, panic safety, and testing strategies
+  - 40+ test scenarios covering explicit, implicit, error rollback, concurrency, and property tests
 
 - [ ] **4.11** Create `04-txn-conflict.md`
   - **DESCRIBE**: Conflict detection
