@@ -9,6 +9,9 @@
 // Re-exports
 pub use northstar_core;
 
+// Integration tests
+pub mod integration;
+
 // TODO: Add test utilities
 // - Reference model for equivalence testing
 // - Crash consistency test harness
