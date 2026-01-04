@@ -419,8 +419,10 @@ impl ErrorHandler {
     }
 
     /// Create an error message.
-    pub fn create_message(&self, _sequence: u64, _error_code: u32, error_message: String) -> ReplicationMessage {
-        ReplicationMessage::error(error_message)
+    pub fn create_message(&self, sequence: u64, _error_code: u32, error_message: String) -> ReplicationMessage {
+        let mut msg = ReplicationMessage::error(error_message);
+        msg.sequence = sequence;
+        msg
     }
 
     /// Get the error count.

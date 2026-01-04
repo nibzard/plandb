@@ -322,8 +322,14 @@ impl ReplicationMessage {
                 Vec::new()
             }
             MessageType::CommitRecord => {
-                // Use pre-serialized payload
-                self.payload.clone().unwrap_or_default()
+                // Use pre-serialized payload or serialize the commit record
+                if let Some(payload) = &self.payload {
+                    payload.clone()
+                } else if let Some(record) = &self.commit_record {
+                    self.serialize_commit_record(record)?
+                } else {
+                    Vec::new()
+                }
             }
             MessageType::Snapshot => {
                 // Snapshot data
@@ -357,19 +363,26 @@ impl ReplicationMessage {
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Invalid message type"))?;
 
         // Read payload
-        let payload = if payload_length > 0 {
+        let (payload, commit_record) = if payload_length > 0 {
             let mut buf = vec![0u8; payload_length];
             cursor.read_exact(&mut buf)?;
-            Some(buf)
+
+            // Deserialize commit record if this is a CommitRecord message
+            if msg_type == MessageType::CommitRecord {
+                let record = Self::deserialize_commit_record(&buf)?;
+                (None, Some(Box::new(record)))
+            } else {
+                (Some(buf), None)
+            }
         } else {
-            None
+            (None, None)
         };
 
         Ok(ReplicationMessage {
             version,
             message_type: msg_type,
             sequence,
-            commit_record: None,  // Not deserializing commit records for now
+            commit_record,
             lsn: None,
             payload,
             checksum,
