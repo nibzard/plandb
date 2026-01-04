@@ -1077,9 +1077,31 @@
   - 20+ test scenarios covering state transitions, LSN tracking, reference counting, and edge cases
   - Invariants documented (transaction ID monotonicity, LSN ordering, reference count accuracy, state machine validity)
 
-- [ ] **5.7** Create `05-mvcc-isolation.md`
+- [x] **5.7** Create `05-mvcc-isolation.md` - **[DONE]**
   - **DESCRIBE**: Isolation guarantees
   - **EXPLAIN**: Anomaly prevention
+  - **Completed**: 2026-01-04 (commit 5edb4c9)
+  - **Blockers**: None
+
+  **Work Summary**:
+  - **Isolation guarantees** fully documented (Snapshot Isolation with single-writer)
+  - **Anomaly prevention** explained for dirty reads, non-repeatable reads, lost updates, read skew
+  - **Isolation level formalization** with SI definition and guarantees
+  - **Concurrent operation examples** with detailed timelines
+  - **Write serialization** through commit log ordering
+  - **Rust implementation guidance** provided
+  - **Test scenarios** for isolation validation
+  - **V0 limitations** documented with future multi-writer support
+
+  **Key Deliverables**:
+  - Snapshot Isolation definition with single-writer guarantee
+  - Anomaly prevention mechanisms (4 anomalies explained)
+  - Concurrent operation timeline examples
+  - Visibility rules and transaction ID ordering
+  - Write serialization through commit log
+  - Rust implementation patterns
+  - Isolation test scenarios
+  - V0 limitations and future enhancements
 
 - [ ] **5.8** Create `05-mvcc-readers.md`
   - **DESCRIBE**: Reader handling
