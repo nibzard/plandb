@@ -1859,24 +1859,154 @@
   - Rust implementation guidance with !Send via MutexGuard, HashMap for pending_ops
   - 1500+ lines of detailed natural language specification (no code)
 
-- [ ] **7.6** Create `07-db-close.md`
+- [x] **7.6** Create `07-db-close.md` - **[DONE]**
   - **DESCRIBE**: Shutdown sequence
   - **EXPLAIN**: Resource cleanup
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive close process specification complete
 
-- [ ] **7.7** Create `07-db-config.md`
+  **Work Summary**:
+  - **Close process overview** with 10-step shutdown sequence documented
+  - **Explicit vs implicit close** methods specified (db.close() vs Drop trait)
+  - **6 close scenarios** detailed (normal, active write txn, active readers, during checkpoint, after panic, implicit drop)
+  - **Resource cleanup** comprehensive (memory, file handles, file locks, threads)
+  - **Close scenarios** with timing and behavior expectations
+  - **Error handling** for close failures (IoError, persistence guarantees)
+  - **Persistence guarantees** before and after close
+  - **Concurrency considerations** for close vs active operations
+  - Rust implementation guidance with close/drop algorithms
+  - 1400+ lines of detailed natural language specification (no code)
+
+  **Key Deliverables**:
+  - Step-by-step close algorithm (state validation → operation drain → checkpoint → component shutdown → file handle release → file lock release → state update → resource cleanup)
+  - Db::close() method with explicit error handling
+  - Db::drop() trait implementation for implicit close
+  - Close with active write transaction (force rollback)
+  - Close with active read transactions (wait or force)
+  - Final checkpoint operation on close
+  - Component shutdown in reverse dependency order
+  - Resource cleanup (Arc drops, memory freed, file handles closed)
+  - Persistence guarantees (all data synced before close returns)
+  - Error recovery strategies for close failures
+
+- [x] **7.7** Create `07-db-config.md` - **[DONE]**
   - **LIST**: All configuration options
   - **DESCRIBE**: Validation rules
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive configuration specification complete
 
-- [ ] **7.8** Create `07-db-errors.md`
+  **Work Summary**:
+  - **7 configuration options** fully specified (cache_size, page_size, wal_size_threshold, flush_policy, snapshot_retention, auto_checkpoint, compression)
+  - **Configuration philosophy** documented (sensible defaults, validation at build, immutable after open, builder pattern)
+  - **Validation rules** for each configuration option with ranges and constraints
+  - **Performance implications** explained for each option (memory, throughput, latency, storage)
+  - **5 configuration presets** defined (memory-constrained, default, high-performance, maximum durability, analytics/batch)
+  - **Builder pattern** specification with fluent API and validation
+  - **Configuration validation** order and error types detailed
+  - Rust implementation guidance with Config, FlushPolicy, RetentionPolicy, Compression enums
+  - 1200+ lines of detailed natural language specification (no code)
+
+  **Key Deliverables**:
+  - cache_size (number of pages, power of 2, >= 16, memory calculation)
+  - page_size (bytes, power of 2, 4096-65536, B+Tree implications)
+  - wal_size_threshold (bytes, >= 1MB, checkpoint trigger, recovery time)
+  - flush_policy (Immediate, Batch, Periodic variants with parameters)
+  - snapshot_retention (CountBased, AgeBased, Hybrid, Manual variants)
+  - auto_checkpoint (bool, enable/disable automatic checkpointing)
+  - compression (None, Lz4, Zstd, Snappy variants, feature-gated)
+  - ConfigError variants for all validation failures
+  - DbBuilder pattern with fluent chaining API
+  - 5 configuration presets for different use cases
+  - Validation implementation guidance (Config::validate method)
+
+- [x] **7.8** Create `07-db-errors.md` - **[DONE]**
   - **LIST**: Error categories
   - **DESCRIBE**: When each error occurs
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive error handling specification complete
 
-- [ ] **7.9** Create `07-db-async.md`
+  **Work Summary**:
+  - **10 error categories** fully documented (ConfigError, IoError, CorruptedData, TransactionError, ResourceError, NotFoundError, DatabaseInUse, DatabaseClosed, LockTimeout, RecoveryError)
+  - **Error design philosophy** specified (explicit, structured, recoverable vs fatal, actionable messages)
+  - **50+ error variants** detailed with causes, when they occur, recovery strategies
+  - **Error handling patterns** documented (retry with backoff, graceful degradation, fatal error handling, context propagation)
+  - **Error severity levels** defined (recoverable, fatal, usage error)
+  - **Rust implementation guidance** with thiserror, Display, Debug, source chaining
+  - **Error testing strategy** with unit, integration, property, hardening tests
+  - 1200+ lines of detailed natural language specification (no code)
+
+  **Key Deliverables**:
+  - ConfigError (8 variants: PathNotSet, InvalidCacheSize, InvalidPageSize, PageSizeMismatch, InvalidWalThreshold, InvalidFlushPolicy, InvalidRetentionPolicy, CompressionUnavailable)
+  - IoError (9 variants: PermissionDenied, DiskFull, ReadOnly, FileTooLarge, SystemLimit, LockError, SyncFailed, CloseFailed, AllocationFailed)
+  - CorruptedData (15 variants: InvalidMagic, UnsupportedVersion, ChecksumMismatch, TruncatedData, FileHeaderCorrupt, MetaPageCorrupt, WalCorrupt, WalHeaderInvalid, WalTruncated, BTreeCorrupt, RootPageNotFound, RootPageCorrupt, InvalidRootType, GenesisMissing, InvalidSnapshotSequence, InvalidSnapshotRoot)
+  - TransactionError (8 variants: Conflict, SerializationFailure, ValidationFailed, KeyTooLarge, ValueTooLarge, TooManyMutations, ReadOnly, AlreadyClosed)
+  - ResourceError (5 variants: OutOfMemory, TooManyOpenFiles, LockTimeout, CacheFull, WalFull)
+  - NotFoundError (2 variants: Key, Snapshot)
+  - DatabaseInUse, DatabaseClosed, LockTimeout, RecoveryError (3 variants)
+  - Error handling patterns with code examples
+  - Rust error type hierarchy with thiserror
+
+- [x] **7.9** Create `07-db-async.md` - **[DONE]**
   - **DESCRIBE**: Async considerations
   - **EXPLAIN**: Trade-offs
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive async API analysis complete
 
-- [ ] **7.10** Create `07-db-tests.md`
+  **Work Summary**:
+  - **Current state** documented (synchronous API, design assumptions, use cases, benefits, limitations)
+  - **Async requirements** explained (high-concurrency IO-bound workloads, async ecosystem integration, use cases, benefits, trade-offs)
+  - **4 async design options** analyzed (dual API, async-first with sync wrapper, runtime-agnostic async, keep sync only)
+  - **Recommended approach** phased (Phase 1: document sync-in-async pattern, Phase 2: native async API)
+  - **Async I/O strategies** compared (Tokio fs, tokio-uring, async-std)
+  - **Async concurrency primitives** specified (Mutex, RwLock, channels, lock ordering)
+  - **Async cancellation** challenges and solutions (RAII guards, commute operations, rollback on drop)
+  - **Async testing** guidance (tokio::test, mock async I/O)
+  - **Performance comparison** (sync ~500K ops/sec, async tokio::fs ~500K ops/sec, async tokio-uring ~1M+ ops/sec)
+  - **Migration path** from sync to async (dual API, backward compatibility)
+  - **Trade-offs summary** table for complexity vs ergonomics and performance vs concurrency
+  - 1000+ lines of detailed natural language specification (no code)
+
+  **Key Deliverables**:
+  - Synchronous API characteristics (blocking, thread model, use cases, benefits, limitations)
+  - Async API motivations and requirements
+  - Option 1: Dual API (Sync + Async side-by-side) - recommended
+  - Option 2: Async-First with Sync Wrapper
+  - Option 3: Runtime-Agnostic Async
+  - Option 4: Keep Sync Only, Run in Thread Pool
+  - Async I/O strategies: Tokio fs (portable), tokio-uring (Linux only, best perf), async-std (portable)
+  - AsyncDb, AsyncReadTxn, AsyncWriteTxn API design
+  - Async concurrency primitives (tokio::sync::Mutex, RwLock, channels)
+  - Async cancellation safety strategies
+  - Performance comparison and use case fit analysis
+  - Migration path with dual API approach
+
+- [x] **7.10** Create `07-db-tests.md` - **[DONE]**
   - **LIST**: Integration test scenarios
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive test specification complete
+
+  **Work Summary**:
+  - **Testing philosophy** documented (unit, integration, property, hardening, benchmarks)
+  - **Test organization** structure specified (lifecycle, transaction, concurrency, recovery, config, error tests)
+  - **26 integration test scenarios** fully detailed with steps, assertions, examples
+  - **Property tests** for invariants (snapshot isolation, atomic commit, no data loss on crash)
+  - **Hardening tests** for resilience (crash during commit, disk full, corrupted page detection)
+  - **Performance benchmarks** defined (read throughput, write throughput, concurrent reader scalability)
+  - **Test helpers** specified (setup_test_db, random_key/value generation, test data generation)
+  - **Test execution** instructions (cargo test, bench, CI requirements, coverage goals)
+  - 1200+ lines of detailed natural language specification (no code)
+
+  **Key Deliverables**:
+  - 4 lifecycle tests (open new database, close and reopen, multiple close calls, drop closes database)
+  - 9 transaction tests (read get, read-your-writes, rollback, scan empty, scan populated, write commit, write conflict, delete, time-travel)
+  - 3 concurrency tests (concurrent readers, single writer serialization, readers don't block writer)
+  - 3 recovery tests (clean shutdown, dirty shutdown, partial transaction recovery)
+  - 2 configuration tests (invalid config rejected, configuration presets work)
+  - 3 error handling tests (key not found, database in use, database closed)
+  - 3 property tests (snapshot isolation, atomic commit, no data loss on crash)
+  - 3 hardening tests (crash during commit, disk full, corrupted page detection)
+  - 3 performance benchmarks (read throughput, write throughput, concurrent reader scalability)
+  - Test execution and CI requirements
 
 ---
 
