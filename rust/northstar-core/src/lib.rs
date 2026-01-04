@@ -11,8 +11,10 @@ pub mod error;
 pub mod page;
 pub mod checksum;
 pub mod types;
+pub mod pager;
 
 // Re-exports for convenience
 pub use error::{DbError, Error, Result};
 pub use page::{Page, PageHeader, PageType};
 pub use types::{Lsn, PageId, TransactionId};
+pub use pager::Pager;
