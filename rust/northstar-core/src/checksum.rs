@@ -3,7 +3,10 @@
 //! Provides CRC32C (Castagnoli polynomial) checksums for page validation
 //! and WAL record integrity.
 
-use crc32c::crc32c;
+pub use crc32c::{crc32c, crc32c_append};
+pub mod crc32c_mod {
+    pub use crc32c::*;
+}
 
 /// CRC32C hasher for incremental checksum calculation
 pub struct Crc32cHasher {
@@ -18,7 +21,7 @@ impl Crc32cHasher {
 
     /// Update the hasher with new data
     pub fn update(&mut self, data: &[u8]) {
-        self.state = crc32c::crc32c_append(self.state, data);
+        self.state = crc32c_append(self.state, data);
     }
 
     /// Finalize and return the checksum
@@ -49,7 +52,7 @@ pub fn checksum(data: &[u8]) -> u32 {
 /// Compute CRC32C checksum of a byte slice with a starting value.
 #[inline]
 pub fn checksum_with_init(data: &[u8], init: u32) -> u32 {
-    crc32c::crc32c_append(init, data)
+    crc32c_append(init, data)
 }
 
 /// Verify that data matches the expected checksum.
