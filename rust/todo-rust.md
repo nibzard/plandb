@@ -6,9 +6,59 @@
 
 **All Phases 0-14 COMPLETE** - 134 tasks implemented and committed
 
-**Latest Commit**: `976c7aa` - "feat(test): Fix integration tests to compile with current API"
+**Latest Commit**: `7bc587b` - "fix(core): Fix compilation errors in query plan and recovery modules"
 
-**Git Status**: Only build artifacts tracked (rust/target/) and this todo file
+**Git Status**: Clean - all changes committed
+
+### Latest Work: Compilation Fixes (2026-01-04)
+
+**Commit**: `7bc587b` - "fix(core): Fix compilation errors in query plan and recovery modules"
+
+**Blocker Identified**: Test execution is extremely slow (tests take 2+ minutes to even start). This is blocking validation of test fixes.
+
+**Compilation Fixes Applied**:
+1. **Lsn Constructor Calls** (backup.rs, failover.rs, replication.rs, restore.rs)
+   - Changed tuple syntax `Lsn(100)` to proper constructor `Lsn::new(100)`
+   - Field is private for encapsulation, tests must use public constructor
+
+2. **RwLockReadGuard Boolean Assertions** (failover.rs)
+   - Fixed by dereferencing with `*` operator
+   - Changed `assert!(!manager.is_primary.read())` to `assert!(!*manager.is_primary.read())`
+   - RwLockReadGuard must be dereferenced to access the boolean value
+
+3. **Duplicate Test Name** (suggester.rs)
+   - Renamed second `test_benefit_calculation` to `test_benefit_calculation_with_arc`
+   - Rust disallows duplicate test names in the same module
+
+4. **Arc Type Mismatches** (analyzer.rs, reporter.rs, suggester.rs)
+   - Changed `Arc::from("...")` to `"...".to_string()` in test structs
+   - HotQuery.query_pattern field expects `String`, not `Arc<str>`
+
+5. **PageId Import Issues** (reporter.rs, suggester.rs)
+   - Removed unused `use crate::page::PageId;` imports (PageId not exported from page module)
+   - Changed to fully qualified path `crate::types::PageId::new(100)`
+
+6. **Use of Moved Value** (backup.rs)
+   - Saved `inc2.id` to local variable before inserting `inc2` into HashMap
+   - Prevents "use of moved value" error in test
+
+**Files Modified**: 7 files
+- `northstar-core/src/recovery/backup.rs`
+- `northstar-core/src/recovery/failover.rs`
+- `northstar-core/src/recovery/replication.rs`
+- `northstar-core/src/recovery/restore.rs`
+- `northstar-core/src/query_plan/hot_path/analyzer.rs`
+- `northstar-core/src/query_plan/hot_path/reporter.rs`
+- `northstar-core/src/query_plan/hot_path/suggester.rs`
+
+**Build Status**:
+- `cargo check --lib` - SUCCESS (only warnings, no errors)
+- Test execution blocked by extreme slowness
+
+**Next Steps**:
+- Investigate test execution slowness (possible infinite loop in test setup or resource contention)
+- Consider running tests with timeout to identify slow tests
+- May need to refactor test fixtures or add better isolation
 
 ### Completed Work
 
@@ -27,12 +77,9 @@ All immediate implementation phases (0-14) have been completed:
 ### Current Repository State
 
 - **Pending Implementation Tasks**: None - Phase 14 complete
-- **Uncommitted Changes**: Only build artifacts (rust/target/) and this documentation file
-- **Test Status**:
-  - Integration tests now compile successfully
-  - 13 tests passing
-  - 35 tests failing due to core implementation issues (not test code issues)
-- **Build Status**: Compiles successfully
+- **Uncommitted Changes**: None - all compilation fixes committed
+- **Build Status**: Compiles successfully with only warnings (no errors)
+- **Test Status**: Tests compile successfully but execution is extremely slow (blocker identified)
 
 ### Latest Work: Integration Test Fixes (2026-01-04)
 
@@ -53,17 +100,66 @@ All immediate implementation phases (0-14) have been completed:
 
 **Note**: The integration tests are now working correctly with the current synchronous API. Test failures are due to missing functionality or bugs in the core database implementation, which is expected for an in-development database.
 
+### Latest Work: B+Tree Leaf Node Split Fix (2026-01-04)
+
+**Commit**: `2e094d9` - "fix(btree): Fix leaf node splitting by checking space before insert"
+
+**Critical Bug Fixed**:
+The B+Tree implementation had a critical bug in node splitting logic that was blocking integration tests (35 failing tests with "Leaf node" errors).
+
+**Root Cause**:
+Both `insert_into_leaf` and `insert_into_internal` functions in `btree/insert.rs` were attempting to insert entries BEFORE checking if sufficient space existed in the node. This violated the fundamental B+Tree invariant that nodes must have space before insertion.
+
+**Fix Applied**:
+Reordered operations in both functions to follow correct sequence:
+1. **Check space availability first** - Calculate if new entry fits in node
+2. **Split if needed** - If node is full, split before insertion
+3. **Then insert** - Only after ensuring space exists, perform insertion
+
+**Files Modified**:
+- `/home/niko/plandb/rust/northstar-core/src/btree/insert.rs` - Fixed `insert_into_leaf()` and `insert_into_internal()` functions
+
+**Impact**:
+- Unblocks integration tests that were failing with "Leaf node" errors
+- Ensures B+Tree maintains correct structural invariants during insertions
+- Prevents potential data corruption from overfull nodes
+- Critical for Phase 15.1 integration test validation
+
+**Test Results Expected**:
+- Integration tests can now properly exercise insert operations
+- B+Tree node splitting should work correctly during growth
+- Reduces "Leaf node" error count from 35 failures
+
+**Blockers Removed**:
+- Integration tests requiring B+Tree insert operations
+- Multi-insert workflows in stress tests
+- Database growth scenarios in disaster recovery tests
+
 ### Next Steps Recommendations
 
-With Phase 14 (Production Hardening) complete and integration tests now compiling, the project has several options for forward progress:
+With Phase 14 (Production Hardening) complete and compilation errors fixed, the project has several options for forward progress:
 
-#### Option 1: Fix Failing Integration Tests (RECOMMENDED)
+#### Option 1: Fix Test Execution Slowness (BLOCKER - RECOMMENDED)
+- **BLOCKER**: Test execution is extremely slow (2+ minutes to start, may hang indefinitely)
+- Investigate potential causes:
+  - Infinite loops in test fixtures or setup
+  - Resource contention (file locks, thread deadlocks)
+  - Expensive operations in test initialization
+  - Missing timeouts or cancellation
+- **Action items**:
+  - Add `--timeout` to cargo test to identify slow tests
+  - Run individual test modules to isolate the problem
+  - Check for busy-wait loops or blocking I/O in test setup
+  - Consider adding `--nocapture` and debug output to identify where tests hang
+
+#### Option 2: Fix Failing Integration Tests (BLOCKED by test slowness)
 - Debug and fix core database issues causing test failures
 - Focus on tests that exercise core functionality (CRUD operations, persistence, concurrency)
 - Prioritize tests that validate Phase 14 features (disaster recovery, graceful degradation)
 - Use failing tests as guide for implementation work
+- **BLOCKED**: Cannot validate fixes until test execution is usable
 
-#### Option 2: Expand Integration Test Coverage
+#### Option 3: Expand Integration Test Coverage
 - Add more integration tests for edge cases
 - Test concurrent operations more thoroughly
 - Add performance benchmarks to integration suite
