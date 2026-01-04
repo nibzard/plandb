@@ -85,7 +85,149 @@ The caching specification provides a complete design for three-level caching:
 
 **Commit**: 3e7b922
 
-**Next Steps**: Continue Phase 13 with I/O batching specification
+---
+
+## Phase 13.2 Complete: I/O Batching Specification (2026-01-04)
+
+**Status**: Specification complete
+
+**Description**: Created comprehensive natural language specification for I/O batching system to minimize disk I/O operations and maximize throughput through coalescing adjacent operations.
+
+**Specification Summary**:
+
+The I/O batching specification provides a complete design for minimizing disk I/O overhead:
+- **Write Batching**: Coalesce adjacent writes (256KB default, 16 operations)
+- **Read Batching**: Prefetch and group sequential reads (512KB default, 32 operations)
+- **Timeout Flush**: Bound latency with 10ms maximum batch hold time
+- **Priority Scheduling**: Critical operations bypass normal batching
+
+**Core Types**:
+
+1. **IoOperation**
+   - Represents single I/O operation with type, page_id, offset, data
+   - Priority level (Critical/High/Normal/Low) for scheduling
+   - Optional callback for async completion
+
+2. **BatchBuffer**
+   - Accumulates pending operations before execution
+   - Tracks total bytes, operation count, last flush time
+   - Separate buffers for reads and writes
+
+3. **BatchConfig**
+   - Configurable batch sizes and counts
+   - Feature flags: coalescing, reordering, prefetch
+   - Validation rules for safe thresholds
+
+4. **BatchStats**
+   - Performance metrics: batches flushed, operations batched
+   - Coalescing rate, prefetch accuracy (hits/misses)
+   - Flush reasons: timeout, size, count, explicit
+
+**Key Operations**:
+
+1. **batch_add()**: Add operation to appropriate buffer, trigger flush if needed
+2. **batch_flush()**: Execute batched I/O operations efficiently
+3. **batch_merge()**: Coalesce adjacent or overlapping operations
+4. **batch_sort()**: Reorder for sequential access optimization
+5. **prefetch_detect()**: Detect patterns and trigger read-ahead
+
+**Optimization Strategies**:
+
+- **Coalescing**: Later writes to same offset replace earlier writes
+- **Reordering**: Sort by offset regardless of arrival order
+- **Sequential Detection**: Prefetch after 3 sequential accesses
+- **readv/writev**: Single syscall for contiguous operations
+
+**File Created**:
+- `rust/13-io-batching.md` (711 lines)
+  - Complete type descriptions with sizes and invariants
+  - Algorithm specifications for all operations
+  - Rust implementation guidance with module structure
+  - Testing requirements and performance targets
+  - Integration points with Pager, WAL, Cache
+
+**Commit**: 31be41b
+
+**Next Steps**: Continue Phase 13 with memory pooling specification
+
+---
+
+## Phase 13.3 Complete: Memory Pooling Specification (2026-01-04)
+
+**Status**: Specification complete
+
+**Description**: Created comprehensive natural language specification for memory pooling system to minimize allocation overhead and improve memory locality.
+
+**Specification Summary**:
+
+The memory pooling specification provides a complete design for three pool types:
+- **Object Pool**: Fixed-size objects (B+Tree nodes, transaction contexts)
+- **Buffer Pool**: Page I/O buffers with alignment support
+- **Arena Allocator**: Transaction-scoped bulk deallocation
+
+**Core Types**:
+
+1. **ObjectPool<T>**
+   - Fixed-size object reuse with thread-local caching
+   - Shared central pool for imbalance handling
+   - Smart pointer (Pooled<T>) for automatic return to pool
+
+2. **BufferPool**
+   - Reusable I/O buffers with configurable alignment
+   - Per-thread local buffers (default: 32)
+   - Global shared reserve (default: 1024)
+
+3. **Arena**
+   - Bump-pointer allocation for short-lived data
+   - Bulk reset for transaction cleanup
+   - Chunk-based growth (4KB initial, 64KB max)
+
+**Key Operations**:
+
+1. **pool.acquire()**: Fast path from thread-local cache (<50ns)
+2. **pool.release()**: Return to local or shared pool
+3. **arena.alloc()**: Bump-pointer allocation with alignment
+4. **arena.reset()**: Bulk free all allocations
+
+**Allocation Algorithms**:
+
+- **Thread-Local Caching**: Lock-free fast path, shared spillover
+- **Size Classes**: Pre-defined classes for common node sizes
+- **Pre-warming**: Optional pool initialization on startup
+
+**Module Integration**:
+
+- **Pager**: Buffer pool for page I/O
+- **B+Tree**: Node pools for split/merge operations
+- **Transaction**: Arena for write-set allocations
+
+**Performance Targets**:
+
+- **Allocation Latency**: <50ns (thread-local hit)
+- **Improvement**: 4-10x reduction vs system allocator
+- **Cache Locality**: +15% L1 hit rate
+- **Fragmentation**: <5% overhead
+- **CI Thresholds**: >10% throughput improvement in 2+ benchmarks
+
+**Testing Requirements**:
+
+- Unit tests for pool acquire/release cycles
+- Concurrency tests with 8 threads
+- Property-based tests for state preservation
+- Hardening tests (100k operations, random patterns)
+- Leak detection tests
+
+**File Created**:
+- `rust/13-memory-pooling.md` (1,039 lines)
+  - Complete type descriptions with sizes and invariants
+  - Algorithm specifications for all operations
+  - Rust implementation guidance with safety patterns
+  - Testing requirements and performance targets
+  - Integration points with Pager, B+Tree, Transaction
+
+**Commit**: 8a81552
+
+**Next Steps**: Continue Phase 13 with lock-free data structures specification
 
 ---
 
