@@ -178,6 +178,15 @@ pub enum ValidationError {
 
     #[error("Unsupported version: {major}.{minor}.{patch}")]
     UnsupportedVersion { major: u16, minor: u8, patch: u8 },
+
+    #[error("Key length mismatch (expected: {expected}, got: {actual})")]
+    KeyLengthMismatch { expected: u16, actual: usize },
+
+    #[error("Value length mismatch (expected: {expected}, got: {actual})")]
+    ValueLengthMismatch { expected: u32, actual: usize },
+
+    #[error("Delete operation has value")]
+    DeleteHasValue,
 }
 
 /// Protocol errors

@@ -5,6 +5,39 @@
 
 use crc32c::crc32c;
 
+/// CRC32C hasher for incremental checksum calculation
+pub struct Crc32cHasher {
+    state: u32,
+}
+
+impl Crc32cHasher {
+    /// Create a new hasher
+    pub fn new() -> Self {
+        Crc32cHasher { state: 0 }
+    }
+
+    /// Update the hasher with new data
+    pub fn update(&mut self, data: &[u8]) {
+        self.state = crc32c::crc32c_append(self.state, data);
+    }
+
+    /// Finalize and return the checksum
+    pub fn finalize(self) -> u32 {
+        self.state
+    }
+
+    /// Reset the hasher to initial state
+    pub fn reset(&mut self) {
+        self.state = 0;
+    }
+}
+
+impl Default for Crc32cHasher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Compute CRC32C checksum of a byte slice.
 ///
 /// Uses hardware-accelerated CRC32C instructions when available.
@@ -25,6 +58,12 @@ pub fn checksum_with_init(data: &[u8], init: u32) -> u32 {
 #[inline]
 pub fn verify(data: &[u8], expected: u32) -> bool {
     checksum(data) == expected
+}
+
+/// Create a new CRC32C hasher for incremental checksumming.
+#[inline]
+pub fn hasher() -> Crc32cHasher {
+    Crc32cHasher::new()
 }
 
 #[cfg(test)]
