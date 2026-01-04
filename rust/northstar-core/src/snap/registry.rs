@@ -87,8 +87,21 @@ impl SnapshotRegistry {
     /// * `pager` - Pager for page I/O operations
     /// * `genesis_page_id` - Root page ID for the initial snapshot
     pub fn with_genesis(pager: Pager, genesis_page_id: PageId) -> Self {
+        Self::with_txn_id(pager, genesis_page_id, TransactionId::INITIAL)
+    }
+
+    /// Initialize with a specific genesis page ID and transaction ID.
+    ///
+    /// This is used when reopening a database to restore the persisted state.
+    ///
+    /// # Arguments
+    ///
+    /// * `pager` - Pager for page I/O operations
+    /// * `genesis_page_id` - Root page ID for the snapshot
+    /// * `current_txn_id` - Current committed transaction ID
+    pub fn with_txn_id(pager: Pager, genesis_page_id: PageId, current_txn_id: TransactionId) -> Self {
         Self {
-            concurrency: SnapshotConcurrency::new(genesis_page_id),
+            concurrency: SnapshotConcurrency::with_txn_id(genesis_page_id, current_txn_id),
             pager,
         }
     }

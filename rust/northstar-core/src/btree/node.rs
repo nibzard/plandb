@@ -449,9 +449,10 @@ impl Node {
                     offset += 8;
                 }
 
-                // Write linked list pointers
-                bytes[48..56].copy_from_slice(&node.next_leaf.to_le_bytes());
-                bytes[56..64].copy_from_slice(&node.prev_leaf.to_le_bytes());
+                // Write linked list pointers at the end of the page (last 16 bytes)
+                // This avoids overwriting header fields
+                bytes[DEFAULT_PAGE_SIZE - 16..DEFAULT_PAGE_SIZE - 8].copy_from_slice(&node.next_leaf.to_le_bytes());
+                bytes[DEFAULT_PAGE_SIZE - 8..DEFAULT_PAGE_SIZE].copy_from_slice(&node.prev_leaf.to_le_bytes());
 
                 // Calculate and write checksum at offset 28 (correct field location)
                 let checksum = node.header.calculate_checksum(&bytes);
@@ -551,12 +552,12 @@ impl Node {
                     entries.push(Entry { key, value, lsn });
                 }
 
-                // Read linked list pointers
-                let next_leaf_bytes = bytes[48..56].try_into()
+                // Read linked list pointers from the end of the page (last 16 bytes)
+                let next_leaf_bytes = bytes[DEFAULT_PAGE_SIZE - 16..DEFAULT_PAGE_SIZE - 8].try_into()
                     .unwrap_or_else(|_| [0u8; 8]);
                 let next_leaf = u64::from_le_bytes(next_leaf_bytes);
 
-                let prev_leaf_bytes = bytes[56..64].try_into()
+                let prev_leaf_bytes = bytes[DEFAULT_PAGE_SIZE - 8..DEFAULT_PAGE_SIZE].try_into()
                     .unwrap_or_else(|_| [0u8; 8]);
                 let prev_leaf = u64::from_le_bytes(prev_leaf_bytes);
 

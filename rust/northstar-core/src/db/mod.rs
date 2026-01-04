@@ -192,8 +192,8 @@ impl Db {
             None
         };
 
-        // Create snapshot registry (takes ownership of pager)
-        let snap_registry = SnapshotRegistry::with_genesis(pager, root_page_id);
+        // Create snapshot registry with persisted transaction state (takes ownership of pager)
+        let snap_registry = SnapshotRegistry::with_txn_id(pager, root_page_id, current_txn_id);
 
         // Create query cache
         let query_cache = QueryCache::new();

@@ -39,15 +39,28 @@ impl SnapshotConcurrency {
     /// Panics if the RwLock is poisoned (should never happen in normal operation).
     #[inline]
     pub fn new(genesis_page_id: PageId) -> Self {
+        Self::with_txn_id(genesis_page_id, TransactionId::INITIAL)
+    }
+
+    /// Create a new concurrent registry with a specific starting transaction ID.
+    ///
+    /// This is used when reopening a database to restore the persisted transaction state.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the RwLock is poisoned (should never happen in normal operation).
+    #[inline]
+    pub fn with_txn_id(genesis_page_id: PageId, current_txn_id: TransactionId) -> Self {
         let mut snapshots = HashMap::new();
-        snapshots.insert(TransactionId::INITIAL, genesis_page_id);
+        // For recovered databases, we only have the latest snapshot
+        snapshots.insert(current_txn_id, genesis_page_id);
 
         let ref_counts = HashMap::new(); // Start with no active snapshot handles
 
         Self {
             inner: RwLock::new(RegistryData {
                 snapshots,
-                current_txn_id: TransactionId::INITIAL,
+                current_txn_id,
                 ref_counts,
             }),
         }
