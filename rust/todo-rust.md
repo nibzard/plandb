@@ -704,10 +704,12 @@
   - Error handling best practices (corruption, buffer management)
   - Invariants documented (snapshot consistency, idempotency, read-your-writes)
 
-- [ ] **4.7** Create `04-txn-put.md` - **[NEXT TASK]**
+- [x] **4.7** Create `04-txn-put.md` - **[DONE]**
   - **DESCRIBE**: Put operation flow
   - **EXPLAIN**: Write buffering
   - **DESCRIBE**: Duplicate key handling
+  - **Completed**: 2026-01-04 (commit pending)
+  - **Blockers**: None - specification complete
 
 - [ ] **4.8** Create `04-txn-delete.md`
   - **DESCRIBE**: Delete operation
