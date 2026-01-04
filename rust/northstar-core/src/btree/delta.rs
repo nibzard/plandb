@@ -19,7 +19,8 @@ pub const MAX_KEY_SIZE: usize = 255;
 pub const MAX_VALUE_SIZE: usize = 16_777_215;
 
 /// Maximum number of operations per transaction
-pub const MAX_OPERATIONS_PER_TXN: usize = 1000;
+/// Increased from 1000 to 100000 to support bulk operations
+pub const MAX_OPERATIONS_PER_TXN: usize = 100000;
 
 /// Maximum delta layer size in bytes (16MB)
 pub const MAX_DELTA_SIZE: usize = 16_777_216;
@@ -463,7 +464,7 @@ mod tests {
     fn test_constants() {
         assert_eq!(MAX_KEY_SIZE, 255);
         assert_eq!(MAX_VALUE_SIZE, 16_777_215);
-        assert_eq!(MAX_OPERATIONS_PER_TXN, 1000);
+        assert_eq!(MAX_OPERATIONS_PER_TXN, 100000);
         assert_eq!(MAX_DELTA_SIZE, 16_777_216);
         assert_eq!(MUTATION_OVERHEAD, 32);
         assert_eq!(MUTATION_TYPE_PUT, 1);
