@@ -19,6 +19,7 @@ pub mod btree;
 pub mod db;
 pub mod refmodel;
 pub mod events;
+pub mod replication;
 
 // Re-exports for convenience
 pub use error::{DbError, Error, Result};
@@ -29,3 +30,12 @@ pub use wal::Wal;
 pub use db::Db;
 pub use txn::{ReadTxn, WriteTxn};
 pub use refmodel::RefModel;
+
+// Replication exports
+pub use replication::{
+    config::{PrimaryConfig, ReplicaConfig, ReplicationConfig, ReplicationRole},
+    error::{ReplicationError, ReplicationResult},
+    protocol::{MessageType, ReplicationMessage},
+    state::{ConnectionState, ReplicaInfo},
+    PROTOCOL_VERSION,
+};
