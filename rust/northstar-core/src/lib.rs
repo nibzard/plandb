@@ -22,6 +22,7 @@ pub mod events;
 pub mod replication;
 pub mod cache;
 pub mod analytics;
+pub mod query_plan;
 
 // Re-exports for convenience
 pub use error::{DbError, Error, Result};
