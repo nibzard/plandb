@@ -526,6 +526,12 @@ impl Subscriber {
                     // Log error
                     return Err(ReplicationError::connection_lost("Received error from primary"));
                 }
+                MessageType::Connect | MessageType::Accept | MessageType::Ack => {
+                    // These should not be received from primary
+                    return Err(ReplicationError::protocol_error(format!(
+                        "Unexpected message type: {:?}", message_type
+                    )));
+                }
             }
         }
 

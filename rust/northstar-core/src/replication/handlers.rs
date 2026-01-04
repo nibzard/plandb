@@ -419,8 +419,8 @@ impl ErrorHandler {
     }
 
     /// Create an error message.
-    pub fn create_message(&self, sequence: u64, error_code: u32, error_message: String) -> ReplicationMessage {
-        ReplicationMessage::error(sequence, error_code, error_message)
+    pub fn create_message(&self, _sequence: u64, _error_code: u32, error_message: String) -> ReplicationMessage {
+        ReplicationMessage::error(error_message)
     }
 
     /// Get the error count.

@@ -196,6 +196,61 @@ impl ReplicationError {
         }
     }
 
+    /// Create an I/O error.
+    pub fn io_error(msg: impl Into<String>) -> Self {
+        Self::Io(io::Error::new(io::ErrorKind::Other, msg.into()))
+    }
+
+    /// Create a handshake timeout error.
+    pub fn handshake_timeout(timeout_secs: u64) -> Self {
+        Self::HandshakeFailed {
+            reason: format!("Timeout after {}s", timeout_secs),
+        }
+    }
+
+    /// Create a connection failed error.
+    pub fn connection_failed(addr: String, reason: String) -> Self {
+        Self::PrimaryNotAvailable {
+            reason: format!("Failed to connect to {}: {}", addr, reason),
+        }
+    }
+
+    /// Create a protocol error.
+    pub fn protocol_error(msg: impl Into<String>) -> Self {
+        Self::InvalidMessage(msg.into())
+    }
+
+    /// Create a not connected error.
+    pub fn not_connected() -> Self {
+        Self::ConnectionLost {
+            reason: "Not connected to primary".to_string(),
+        }
+    }
+
+    /// Create a remote error.
+    pub fn remote_error(msg: String) -> Self {
+        Self::PrimaryNotAvailable {
+            reason: format!("Remote error: {}", msg),
+        }
+    }
+
+    /// Create a version mismatch error.
+    pub fn version_mismatch(actual: u16, expected: u16) -> Self {
+        Self::ProtocolVersionMismatch { expected, actual }
+    }
+
+    /// Create a channel closed error.
+    pub fn channel_closed(msg: impl Into<String>) -> Self {
+        Self::ConnectionLost {
+            reason: msg.into(),
+        }
+    }
+
+    /// Create a checksum validation error.
+    pub fn checksum_error() -> Self {
+        Self::ChecksumError
+    }
+
     /// Check if this error is retryable.
     pub fn is_retryable(&self) -> bool {
         matches!(

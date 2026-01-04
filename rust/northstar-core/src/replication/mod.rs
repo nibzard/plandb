@@ -23,22 +23,26 @@
 //! );
 //! ```
 
+pub mod client;
 pub mod config;
 pub mod error;
 pub mod frame;
 pub mod handlers;
 pub mod protocol;
 pub mod publisher;
+pub mod server;
 pub mod state;
 pub mod subscriber;
 
 // Re-exports
+pub use client::{ReplicationClient, ClientState, ClientMetrics};
 pub use config::{PrimaryConfig, ReplicaConfig, ReplicationConfig, ReplicationRole};
 pub use error::ReplicationError;
 pub use frame::{FrameHeader, FrameReader, FrameWriter};
 pub use handlers::{HandshakeHandler, HeartbeatHandler, CommitRecordHandler, SnapshotHandler, ErrorHandler};
 pub use protocol::{MessageType, ReplicationMessage};
 pub use publisher::{Publisher, ReplicaConnection, ReplicationBuffer, BufferedRecord, BackpressureState, ReplicaId};
+pub use server::{ReplicationServer, ServerMetrics};
 pub use state::{ConnectionState, ReplicaInfo};
 pub use subscriber::{Subscriber, SubscriberEvent, BootstrapState, ReconnectState};
 

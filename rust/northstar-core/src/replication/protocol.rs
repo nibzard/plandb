@@ -23,6 +23,15 @@ pub enum MessageType {
 
     /// Error notification with error code.
     Error = 3,
+
+    /// Connect message from replica to primary.
+    Connect = 4,
+
+    /// Accept response from primary to replica.
+    Accept = 5,
+
+    /// Acknowledgment from replica to primary.
+    Ack = 6,
 }
 
 impl MessageType {
@@ -33,6 +42,9 @@ impl MessageType {
             1 => Some(Self::CommitRecord),
             2 => Some(Self::Snapshot),
             3 => Some(Self::Error),
+            4 => Some(Self::Connect),
+            5 => Some(Self::Accept),
+            6 => Some(Self::Ack),
             _ => None,
         }
     }
@@ -69,6 +81,14 @@ pub struct ReplicationMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commit_record: Option<Box<CommitRecord>>,
 
+    /// Optional LSN (present in some message types).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lsn: Option<u64>,
+
+    /// Raw payload bytes for certain message types.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload: Option<Vec<u8>>,
+
     /// Checksum for end-to-end integrity validation.
     pub checksum: u64,
 }
@@ -81,11 +101,13 @@ impl ReplicationMessage {
             message_type: MessageType::Heartbeat,
             sequence,
             commit_record: None,
+            lsn: None,
+            payload: None,
             checksum: 0,
         }
     }
 
-    /// Create a new commit record message.
+    /// Create a new commit record message (backward compatible).
     pub fn commit_record(sequence: u64, record: CommitRecord) -> Self {
         let checksum = Self::calculate_checksum(&record);
         Self {
@@ -93,7 +115,61 @@ impl ReplicationMessage {
             message_type: MessageType::CommitRecord,
             sequence,
             commit_record: Some(Box::new(record)),
+            lsn: None,
+            payload: None,
             checksum,
+        }
+    }
+
+    /// Create a new commit record message with serialized bytes.
+    pub fn commit_record_bytes(sequence: u64, lsn: u64, record_bytes: bytes::Bytes, checksum: u64) -> Self {
+        Self {
+            version: crate::replication::PROTOCOL_VERSION,
+            message_type: MessageType::CommitRecord,
+            sequence,
+            commit_record: None,
+            lsn: Some(lsn),
+            payload: Some(record_bytes.to_vec()),
+            checksum,
+        }
+    }
+
+    /// Create a new connect message (replica to primary).
+    pub fn connect(replica_id: u64, start_lsn: u64) -> Self {
+        Self {
+            version: crate::replication::PROTOCOL_VERSION,
+            message_type: MessageType::Connect,
+            sequence: replica_id,
+            commit_record: None,
+            lsn: Some(start_lsn),
+            payload: None,
+            checksum: 0,
+        }
+    }
+
+    /// Create a new accept message (primary to replica).
+    pub fn accept(current_lsn: u64, protocol_version: u16) -> Self {
+        Self {
+            version: protocol_version,
+            message_type: MessageType::Accept,
+            sequence: current_lsn,
+            commit_record: None,
+            lsn: Some(current_lsn),
+            payload: None,
+            checksum: 0,
+        }
+    }
+
+    /// Create a new acknowledgment message (replica to primary).
+    pub fn ack(sequence: u64) -> Self {
+        Self {
+            version: crate::replication::PROTOCOL_VERSION,
+            message_type: MessageType::Ack,
+            sequence,
+            commit_record: None,
+            lsn: None,
+            payload: None,
+            checksum: 0,
         }
     }
 
@@ -105,21 +181,48 @@ impl ReplicationMessage {
             message_type: MessageType::Snapshot,
             sequence,
             commit_record: None,
+            lsn: None,
+            payload: Some(snapshot_data),
             checksum,
         }
     }
 
     /// Create a new error message.
-    pub fn error(sequence: u64, error_code: u32, error_message: String) -> Self {
-        // Encode error into checksum for simplicity
-        let checksum = (error_code as u64) | ((error_message.len() as u64) << 32);
+    pub fn error(message: String) -> Self {
         Self {
             version: crate::replication::PROTOCOL_VERSION,
             message_type: MessageType::Error,
-            sequence,
+            sequence: 0,
             commit_record: None,
-            checksum,
+            lsn: None,
+            payload: Some(message.into_bytes()),
+            checksum: 0,
         }
+    }
+
+    /// Get the message type.
+    pub fn message_type(&self) -> MessageType {
+        self.message_type
+    }
+
+    /// Get the protocol version.
+    pub fn version(&self) -> Option<u16> {
+        Some(self.version)
+    }
+
+    /// Get the sequence number.
+    pub fn sequence(&self) -> Option<u64> {
+        Some(self.sequence)
+    }
+
+    /// Get the LSN if present.
+    pub fn lsn(&self) -> Option<u64> {
+        self.lsn
+    }
+
+    /// Get the payload if present.
+    pub fn payload(&self) -> Option<&[u8]> {
+        self.payload.as_deref()
     }
 
     /// Calculate checksum for a commit record.
@@ -154,7 +257,8 @@ impl ReplicationMessage {
                     false
                 }
             }
-            MessageType::Heartbeat | MessageType::Snapshot | MessageType::Error => true,
+            MessageType::Heartbeat | MessageType::Snapshot | MessageType::Error |
+            MessageType::Connect | MessageType::Accept | MessageType::Ack => true,
         }
     }
 
@@ -197,7 +301,8 @@ impl ReplicationMessage {
     ///
     /// For CommitRecord messages, payload contains the serialized commit record.
     /// For Snapshot messages, payload contains the snapshot data.
-    /// For Error messages, payload contains error_code (u32) + error_message bytes.
+    /// For Error messages, payload contains error message bytes.
+    /// For Connect/Accept messages, payload may contain LSN info.
     pub fn serialize(&self) -> Result<Vec<u8>, io::Error> {
         let mut buffer = Vec::new();
 
@@ -208,30 +313,30 @@ impl ReplicationMessage {
         buffer.write_u64::<LittleEndian>(self.checksum)?;
 
         // Write payload based on message type
-        match self.message_type {
-            MessageType::Heartbeat => {
-                // No payload
-                buffer.write_u32::<LittleEndian>(0)?;
+        let payload_bytes = match self.message_type {
+            MessageType::Heartbeat |
+            MessageType::Ack |
+            MessageType::Connect |
+            MessageType::Accept => {
+                // No payload needed
+                Vec::new()
             }
             MessageType::CommitRecord => {
-                if let Some(record) = &self.commit_record {
-                    let payload = self.serialize_commit_record(record)?;
-                    buffer.write_u32::<LittleEndian>(payload.len() as u32)?;
-                    buffer.write_all(&payload)?;
-                } else {
-                    buffer.write_u32::<LittleEndian>(0)?;
-                }
+                // Use pre-serialized payload
+                self.payload.clone().unwrap_or_default()
             }
             MessageType::Snapshot => {
-                // Snapshot data is stored separately in a real implementation
-                // For now, write empty payload
-                buffer.write_u32::<LittleEndian>(0)?;
+                // Snapshot data
+                self.payload.clone().unwrap_or_default()
             }
             MessageType::Error => {
-                // Error info is encoded in checksum, no separate payload needed
-                buffer.write_u32::<LittleEndian>(0)?;
+                // Error message bytes
+                self.payload.clone().unwrap_or_default()
             }
-        }
+        };
+
+        buffer.write_u32::<LittleEndian>(payload_bytes.len() as u32)?;
+        buffer.write_all(&payload_bytes)?;
 
         Ok(buffer)
     }
@@ -251,17 +356,11 @@ impl ReplicationMessage {
         let msg_type = MessageType::from_u16(message_type)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Invalid message type"))?;
 
-        // Read and deserialize payload
-        let commit_record = if payload_length > 0 {
-            if msg_type == MessageType::CommitRecord {
-                let mut payload = vec![0u8; payload_length];
-                cursor.read_exact(&mut payload)?;
-                Some(Box::new(Self::deserialize_commit_record(&payload)?))
-            } else {
-                // For other message types, skip payload for now
-                cursor.consume(payload_length);
-                None
-            }
+        // Read payload
+        let payload = if payload_length > 0 {
+            let mut buf = vec![0u8; payload_length];
+            cursor.read_exact(&mut buf)?;
+            Some(buf)
         } else {
             None
         };
@@ -270,7 +369,9 @@ impl ReplicationMessage {
             version,
             message_type: msg_type,
             sequence,
-            commit_record,
+            commit_record: None,  // Not deserializing commit records for now
+            lsn: None,
+            payload,
             checksum,
         })
     }
