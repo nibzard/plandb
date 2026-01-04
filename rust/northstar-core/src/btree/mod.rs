@@ -15,7 +15,7 @@ pub mod version;
 
 // Re-exports for convenience
 pub use header::{NodeHeader, NodeType, NodeFlags};
-pub use node::{Node, InternalNode, LeafNode};
+pub use node::{Node, InternalNode, LeafNode, Entry};
 pub use tree::BTree;
 pub use search::SearchResult;
 pub use scan::ScanIter;

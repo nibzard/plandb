@@ -104,7 +104,7 @@ impl InternalNode {
 
     /// Calculate actual free space
     pub fn calculate_free_space(&self) -> u16 {
-        let used: usize = self.separators.iter().map(|k| 1 + k.len()).sum()
+        let used: usize = self.separators.iter().map(|k| 1 + k.len()).sum::<usize>()
             + self.children.len() * 8;
         (DEFAULT_PAGE_SIZE - HEADER_SIZE - used) as u16
     }
@@ -114,25 +114,26 @@ impl InternalNode {
         // Check separators are sorted
         for i in 1..self.separators.len() {
             if self.separators[i] <= self.separators[i-1] {
-                return Err(Error::Validation(ValidationError::Generic)("Separators not sorted".to_string()));
+                return Err(Error::Validation(ValidationError::Generic("Separators not sorted".to_string())));
             }
         }
 
         // Check children count = separators + 1
         if self.children.len() != self.separators.len() + 1 {
-            return Err(Error::Validation(ValidationError::Generic)(
+            return Err(Error::Validation(ValidationError::Generic(
                 format!("Children count mismatch: {} != {} + 1",
                     self.children.len(), self.separators.len())
-            ));
+            )));
         }
 
         // Check free space consistency
         let calculated_free = self.calculate_free_space();
-        if (self.header.free_space as i32 - calculated_free as i32).abs() > 10 {
-            return Err(Error::Validation(ValidationError::Generic)(
+        let header_free_space = self.header.free_space;
+        if (header_free_space as i32 - calculated_free as i32).abs() > 10 {
+            return Err(Error::Validation(ValidationError::Generic(
                 format!("Free space mismatch: header={}, calculated={}",
-                    self.header.free_space, calculated_free)
-            ));
+                    header_free_space, calculated_free)
+            )));
         }
 
         Ok(())
@@ -141,7 +142,8 @@ impl InternalNode {
     /// Check if node is full (needs split)
     pub fn needs_split(&self, threshold: f64) -> bool {
         let total_space = (DEFAULT_PAGE_SIZE - HEADER_SIZE) as f64;
-        let used_space = total_space - self.header.free_space as f64;
+        let header_free_space = self.header.free_space;
+        let used_space = total_space - header_free_space as f64;
         (used_space / total_space) >= threshold
     }
 }
@@ -250,25 +252,27 @@ impl LeafNode {
         // Check keys are sorted
         for i in 1..self.entries.len() {
             if self.entries[i].key <= self.entries[i-1].key {
-                return Err(Error::Validation(ValidationError::Generic)("Keys not sorted".to_string()));
+                return Err(Error::Validation(ValidationError::Generic("Keys not sorted".to_string())));
             }
         }
 
         // Check entry count matches
-        if self.entries.len() != self.header.num_keys as usize {
-            return Err(Error::Validation(ValidationError::Generic)(
+        let header_num_keys = self.header.num_keys;
+        if self.entries.len() != header_num_keys as usize {
+            return Err(Error::Validation(ValidationError::Generic(
                 format!("Entry count mismatch: {} != {}",
-                    self.entries.len(), self.header.num_keys)
-            ));
+                    self.entries.len(), header_num_keys)
+            )));
         }
 
         // Check free space consistency
         let calculated_free = self.calculate_free_space();
-        if (self.header.free_space as i32 - calculated_free as i32).abs() > 10 {
-            return Err(Error::Validation(ValidationError::Generic)(
+        let header_free_space = self.header.free_space;
+        if (header_free_space as i32 - calculated_free as i32).abs() > 10 {
+            return Err(Error::Validation(ValidationError::Generic(
                 format!("Free space mismatch: header={}, calculated={}",
-                    self.header.free_space, calculated_free)
-            ));
+                    header_free_space, calculated_free)
+            )));
         }
 
         Ok(())
@@ -277,7 +281,8 @@ impl LeafNode {
     /// Check if node is full (needs split)
     pub fn needs_split(&self, threshold: f64) -> bool {
         let total_space = (DEFAULT_PAGE_SIZE - HEADER_SIZE) as f64;
-        let used_space = total_space - self.header.free_space as f64;
+        let header_free_space = self.header.free_space;
+        let used_space = total_space - header_free_space as f64;
         (used_space / total_space) >= threshold
     }
 }
@@ -360,7 +365,8 @@ mod tests {
     #[test]
     fn test_internal_node_creation() {
         let node = InternalNode::new(42, 1);
-        assert_eq!(node.header.num_keys, 0);
+        let num_keys = node.header.num_keys;
+        assert_eq!(num_keys, 0);
         assert_eq!(node.children.len(), 0);
         assert_eq!(node.separators.len(), 0);
     }
@@ -396,7 +402,8 @@ mod tests {
     #[test]
     fn test_leaf_node_creation() {
         let node = LeafNode::new(42);
-        assert_eq!(node.header.num_keys, 0);
+        let num_keys = node.header.num_keys;
+        assert_eq!(num_keys, 0);
         assert_eq!(node.entries.len(), 0);
     }
 

@@ -84,6 +84,7 @@ impl NodeFlags {
 /// Fixed-size metadata structure that prefixes every B+Tree node.
 /// Must match exact binary layout for on-disk compatibility.
 #[repr(C, packed)]
+#[derive(Clone)]
 pub struct NodeHeader {
     /// Magic number (0x4E535452 = "NSTR")
     pub magic: u32,
@@ -173,15 +174,16 @@ impl NodeHeader {
         // Check reserved field
         if self.reserved != 0 {
             return Err(Error::Validation(ValidationError::InvalidReservedField {
-                value: self.reserved,
+                value: self.reserved as u32,
             }));
         }
 
         // Check node_id matches
-        if self.node_id != page_id.as_u64() {
+        let node_id = self.node_id;
+        if node_id != page_id.as_u64() {
             return Err(Error::Validation(ValidationError::Generic(format!(
                 "Node ID mismatch: header={}, page={}",
-                self.node_id,
+                node_id,
                 page_id.as_u64()
             ))));
         }
@@ -243,19 +245,31 @@ impl NodeHeader {
 
 impl fmt::Debug for NodeHeader {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Copy packed fields to local variables to avoid unaligned references
+        let magic = self.magic;
+        let num_keys = self.num_keys;
+        let parent_page_id = self.parent_page_id;
+        let right_sibling_page_id = self.right_sibling_page_id;
+        let free_space = self.free_space;
+        let level = self.level;
+        let checksum = self.checksum;
+        let flags = self.flags;
+        let generation = self.generation;
+        let node_id = self.node_id;
+
         f.debug_struct("NodeHeader")
-            .field("magic", &format_args!("0x{:08X}", self.magic))
+            .field("magic", &format_args!("0x{:08X}", magic))
             .field("node_type", &self.get_node_type())
             .field("is_root", &self.is_root_node())
-            .field("num_keys", &self.num_keys)
-            .field("parent_page_id", &PageId::from(self.parent_page_id))
-            .field("right_sibling", &PageId::from(self.right_sibling_page_id))
-            .field("free_space", &self.free_space)
-            .field("level", &self.level)
-            .field("checksum", &format_args!("0x{:08X}", self.checksum))
-            .field("flags", &format_args!("0x{:08X}", self.flags))
-            .field("generation", &self.generation)
-            .field("node_id", &PageId::from(self.node_id))
+            .field("num_keys", &num_keys)
+            .field("parent_page_id", &PageId::from(parent_page_id))
+            .field("right_sibling", &PageId::from(right_sibling_page_id))
+            .field("free_space", &free_space)
+            .field("level", &level)
+            .field("checksum", &format_args!("0x{:08X}", checksum))
+            .field("flags", &format_args!("0x{:08X}", flags))
+            .field("generation", &generation)
+            .field("node_id", &PageId::from(node_id))
             .finish()
     }
 }
@@ -302,13 +316,21 @@ mod tests {
         let page_id = PageId::from(42u64);
         let header = NodeHeader::new(NodeType::Leaf, page_id, 0);
 
-        assert_eq!(header.magic, NODE_MAGIC);
-        assert_eq!(header.node_type, NodeType::Leaf as u8);
-        assert_eq!(header.is_root, 0);
-        assert_eq!(header.num_keys, 0);
-        assert_eq!(header.free_space as usize, DEFAULT_PAGE_SIZE - HEADER_SIZE);
-        assert_eq!(header.level, 0);
-        assert_eq!(header.node_id, page_id.as_u64());
+        let magic = header.magic;
+        let node_type = header.node_type;
+        let is_root = header.is_root;
+        let num_keys = header.num_keys;
+        let free_space = header.free_space;
+        let level = header.level;
+        let node_id = header.node_id;
+
+        assert_eq!(magic, NODE_MAGIC);
+        assert_eq!(node_type, NodeType::Leaf as u8);
+        assert_eq!(is_root, 0);
+        assert_eq!(num_keys, 0);
+        assert_eq!(free_space as usize, DEFAULT_PAGE_SIZE - HEADER_SIZE);
+        assert_eq!(level, 0);
+        assert_eq!(node_id, page_id.as_u64());
     }
 
     #[test]
@@ -370,6 +392,7 @@ mod tests {
         let initial = header.generation;
 
         header.increment_generation();
-        assert_eq!(header.generation, initial + 1);
+        let generation = header.generation;
+        assert_eq!(generation, initial + 1);
     }
 }

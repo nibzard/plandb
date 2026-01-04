@@ -164,6 +164,7 @@ fn calculate_min_internal_entries() -> u16 {
 mod tests {
     use super::*;
     use crate::types::Lsn;
+    use crate::btree::node::Entry;
 
     #[test]
     fn test_delete_from_leaf() {
