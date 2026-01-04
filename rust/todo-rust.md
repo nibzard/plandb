@@ -1,5 +1,75 @@
 # Rust Migration Todo List - NorthstarDB
 
+## Phase 12: Query Optimization (2026-01-04)
+
+**Status**: [x] DONE
+
+**Task**: Complete specifications for Query Optimization features including query plan visualization, index usage statistics, and hot path identification
+
+**Description**: Created comprehensive specifications for Phase 12 Query Optimization features with detailed natural language documentation for:
+
+1. **Query Plan Visualization** (12-query-plan-visualization.md - 757 lines)
+   - PlanNode tree structure with execution metrics
+   - Multiple visualization formats (Text, JSON, DOT, HTML)
+   - Query explanation and plan comparison
+   - Cost metric analysis and optimization detection
+
+2. **Index Usage Statistics** (12-index-usage-statistics.md - 820 lines)
+   - IndexUsageStats with access patterns and efficiency metrics
+   - Trend analysis over time with recommendations
+   - Unused index detection and safety classification
+   - Index comparison and consolidation opportunities
+   - Efficiency scoring algorithm
+
+3. **Hot Path Identification** (12-hot-path-identification.md - 893 lines)
+   - HotQuery, HotTable, HotIndex, HotPage identification
+   - Bottleneck detection with severity classification
+   - Optimization opportunity suggestions
+   - Access pattern analysis
+   - Query normalization for pattern matching
+
+**Total**: 2,470 lines of specification documentation
+
+**Key Components Specified**:
+
+*Query Plan Visualization*:
+- PlanNode types (15 operation types)
+- ExecutionMetrics with runtime statistics
+- VisualizationFormat (Text, Json, Dot, Html, Markdown)
+- PlanComparison for before/after analysis
+- Most expensive node identification
+
+*Index Usage Statistics*:
+- IndexAccessStats tracking seeks, scans, rows
+- IndexEfficiencyMetrics with selectivity and cache metrics
+- IndexSizeStats and IndexMaintenanceStats
+- Trend analysis (Increasing/Decreasing/Stable/Volatile)
+- UnusedIndexReport with drop safety classification
+- IndexComparisonReport for consolidation opportunities
+
+*Hot Path Identification*:
+- HotPathReport aggregating all analysis results
+- Bottleneck detection (12 bottleneck types)
+- OptimizationOpportunity with effort/risk assessment
+- AccessPattern identification (8 pattern types)
+- Impact score calculation combining frequency and cost
+
+**Files Created**:
+- `rust/12-query-plan-visualization.md` (757 lines)
+- `rust/12-index-usage-statistics.md` (820 lines)
+- `rust/12-hot-path-identification.md` (893 lines)
+
+**Commit**: [pending]
+
+**Blockers**: None
+
+**Next Steps**:
+- Implementation of Phase 12 features can begin when prioritized
+- Phase 13+ specifications are complete (caching implemented)
+- Integration with existing Phase 11 (Advanced Analytics) features
+
+---
+
 ## Phase 13.5 Follow-up: Performance Benchmarks (2026-01-04)
 
 **Status**: [x] DONE
