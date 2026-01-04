@@ -3,6 +3,7 @@
 //! Main B+Tree implementation with top-level operations.
 
 use crate::{pager::Pager, types::{PageId, Lsn}, error::ValidationError, Error, Result};
+use crate::cache::{PrefetchPriority, SequentialScanDetector};
 use super::{
     node::{Node, InternalNode, LeafNode, Entry},
     search::{SearchResult, SearchContext},
@@ -26,6 +27,8 @@ pub struct BTree<'a> {
     leaf_count: usize,
     /// Number of internal nodes
     internal_count: usize,
+    /// Sequential scan detector for prefetch hints
+    scan_detector: SequentialScanDetector,
 }
 
 impl<'a> BTree<'a> {
@@ -48,6 +51,7 @@ impl<'a> BTree<'a> {
             height,
             leaf_count: if is_leaf { 1 } else { 0 },
             internal_count: if !is_leaf { 1 } else { 0 },
+            scan_detector: SequentialScanDetector::new(),
         })
     }
 
@@ -64,6 +68,7 @@ impl<'a> BTree<'a> {
             height: 0,
             leaf_count: 1,
             internal_count: 0,
+            scan_detector: SequentialScanDetector::new(),
         })
     }
 
@@ -329,6 +334,14 @@ impl<'a> BTree<'a> {
         let mut current_page_id = start_page;
 
         while current_page_id.as_u64() != 0 {
+            // Record access for sequential scan detection
+            if self.scan_detector.record_access(current_page_id) {
+                // Sequential scan detected - prefetch next pages
+                if let Some(next_page) = current_page_id.next() {
+                    self.pager.prefetch_hint(next_page, PrefetchPriority::Normal);
+                }
+            }
+
             let node = self.pager.read_btree_node(current_page_id)?;
 
             if let Some(leaf) = node.as_leaf() {

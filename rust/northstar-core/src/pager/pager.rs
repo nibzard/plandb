@@ -7,7 +7,7 @@
 use super::allocator::PageAllocator;
 use super::meta::{choose_best_meta, MetaState};
 use super::storage::Storage;
-use crate::cache::PageCache;
+use crate::cache::{PageCache, PrefetchPriority, PrefetchQueue};
 use crate::btree::overflow::{OverflowPage, OVERFLOW_DATA_SIZE, OVERFLOW_MAGIC};
 use crate::error::{Error, IoError, Result, ValidationError};
 use crate::page::{Page, PageHeader, PageType, PAGE_MAGIC, PAGE_SIZE};
@@ -15,6 +15,7 @@ use crate::types::{Lsn, PageId, TransactionId};
 use std::fs::File;
 use std::path::Path;
 use std::fs::OpenOptions;
+use std::sync::Arc;
 
 /// Main Pager struct - manages page-based storage
 pub struct Pager {
@@ -28,6 +29,8 @@ pub struct Pager {
     allocator: PageAllocator,
     /// Page cache
     cache: PageCache,
+    /// Prefetch queue for async page loading
+    prefetch_queue: Arc<PrefetchQueue>,
 }
 
 impl Pager {
@@ -46,12 +49,16 @@ impl Pager {
         // Initialize cache
         let cache = PageCache::new();
 
+        // Initialize prefetch queue
+        let prefetch_queue = Arc::new(PrefetchQueue::new());
+
         let mut pager = Self {
             storage,
             page_size,
             current_meta,
             allocator,
             cache,
+            prefetch_queue,
         };
 
         // Write initial meta pages
@@ -87,12 +94,16 @@ impl Pager {
         // Initialize cache
         let cache = PageCache::new();
 
+        // Initialize prefetch queue
+        let prefetch_queue = Arc::new(PrefetchQueue::new());
+
         let mut pager = Self {
             storage,
             page_size,
             current_meta,
             allocator,
             cache,
+            prefetch_queue,
         };
 
         // Write initial meta pages
@@ -151,12 +162,16 @@ impl Pager {
         // Initialize cache
         let cache = PageCache::new();
 
+        // Initialize prefetch queue
+        let prefetch_queue = Arc::new(PrefetchQueue::new());
+
         Ok(Self {
             storage,
             page_size,
             current_meta: best_meta.clone(),
             allocator,
             cache,
+            prefetch_queue,
         })
     }
 
@@ -379,6 +394,39 @@ impl Pager {
     /// Sync data to stable storage
     pub fn sync(&self) -> Result<()> {
         self.storage.sync()
+    }
+
+    // ========== Prefetch API ==========
+
+    /// Prefetch a single page with given priority
+    ///
+    /// Adds the page to the prefetch queue for async loading.
+    /// Returns true if the request was queued, false if queue is full.
+    pub fn prefetch_hint(&self, page_id: PageId, priority: PrefetchPriority) -> bool {
+        use crate::cache::PrefetchRequest;
+        let request = PrefetchRequest::new(page_id, priority);
+        self.prefetch_queue.enqueue(request)
+    }
+
+    /// Prefetch multiple pages with given priority
+    ///
+    /// Adds all pages to the prefetch queue.
+    /// Returns the number of pages successfully queued.
+    pub fn prefetch_hint_batch(&self, page_ids: Vec<PageId>, priority: PrefetchPriority) -> usize {
+        use crate::cache::PrefetchRequest;
+        let mut enqueued = 0;
+        for page_id in page_ids {
+            let request = PrefetchRequest::new(page_id, priority);
+            if self.prefetch_queue.enqueue(request) {
+                enqueued += 1;
+            }
+        }
+        enqueued
+    }
+
+    /// Get the prefetch queue for direct access
+    pub fn prefetch_queue(&self) -> &Arc<PrefetchQueue> {
+        &self.prefetch_queue
     }
 
     // ========== Overflow Page Management ==========

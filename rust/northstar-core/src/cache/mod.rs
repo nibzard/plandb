@@ -12,6 +12,7 @@ pub mod bench;
 pub mod error;
 pub mod node;
 pub mod page;
+pub mod prefetch;
 pub mod query;
 pub mod shard;
 pub mod types;
@@ -19,6 +20,10 @@ pub mod types;
 pub use error::{CacheError, CacheResult};
 pub use node::{NodeCache, NodeKey};
 pub use page::PageCache;
+pub use prefetch::{
+    CacheStatsLogger, PrefetchManager, PrefetchPriority, PrefetchQueue, PrefetchRequest,
+    PrefetchStats, SequentialScanDetector,
+};
 pub use query::{
     CachedResult, PageInvalidation, QueryCache, QueryCacheStats, QueryKey, QueryResult,
     QueryType,
