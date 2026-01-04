@@ -21,6 +21,9 @@ pub enum ConnectionState {
     /// Resuming replication from last acknowledged position.
     Catchup,
 
+    /// Receiving snapshot from primary.
+    Bootstrapping,
+
     /// Encountered non-recoverable error, requires intervention.
     Error,
 }

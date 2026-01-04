@@ -30,6 +30,7 @@ pub mod handlers;
 pub mod protocol;
 pub mod publisher;
 pub mod state;
+pub mod subscriber;
 
 // Re-exports
 pub use config::{PrimaryConfig, ReplicaConfig, ReplicationConfig, ReplicationRole};
@@ -39,6 +40,7 @@ pub use handlers::{HandshakeHandler, HeartbeatHandler, CommitRecordHandler, Snap
 pub use protocol::{MessageType, ReplicationMessage};
 pub use publisher::{Publisher, ReplicaConnection, ReplicationBuffer, BufferedRecord, BackpressureState, ReplicaId};
 pub use state::{ConnectionState, ReplicaInfo};
+pub use subscriber::{Subscriber, SubscriberEvent, BootstrapState, ReconnectState};
 
 /// Current replication protocol version.
 pub const PROTOCOL_VERSION: u16 = 1;
