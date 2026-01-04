@@ -237,8 +237,9 @@ impl Pager {
         // Write to storage
         self.storage.write_page(page_id.as_u64(), buffer)?;
 
-        // Invalidate cache entry
-        self.cache.remove(page_id);
+        // Update cache with new data instead of removing
+        // This ensures cache always has the latest data from storage
+        let _ = self.cache.put(page_id, buffer);
 
         Ok(())
     }
@@ -256,8 +257,10 @@ impl Pager {
         // Write to storage without validation
         self.storage.write_page(page_id.as_u64(), buffer)?;
 
-        // Invalidate cache entry
+        // Invalidate any stale cache entry first
+        // Then add fresh data to cache
         self.cache.remove(page_id);
+        self.cache.put(page_id, buffer)?;
 
         Ok(())
     }
@@ -269,23 +272,17 @@ impl Pager {
     pub fn read_page_cached(&mut self, page_id: PageId) -> Result<Vec<u8>> {
         // Check cache first
         if self.cache.contains(page_id) {
-            // Get the data and immediately copy it to avoid borrow issues
-            let data = {
-                let cached_data = self.cache.get(page_id).unwrap();
-                cached_data.to_vec()
-            };
-            self.cache.unpin(page_id);
-            return Ok(data);
+            // Get the data - cache.get() handles pin/unpin internally
+            let cached_data = self.cache.get(page_id).unwrap();
+            return Ok(cached_data);
         }
 
         // Cache miss - read from storage
         let mut buffer = vec![0u8; PAGE_SIZE];
         self.read_page(page_id, &mut buffer)?;
 
-        // Insert into cache
+        // Insert into cache (starts pinned, need to unpin)
         self.cache.put(page_id, &buffer)?;
-
-        // Unpin and return copy
         self.cache.unpin(page_id);
         Ok(buffer)
     }
@@ -294,23 +291,17 @@ impl Pager {
     fn read_page_cached_raw(&mut self, page_id: PageId) -> Result<Vec<u8>> {
         // Check cache first
         if self.cache.contains(page_id) {
-            // Get the data and immediately copy it to avoid borrow issues
-            let data = {
-                let cached_data = self.cache.get(page_id).unwrap();
-                cached_data.to_vec()
-            };
-            self.cache.unpin(page_id);
-            return Ok(data);
+            // Get the data - cache.get() handles pin/unpin internally
+            let cached_data = self.cache.get(page_id).unwrap();
+            return Ok(cached_data);
         }
 
         // Cache miss - read from storage without validation
         let mut buffer = vec![0u8; PAGE_SIZE];
         self.read_page_raw(page_id, &mut buffer)?;
 
-        // Insert into cache
+        // Insert into cache (starts pinned, need to unpin)
         self.cache.put(page_id, &buffer)?;
-
-        // Unpin and return copy
         self.cache.unpin(page_id);
         Ok(buffer)
     }
@@ -324,13 +315,18 @@ impl Pager {
     pub fn allocate_page(&mut self) -> Result<PageId> {
         let page_id = self.allocator.allocate_page()?;
 
-        // Initialize page with zeros and valid header
+        // Initialize page with valid header
         let mut page = Page::new(page_id, PageType::Freelist);
         page.recalculate_checksums();
 
         // Write to storage
         let page_bytes = page.to_bytes();
         self.storage.write_page(page_id.as_u64(), &page_bytes)?;
+
+        // NOTE: Don't update cache here - the caller will write the actual content
+        // (e.g., B+Tree node with NODE_MAGIC) which will update the cache.
+        // If we update cache here with PAGE_MAGIC, it will overwrite the correct data
+        // that the caller writes.
 
         Ok(page_id)
     }
@@ -702,26 +698,26 @@ mod tests {
         let mut pager = Pager::create_memory().unwrap();
 
         let _page1 = pager.allocate_page().unwrap();
-        assert_eq!(_page1.as_u64(), 2); // First data page after meta pages
+        assert_eq!(_page1.as_u64(), 3); // First data page after meta pages and B+Tree root
 
         let _page2 = pager.allocate_page().unwrap();
-        assert_eq!(_page2.as_u64(), 3);
+        assert_eq!(_page2.as_u64(), 4);
     }
 
     #[test]
     fn test_free_and_reuse_page() {
         let mut pager = Pager::create_memory().unwrap();
 
-        let _page1 = pager.allocate_page().unwrap(); // ID 2
-        let page2 = pager.allocate_page().unwrap(); // ID 3
-        let _page3 = pager.allocate_page().unwrap(); // ID 4
+        let _page1 = pager.allocate_page().unwrap(); // ID 3
+        let page2 = pager.allocate_page().unwrap(); // ID 4
+        let _page3 = pager.allocate_page().unwrap(); // ID 5
 
-        // Free page2 (ID 3)
+        // Free page2 (ID 4)
         pager.free_page(page2).unwrap();
 
-        // Next allocation should reuse page 3 (which was freed)
+        // Next allocation should reuse page 4 (which was freed)
         let reused = pager.allocate_page().unwrap();
-        assert_eq!(reused.as_u64(), 3);
+        assert_eq!(reused.as_u64(), 4);
     }
 
     #[test]

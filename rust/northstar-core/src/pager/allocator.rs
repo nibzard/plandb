@@ -19,7 +19,7 @@ impl PageAllocator {
     pub fn new() -> Self {
         Self {
             free_pages: Vec::new(),
-            last_allocated_page: AtomicU64::new(2), // Start at page 2 (after meta pages)
+            last_allocated_page: AtomicU64::new(3), // Start at page 3 (after meta pages and B+Tree root)
         }
     }
 
