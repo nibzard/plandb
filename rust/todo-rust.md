@@ -730,10 +730,11 @@
   - Invariants (idempotency, ordering, size limits)
   - Rust implementation guidance
 
-- [x] **4.8** Create `04-txn-delete.md`
+- [x] **4.8** Create `04-txn-delete.md` - **[DONE]**
   - **DESCRIBE**: Delete operation
   - **EXPLAIN**: Tombstone handling
-  - **Completed**: 2026-01-04 (commit pending)
+  - **Completed**: 2026-01-04 (commit 41d51dd)
+  - **Blockers**: None - completed successfully
 
   **Work Summary**:
   - **WriteTxn.delete() operation** fully specified with tombstone semantics
@@ -755,10 +756,42 @@
   - Invariants (idempotency, ordering, cascade behavior)
   - Rust implementation guidance
 
-- [ ] **4.9** Create `04-txn-commit.md`
+- [ ] **4.9** Create `04-txn-commit.md` - **[IN PROGRESS]**
   - **DESCRIBE**: Two-phase commit steps
   - **EXPLAIN**: Atomicity guarantees
   - **LIST**: What happens in each phase
+  - **DESCRIBE**: Fsync ordering (log → meta → database)
+  - **EXPLAIN**: Crash recovery points
+
+  **Task Description**:
+  Document the complete commit flow for WriteTxn, including:
+  - Prepare phase: validation, conflict checking, mutation ordering
+  - Apply phase: B+tree mutation execution, root page ID tracking
+  - Append phase: commit record creation, log file write, fsync
+  - Meta phase: meta page encoding, A/B flip, database sync
+  - Finalize phase: snapshot registration, plugin hooks, state transition
+
+  **Key Requirements**:
+  - Atomicity: all-or-nothing visibility across crash boundaries
+  - Durability: fsync ordering (log → meta → database file)
+  - Determinism: commit record fully describes state changes
+  - Idempotency: duplicate commits detectable via TxnId registry
+
+  **Dependencies**:
+  - Task 4.3 (ReadTxn spec) - for snapshot isolation semantics
+  - Task 4.4 (WriteTxn spec) - for mutation tracking context
+  - Task 4.5 (Begin spec) - for TxnId allocation
+  - Task 4.8 (Delete spec) - for pending mutation handling
+
+  **Implementation Approach**:
+  1. Start with commit() signature and return type (Result<TxnId>)
+  2. Document Phase 1 (Prepare): state validation, mutation count checks
+  3. Document Phase 2 (Apply): B+tree operations, root page tracking
+  4. Document Phase 3 (Append): CommitRecord creation, log write, first fsync
+  5. Document Phase 4 (Meta): Meta page A/B flip, second fsync
+  6. Document Phase 5 (Finalize): Snapshot registry, state transition, cleanup
+  7. Error handling: rollback on any phase failure
+  8. Crash recovery: analyze each phase for crash points and recovery strategy
 
 - [ ] **4.10** Create `04-txn-rollback.md`
   - **DESCRIBE**: Rollback process
