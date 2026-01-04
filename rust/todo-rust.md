@@ -708,12 +708,52 @@
   - **DESCRIBE**: Put operation flow
   - **EXPLAIN**: Write buffering
   - **DESCRIBE**: Duplicate key handling
-  - **Completed**: 2026-01-04 (commit pending)
-  - **Blockers**: None - specification complete
+  - **Completed**: 2026-01-04 (commit e08b787)
+  - **Blockers**: None
 
-- [ ] **4.8** Create `04-txn-delete.md`
+  **Work Summary**:
+  - **WriteTxn.put() operation** fully specified with 7-step algorithm
+  - **Duplicate handling** documented with last-write-wins semantics within transaction
+  - **Size tracking** explained with incremental byte counting
+  - **Performance characteristics** analyzed (O(1) amortized, buffered writes)
+  - **Error handling** detailed (KeyTooLarge, ValueTooLarge, TxnClosed)
+
+  **Key Deliverables**:
+  - put() algorithm with duplicate detection and size tracking
+  - PendingOpsMap mutation buffer strategy
+  - Size increment calculation (key + value + overhead bytes)
+  - Last-write-wins within single transaction
+  - Write buffering until commit (no immediate disk I/O)
+  - Transaction state validation (Active only)
+  - Memory size limit enforcement
+  - Testing requirements (unit, integration, property tests)
+  - Invariants (idempotency, ordering, size limits)
+  - Rust implementation guidance
+
+- [x] **4.8** Create `04-txn-delete.md`
   - **DESCRIBE**: Delete operation
   - **EXPLAIN**: Tombstone handling
+  - **Completed**: 2026-01-04 (commit pending)
+
+  **Work Summary**:
+  - **WriteTxn.delete() operation** fully specified with tombstone semantics
+  - **Key existence validation** with immediate error returns
+  - **Pending deletion tracking** using DeleteSet for delayed execution
+  - **Double-delete protection** idempotent behavior within transaction
+  - **Read-after-write consistency** delete visible to same transaction
+  - **Memory efficiency** DeleteSet smaller than PendingOpsMap
+  - **State validation** Active transaction enforcement
+
+  **Key Deliverables**:
+  - delete() algorithm with 7-step validation and tracking flow
+  - Tombstone marker strategy for deleted keys
+  - DeleteSet data structure for efficient pending deletions
+  - Idempotent delete semantics (second delete no-ops)
+  - Transaction-local visibility (delete visible to same txn)
+  - Error handling (KeyNotFound, KeyTooLarge, TxnClosed)
+  - Testing requirements (unit, integration, property tests)
+  - Invariants (idempotency, ordering, cascade behavior)
+  - Rust implementation guidance
 
 - [ ] **4.9** Create `04-txn-commit.md`
   - **DESCRIBE**: Two-phase commit steps
