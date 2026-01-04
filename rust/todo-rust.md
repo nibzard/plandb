@@ -1223,10 +1223,37 @@
   - Testing strategy with unit, integration, property-based, and performance tests
   - 741 lines of detailed natural language specification (no code)
 
-- [ ] **6.2** Create `06-btree-node.md`
+- [x] **6.2** Create `06-btree-node.md` - **[DONE]**
   - **DESCRIBE**: Internal node structure
   - **DESCRIBE**: Leaf node structure
   - **EXPLAIN**: Differences between node types
+  - **Completed**: 2026-01-04 (commit 81affa9)
+  - **Blockers**: None
+
+  **Work Summary**:
+  - **Internal and Leaf node structures** fully documented with NodeHeader specification
+  - **Binary layouts** defined for both node types with precise offsets and sizes
+  - **NodeHeader fields** specified (node_type, is_root, num_keys, parent_page_id, right_sibling_page_id, free_space, checksum)
+  - **InternalNode structure** detailed with separator array and child array
+  - **LeafNode structure** detailed with key array and value array
+  - **3 NodeType enum variants** defined (Internal, Leaf, RootInternal)
+  - **Node size calculations** provided (16KB pages, space usage formulas)
+  - **Fanout calculations** documented with examples for different key sizes
+  - **Invariants** specified for both node types
+  - **Node initialization** and **validation** functions defined
+  - **Rust implementation guidance** provided with repr(C) structs
+
+  **Key Deliverables**:
+  - NodeHeader specification (48 bytes) with 7 fields
+  - InternalNode layout: header + separator array + child array (dynamic)
+  - LeafNode layout: header + key array + value array (dynamic)
+  - Binary format diagrams with byte offsets
+  - NodeType enum with 3 variants (Internal, Leaf, RootInternal)
+  - Space management functions (getFreeSpace, getUsedSpace)
+  - Key capacity calculation (fanout = (page_size - header_size) / (key_size + child_ptr_size))
+  - Value capacity calculation based on key/value sizes
+  - Node validation functions (validateHeader, validateInternal, validateLeaf)
+  - 669 lines of detailed natural language specification (no code)
 
 - [ ] **6.3** Create `06-btree-header.md`
   - **LIST**: NodeHeader fields with offsets and sizes
