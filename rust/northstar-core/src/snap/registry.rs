@@ -286,6 +286,16 @@ impl SnapshotRegistry {
     pub(crate) fn pager(&self) -> &Pager {
         &self.pager
     }
+
+    /// Get a mutable reference to the pager.
+    pub(crate) fn pager_mut(&mut self) -> &mut Pager {
+        &mut self.pager
+    }
+
+    /// Close the registry and release the pager.
+    pub(crate) fn close(&mut self) -> Result<()> {
+        self.pager.close()
+    }
 }
 
 impl super::SnapshotOps for SnapshotRegistry {

@@ -2,6 +2,7 @@
 //!
 //! ReadTxn provides read-only access to a consistent snapshot of the database.
 
+use crate::db::Db;
 use crate::error::Result;
 use crate::types::{PageId, TransactionId};
 
@@ -17,12 +18,12 @@ pub struct ReadTxn<'a> {
     /// B+tree root page ID for this snapshot.
     pub root_page_id: PageId,
     /// Reference to database for operations.
-    pub db: &'a crate::Db,
+    pub db: &'a Db,
 }
 
 impl<'a> ReadTxn<'a> {
     /// Create a new read transaction at the specified snapshot.
-    pub fn new(txn_id: TransactionId, root_page_id: PageId, db: &'a crate::Db) -> Self {
+    pub fn new(txn_id: TransactionId, root_page_id: PageId, db: &'a Db) -> Self {
         Self {
             txn_id,
             root_page_id,

@@ -2,6 +2,7 @@
 //!
 //! WriteTxn provides read-write access with two-phase commit protocol.
 
+use crate::db::Db;
 use crate::error::Result;
 use crate::types::TransactionId;
 use super::context::TransactionContext;
@@ -16,12 +17,12 @@ pub struct WriteTxn<'a> {
     /// Transaction context tracking state and mutations.
     pub ctx: TransactionContext,
     /// Reference to database for operations.
-    pub db: &'a crate::Db,
+    pub db: &'a Db,
 }
 
 impl<'a> WriteTxn<'a> {
     /// Create a new write transaction.
-    pub fn new(txn_id: TransactionId, db: &'a crate::Db) -> Self {
+    pub fn new(txn_id: TransactionId, db: &'a Db) -> Self {
         Self {
             ctx: TransactionContext::new(txn_id),
             db,

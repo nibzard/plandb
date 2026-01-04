@@ -16,6 +16,7 @@ pub mod wal;
 pub mod txn;
 pub mod snap;
 pub mod btree;
+pub mod db;
 
 // Re-exports for convenience
 pub use error::{DbError, Error, Result};
@@ -23,26 +24,5 @@ pub use page::{Page, PageHeader, PageType};
 pub use types::{Lsn, PageId, TransactionId};
 pub use pager::Pager;
 pub use wal::Wal;
-
-/// Database handle - placeholder for now.
-///
-/// TODO: This will be expanded in later phases to provide:
-/// - Transaction management
-/// - Snapshot registry
-/// - B+tree access
-pub struct Db {
-    _private: (),
-}
-
-impl Db {
-    /// Create a new database instance.
-    pub fn new() -> Self {
-        Self { _private: () }
-    }
-}
-
-impl Default for Db {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+pub use db::Db;
+pub use txn::{ReadTxn, WriteTxn};

@@ -233,6 +233,15 @@ pub enum TransactionError {
     #[error("Snapshot not found: txn_id {txn_id}")]
     SnapshotNotFound { txn_id: u64 },
 
+    #[error("Database is closed")]
+    DatabaseClosed,
+
+    #[error("Lock poisoned")]
+    LockPoisoned,
+
+    #[error("{0}")]
+    Generic(String),
+
     #[error("Iterator not supported for in-memory databases (use scan)")]
     InMemoryIteratorNotSupported,
 
