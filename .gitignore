@@ -46,3 +46,6 @@ wasm/*.a
 # Test data files
 test_arraylist
 
+# Rust build artifacts
+rust/target/
+
