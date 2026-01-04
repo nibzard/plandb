@@ -1132,8 +1132,45 @@
   - Thread-safety analysis with RwLock strategy
   - 30+ test scenarios covering lifecycle, state transitions, and concurrency
 
-- [ ] **5.9** Create `05-mvcc-serialization.md`
-  - **DESCRIBE**: Snapshot persistence format
+- [x] **5.9** Create `05-mvcc-serialization.md` - **[DONE]**
+  - **DESCRIBE**: Snapshot persistence format - Explain how snapshots are serialized to disk
+  - **EXPLAIN**: Binary layout - Detail the byte-by-byte format of persisted snapshot data
+  - **LIST**: Fields included in serialization - Specify what snapshot metadata gets persisted
+  - **EXPLAIN**: Deserialization process - Describe how snapshots are reconstructed from disk
+  - **DEFINE**: Rust serialization approach - Specify the serialization strategy (e.g., bincode, manual)
+  - **Completed**: 2026-01-04 (commit dcea27f)
+  - **Blockers**: None - spec complete with binary format, encode/decode algorithms, error handling
+
+  **Work Summary**:
+  - **Binary format** defined with 72-byte header + 16 bytes per snapshot entry
+  - **Little-endian encoding** for all multi-byte integers (x86_64 optimization)
+  - **CRC-32 checksum** for integrity verification (1 in 4 billion undetected error rate)
+  - **Magic number** (0x4E53544D54535054 "NSTSNAPT") for format identification
+  - **Version field** (1) for future format evolution
+  - **Reserved space** (32 bytes) for forward compatibility
+
+  **Serialization Process**:
+  - O(N) time complexity where N is snapshot count
+  - 7-step encode algorithm with validation, allocation, header/metadata/entry writing, and checksum computation
+  - Single atomic write + fsync for durability
+  - Crash-safe: old data remains valid if fsync fails
+
+  **Deserialization Process**:
+  - 9-step decode algorithm with multi-layer validation (magic, version, checksum, size, invariants)
+  - Detailed error reporting for each failure mode
+  - Graceful corruption handling with 3 recovery strategies:
+    1. Rebuild from WAL (primary fallback)
+    2. Use previous snapshot backup (if available)
+    3. Initialize empty database (last resort)
+
+  **Rust Implementation**:
+  - Recommended crate: bincode for serialization (ergonomic, efficient, well-tested)
+  - Alternative: Manual serialization with byteorder crate (more control, zero dependencies)
+  - crc32fast for checksum computation (hardware-accelerated)
+  - Complete type definitions for SerializedSnapshot struct
+  - Error types with thiserror: TruncatedData, InvalidMagic, UnsupportedVersion, ChecksumMismatch, CorruptedData
+  - Disk I/O integration functions (write_snapshot, read_snapshot)
+  - Testing strategy with unit tests (round-trip, validation), property tests (invariants), and integration tests (persistence, crash recovery)
 
 - [ ] **5.10** Create `05-mvcc-tests.md`
   - **LIST**: Test scenarios
