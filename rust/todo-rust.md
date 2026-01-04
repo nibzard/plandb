@@ -816,7 +816,7 @@
   - Rust implementation guidance with Drop, panic safety, and testing strategies
   - 40+ test scenarios covering explicit, implicit, error rollback, concurrency, and property tests
 
-- [x] **4.11** Create `04-txn-conflict.md`
+- [x] **4.11** Create `04-txn-conflict.md` - **[DONE]**
   - **DESCRIBE**: Conflict detection
   - **EXPLAIN**: Write-write conflict rules
   - **DESCRIBE**: Retry strategy
@@ -824,23 +824,32 @@
   - **Blockers**: None
 
   **Work Summary**:
-  - Transaction conflict detection with 3-phase algorithm (track reads, detect conflicts, retry)
-  - Write-write conflict rules (key-based, txn_id ordering, serializable equivalence)
-  - Read-write conflict detection (detectable vs non-detectable conflicts)
-  - Conflict detection during prepare phase (read set validation against committed state)
-  - Retry strategy with exponential backoff (100ms base, 2x multiplier, 10s max)
-  - Max retry attempts (default: 10) with TransactionConflicted error
-  - Read tracking in ReadTxn (read_set HashMap for conflict detection)
-  - Write tracking in WriteTxn (write_set HashMap for dirty checking and conflict detection)
-  - Isolation level semantics (ReadCommitted: no read tracking, Serializable: full tracking)
-  - Testing requirements (conflict detection, retry logic, backoff, isolation levels, false positives)
-  - Performance considerations (read set overhead, write set validation, lock-free conflict detection)
-  - Rust implementation guidance with RwLock, HashMap tracking, backoff strategies
-  - 20+ test scenarios covering basic conflicts, concurrent transactions, retry logic, edge cases, and isolation levels
+  - **3-phase conflict detection algorithm** documented (track reads, detect conflicts, retry logic)
+  - **Write-write conflict rules** specified with key-based detection and txn_id ordering
+  - **Read-write conflict detection** explained with detectable vs non-detectable scenarios
+  - **Retry strategy** with exponential backoff (100ms base, 2x multiplier, 10s max, 10 attempts)
+  - **Read/write tracking** in ReadTxn/WriteTxn with HashMap-based sets
+  - **Isolation level semantics** (ReadCommitted vs Serializable tracking differences)
+  - **20+ test scenarios** covering conflicts, retries, edge cases, and isolation levels
 
-- [ ] **4.12** Create `04-txn-serialize.md`
+- [x] **4.12** Create `04-txn-serialize.md` - **[DONE]**
   - **DESCRIBE**: CommitRecord serialization
   - **EXPLAIN**: Binary format
+  - **Completed**: 2026-01-04
+  - **Blockers**: None
+
+  **Work Summary**:
+  - **Complete serialization format** documented with CommitPayloadHeader (32 bytes) and EncodedOperations
+  - **Binary layout** specified byte-by-byte with offsets, sizes, and byte orders
+  - **Put/Delete operation encoding** fully detailed (op_type, flags, key_len, val_len, key_bytes, val_bytes)
+  - **serializeCommitRecord algorithm** with 7-step process (size, allocate, header, operations, return)
+  - **deserializeCommitRecord algorithm** with 9-step validation and reconstruction flow
+  - **Checksum calculation** using CRC32C over payload only (separate from WAL checksum)
+  - **Complete example** with hex dump showing 3-operation transaction (82 bytes)
+  - **Size calculations** and limits documented (max 16.7GB theoretical, practical limits apply)
+  - **Layer separation** clarified (transaction serialization vs WAL record framing)
+  - **Rust implementation** with type definitions, serialization/deserialization functions, testing
+  - **50+ test scenarios** across unit, integration, property, WAL integration, and validation tests
 
 - [ ] **4.13** Create `04-txn-state.md`
   - **LIST**: TransactionState variants
