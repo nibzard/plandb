@@ -14,6 +14,7 @@ pub mod types;
 pub mod pager;
 pub mod wal;
 pub mod txn;
+pub mod snap;
 
 // Re-exports for convenience
 pub use error::{DbError, Error, Result};
