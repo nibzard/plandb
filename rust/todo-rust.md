@@ -2046,13 +2046,128 @@
 
 ---
 
-## Phase 9-15: (Same Pattern Continues)
+## Phase 9: AI Intelligence Layer - Events & Plugin System (10 tasks)
+
+- [ ] **9.1** Create `09-events-types.md`
+  - **DESCRIBE**: Event system for AI agent tracking and observability
+  - **LIST**: All event types (agent_session, operation, code_review, system_event, metric, regression, alert)
+  - **EXPLAIN**: Event append-only log storage with bounded payloads (max 4KB)
+  - **DEFINE**: Rust event type system with validation
+  - **STATUS**: ⏳ Pending
+  - **Blockers**: None
+
+- [ ] **9.2** Create `09-events-storage.md`
+  - **DESCRIBE**: Persistent event storage with efficient append operations
+  - **LIST**: Storage operations (append, batch_append, query_by_type, query_by_time_range)
+  - **EXPLAIN**: Time-based indexing and efficient retrieval
+  - **DEFINE**: Rust storage backend with batch support
+  - **STATUS**: ⏳ Pending
+  - **Blockers**: None
+
+- [ ] **9.3** Create `09-plugin-system.md`
+  - **DESCRIBE**: Plugin lifecycle management and hook system
+  - **LIST**: Hook types (init, pre_txn, post_txn, shutdown, session_start, session_end, operation_start, operation_end)
+  - **EXPLAIN**: Plugin registration, lifecycle, and event routing
+  - **DEFINE**: Rust plugin trait system with automatic event logging
+  - **STATUS**: ⏳ Pending
+  - **Blockers**: None
+
+- [ ] **9.4** Create `09-llm-provider.md`
+  - **DESCRIBE**: Provider-agnostic LLM interface for function calling
+  - **LIST**: Provider types (OpenAI, Anthropic, Local), function call types, response formats
+  - **EXPLAIN**: Provider selection, request/response handling, error handling
+  - **DEFINE**: Rust LLM client trait with multiple provider implementations
+  - **STATUS**: ⏳ Pending
+  - **Blockers**: None
+
+- [ ] **9.5** Create `09-function-calling.md`
+  - **DESCRIBE**: Structured function calling interface for AI operations
+  - **LIST**: Function schema types, parameter validation, response parsing
+  - **EXPLAIN**: Function registration, argument validation, result extraction
+  - **DEFINE**: Rust function registry with type-safe call handling
+  - **STATUS**: ⏳ Pending
+  - **Blockers**: None
+
+- [ ] **9.6** Create `09-cartridges-base.md`
+  - **DESCRIBE**: Base cartridge types for structured memory storage
+  - **LIST**: Cartridge traits, entity storage, topic storage, relationship storage
+  - **EXPLAIN**: Cartridge lifecycle, persistence, indexing strategies
+  - **DEFINE**: Rust cartridge trait system with common implementations
+  - **STATUS**: ⏳ Pending
+  - **Blockers**: None
+
+- [ ] **9.7** Create `09-cartridges-code-review.md`
+  - **DESCRIBE**: Code review cartridge for storing and querying review notes
+  - **LIST**: Review note types, metadata fields, query operations
+  - **EXPLAIN**: Review storage with links to commits, files, symbols
+  - **DEFINE**: Rust CodeReviewCartridge implementation
+  - **STATUS**: ⏳ Pending
+  - **Blockers**: None
+
+- [ ] **9.8** Create `09-cartridges-observability.md`
+  - **DESCRIBE**: Observability cartridge for metrics and regression detection
+  - **LIST**: Metric types (counter, gauge, histogram, timing), regression detection algorithms
+  - **EXPLAIN**: Metric ingestion, time-series aggregation, baseline comparison
+  - **DEFINE**: Rust ObservabilityCartridge with rate limiting and alerting
+  - **STATUS**: ⏳ Pending
+  - **Blockers**: None
+
+- [ ] **9.9** Create `09-natural-language-queries.md`
+  - **DESCRIBE**: Natural language query planning and optimization
+  - **LIST**: Intent types, query patterns, optimization strategies
+  - **EXPLAIN**: NL parsing, structured query generation, semantic search
+  - **DEFINE**: Rust query planner with LLM integration
+  - **STATUS**: ⏳ Pending
+  - **Blockers**: None
+
+- [ ] **9.10** Create `09-ai-tests.md`
+  - **LIST**: AI component test scenarios
+  - **DESCRIBE**: Test patterns for event system, plugins, LLM integration, cartridges
+  - **EXPLAIN**: Mock LLM responses, event injection testing, cartridge validation
+  - **DEFINE**: Rust test utilities for AI components
+  - **STATUS**: ⏳ Pending
+  - **Blockers**: None
+
+---
+
+## Phase 10-15: Future Phases
 
 **Template for each task**:
 - **DESCRIBE**: The component's purpose and behavior
 - **LIST**: All types, functions, constants, invariants
 - **EXPLAIN**: Algorithms in step-by-step plain English
 - **DEFINE**: Rust implementation approach
+
+**Phase 10**: Advanced Analytics & Visualization
+- Time-series aggregation queries
+- Visualization data generators
+- Multi-agent session correlation
+- Trend analysis and anomaly detection
+
+**Phase 11**: Query Optimization
+- Query plan visualization
+- Index usage statistics
+- Hot path identification
+
+**Phase 12**: Distributed Consensus
+- Raft implementation
+- Leader election
+- Log replication
+
+**Phase 13**: Replication
+- Multi-region replication
+- Conflict detection and resolution
+- Network partition tolerance
+
+**Phase 14**: Performance Optimization
+- Caching strategies
+- I/O batching
+- Memory pooling
+
+**Phase 15**: Production Hardening
+- Monitoring and alerting
+- Graceful degradation
+- Disaster recovery
 
 ---
 
@@ -2150,7 +2265,7 @@ The Rust module should be organized as follows: [Description]
 
 ## Summary
 
-**Total tasks: 214**
+**Total tasks: 224** (103 complete + 10 Phase 9 + 111 Phases 10-15 future)
 
 Each task produces a **100% natural language** markdown file that includes:
 1. **Plain English descriptions** of all types, functions, algorithms
