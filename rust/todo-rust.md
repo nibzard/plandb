@@ -1291,9 +1291,44 @@
   - **DESCRIBE**: Binary search algorithm
   - **EXPLAIN**: Key comparison logic
 
-- [ ] **6.5** Create `06-btree-insert.md`
+- [x] **6.5** Create `06-btree-insert.md` - **[DONE]**
   - **DESCRIBE**: Insert operation flow
   - **EXPLAIN**: Split propagation
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive insert specification complete
+
+  **Work Summary**:
+  - **Complete insert operation** documented with 7 detailed algorithms
+  - **Leaf node insert** for new keys with validation, space checking, and value storage
+  - **Leaf node update** for existing keys with MVCC version chain management
+  - **Leaf node split** with entry redistribution and linked list updates
+  - **Internal node insert** for separator propagation from child splits
+  - **Internal node split** with separator promotion and child pointer updates
+  - **Root split** with tree growth and metadata updates
+  - **Full insert operation** orchestrating search, insert, split, and propagation phases
+
+  **Key Deliverables**:
+  - InsertResult and InsertStatus types with comprehensive outcomes
+  - InsertContext tracking state from search phase
+  - SplitPropagation record for parent updates
+  - Leaf node insert algorithm (new key) with 6-step process
+  - Leaf node update algorithm (existing key) with version chain handling
+  - Leaf node split with 9-step process including linked list updates
+  - Internal node insert with 7-step separator insertion process
+  - Internal node split with 9-step separator promotion process
+  - Root split with 9-step tree growth process
+  - Full insert operation with 6-phase orchestration
+  - Complete error handling for all failure modes (key/value too large, allocation failed, corruption, I/O errors)
+  - Rust implementation guidance with example code for all operations
+  - 50+ test scenarios covering unit, integration, property, and fuzzing tests
+
+  **Key Features**:
+  - MVCC version chain management for concurrent readers
+  - Overflow page handling for large values
+  - Split propagation loop with recursive parent updates
+  - Tree growth through root split
+  - Comprehensive error detection and recovery
+  - Performance optimization guidance
 
 - [ ] **6.6** Create `06-btree-split.md`
   - **DESCRIBE**: Node split algorithm
