@@ -959,9 +959,31 @@
   - Performance analysis (O(1) reads, O(1) writes, O(n) cleanup)
   - Memory overhead estimation (~32-40 bytes per snapshot)
 
-- [ ] **5.3** Create `05-snapshot-create.md`
+- [x] **5.3** Create `05-snapshot-create.md` - **[DONE]**
   - **DESCRIBE**: Snapshot creation process
   - **EXPLAIN**: What gets captured
+  - **Completed**: 2026-01-04 (commit c55f3e5)
+  - **Blockers**: None
+
+  **Work Summary**:
+  - **3 snapshot creation methods** documented (latest, at txn_id, at timestamp)
+  - **Copy-on-write design** explained with O(1) complexity and zero data copying
+  - **Snapshot handle structure** defined (txn_id, root_page_id, db reference, ~24 bytes)
+  - **Registration process** specified with reference counting for garbage collection prevention
+  - **5 error types** documented (TransactionNotFound, TransactionInFuture, TransactionExpired, DatabaseClosed, RegistryCorrupt)
+  - **Concurrency considerations** analyzed for parallel snapshot creation, commit interaction, and GC interaction
+
+  **Key Deliverables**:
+  - snapshot() / begin_read() algorithm for latest transaction snapshot
+  - snapshot_at(txn_id) / begin_read_at(txn_id) for historical snapshots
+  - snapshot_at_time(timestamp) for wall-clock time-based snapshots
+  - State capture: txn_id (8B), root_page_id (8B), db reference (8B pointer)
+  - Registration algorithm with atomic reference count increment/decrement
+  - Unregistration via Drop trait with automatic cleanup trigger
+  - SnapshotError enum with 5 variants using thiserror
+  - Rust implementation guidance with RwLock strategy
+  - Performance targets: O(1) creation, clone, and drop
+  - 20+ test scenarios across unit, property, and integration tests
 
 - [ ] **5.4** Create `05-snapshot-vis.md`
   - **DESCRIBE**: Visibility calculation
