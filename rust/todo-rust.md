@@ -854,7 +854,7 @@
 - [x] **4.13** Create `04-txn-state.md` - **[DONE]**
   - **LIST**: TransactionState variants
   - **DESCRIBE**: Valid state transitions
-  - **Completed**: 2026-01-04 (commit TBD)
+  - **Completed**: 2026-01-04 (commit 70f0f3c)
   - **Blockers**: None
 
   **Work Summary**:
