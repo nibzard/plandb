@@ -756,46 +756,72 @@
   - Invariants (idempotency, ordering, cascade behavior)
   - Rust implementation guidance
 
-- [ ] **4.9** Create `04-txn-commit.md` - **[IN PROGRESS]**
+- [x] **4.9** Create `04-txn-commit.md` - **[DONE]**
   - **DESCRIBE**: Two-phase commit steps
   - **EXPLAIN**: Atomicity guarantees
   - **LIST**: What happens in each phase
   - **DESCRIBE**: Fsync ordering (log → meta → database)
   - **EXPLAIN**: Crash recovery points
+  - **Completed**: 2026-01-04 (commit 6e746b3)
+  - **Blockers**: None - completed successfully
 
-  **Task Description**:
-  Document the complete commit flow for WriteTxn, including:
-  - Prepare phase: validation, conflict checking, mutation ordering
-  - Apply phase: B+tree mutation execution, root page ID tracking
-  - Append phase: commit record creation, log file write, fsync
-  - Meta phase: meta page encoding, A/B flip, database sync
-  - Finalize phase: snapshot registration, plugin hooks, state transition
+  **Work Summary**:
+  - **5-phase commit protocol** fully specified (Prepare, Apply, Append, Meta, Finalize)
+  - **Fsync ordering** documented with critical durability guarantees (log → meta → database)
+  - **Crash recovery analysis** for each phase with 3 recovery scenarios
+  - **Commit flow** detailed with step-by-step algorithms for each phase
+  - **Error handling** comprehensive with rollback logic and state transitions
+  - **Meta page A/B flip** mechanism explained for atomicity
+  - **Commit record creation** detailed with binary format reference
 
-  **Key Requirements**:
-  - Atomicity: all-or-nothing visibility across crash boundaries
-  - Durability: fsync ordering (log → meta → database file)
-  - Determinism: commit record fully describes state changes
-  - Idempotency: duplicate commits detectable via TxnId registry
+  **Key Deliverables**:
+  - commit() function specification with 5-phase algorithm
+  - CommitPhase enum with monotonic ordering (Prepare → Apply → Append → Meta → Finalize → Committed)
+  - CommitError structured error type with thiserror
+  - CommitContext for tracking commit state across phases
+  - Crash recovery scenarios: Prepare/Apply (no durable state), Append (replay record), Meta/Finalize (committed)
+  - Recovery algorithm with 6 steps (find meta, scan log, verify, replay, rebuild snapshots, resume)
+  - Fsync ordering invariants (log fsync before meta fsync is CRITICAL)
+  - Rust implementation guidance with type definitions and concurrency patterns
+  - 40+ test scenarios across unit, integration, property, hardening, concurrency, and performance tests
 
-  **Dependencies**:
-  - Task 4.3 (ReadTxn spec) - for snapshot isolation semantics
-  - Task 4.4 (WriteTxn spec) - for mutation tracking context
-  - Task 4.5 (Begin spec) - for TxnId allocation
-  - Task 4.8 (Delete spec) - for pending mutation handling
-
-  **Implementation Approach**:
-  1. Start with commit() signature and return type (Result<TxnId>)
-  2. Document Phase 1 (Prepare): state validation, mutation count checks
-  3. Document Phase 2 (Apply): B+tree operations, root page tracking
-  4. Document Phase 3 (Append): CommitRecord creation, log write, first fsync
-  5. Document Phase 4 (Meta): Meta page A/B flip, second fsync
-  6. Document Phase 5 (Finalize): Snapshot registry, state transition, cleanup
-  7. Error handling: rollback on any phase failure
-  8. Crash recovery: analyze each phase for crash points and recovery strategy
-
-- [ ] **4.10** Create `04-txn-rollback.md`
+- [ ] **4.10** Create `04-txn-rollback.md` - **[IN PROGRESS]**
   - **DESCRIBE**: Rollback process
   - **LIST**: Cleanup steps
+  - **EXPLAIN**: State transition on rollback
+  - **DESCRIBE**: Resource release (locks, buffers, handles)
+  - **EXPLAIN**: Implicit rollback via Drop trait
+  - **DESCRIBE**: Error rollback from failed commit
+
+  **Task Description**:
+  Document the rollback operation for WriteTxn, including:
+  - Explicit rollback via rollback() method
+  - Implicit rollback via Drop trait when WriteTxn goes out of scope
+  - Rollback from failed commit operations
+  - Resource cleanup (mutation buffers, write lock, transaction handle)
+  - State transitions (Active → RolledBack)
+  - Idempotency (multiple rollback calls are safe)
+
+  **Key Requirements**:
+  - No mutations become visible after rollback
+  - Write lock is always released (even on panic/drop)
+  - All resources are cleaned up (no leaks)
+  - Rollback is idempotent (safe to call multiple times)
+  - Rollback can be called at any point during transaction lifecycle
+
+  **Dependencies**:
+  - Task 4.4 (WriteTxn spec) - for transaction structure and mutation tracking
+  - Task 4.9 (Commit spec) - for error rollback from failed commit
+  - Task 4.2 (TransactionContext) - for state management
+
+  **Implementation Approach**:
+  1. Document rollback() method signature and return type
+  2. Explain state validation (Active → RolledBack transition)
+  3. Detail cleanup steps (clear buffers, release lock, invalidate handle)
+  4. Explain Drop trait implementation for implicit rollback
+  5. Describe rollback from commit errors (leaving durable state for recovery)
+  6. Document idempotency (multiple rollback calls)
+  7. Explain rollback during different phases (before commit, during commit)
 
 - [ ] **4.11** Create `04-txn-conflict.md`
   - **DESCRIBE**: Conflict detection
