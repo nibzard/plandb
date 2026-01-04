@@ -1454,21 +1454,122 @@
   - Comprehensive testing guidance with unit, property, integration, and fuzzing tests
   - 850+ lines of detailed natural language specification (no code)
 
-- [ ] **6.10** Create `06-btree-grow.md`
+- [x] **6.10** Create `06-btree-grow.md` - **[DONE]**
   - **DESCRIBE**: Tree growth (root split)
   - **EXPLAIN**: Height increase
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive tree growth specification complete
 
-- [ ] **6.11** Create `06-btree-shrink.md`
+  **Work Summary**:
+  - **Complete tree growth algorithm** documented with root split mechanics
+  - **3 core types** specified (TreeGrowthContext, GrowthResult, GrowthError)
+  - **4 primary functions** detailed (grow_tree, split_root, update_metadata, validate)
+  - **Growth algorithm** fully specified with 8-step process
+  - **Root split mechanics** explained for both leaf and internal nodes
+  - **Metadata updates** documented with WAL integration
+  - **Comprehensive invariants** defined (pre-growth, post-growth, operational)
+
+  **Key Deliverables**:
+  - grow_tree() main entry point with validation, allocation, split, update, cleanup
+  - split_root() algorithm for dividing overfull root into two nodes
+  - TreeGrowthContext tracking state during growth (6 fields)
+  - GrowthResult with success, abort, and error variants
+  - Parent pointer updates and child management
+  - WAL record format for crash recovery
+  - Height tracking and metadata persistence
+  - Complete error handling for all failure modes
+  - Rust implementation guidance with type definitions
+  - 40+ test scenarios across unit, integration, property, and recovery tests
+  - 1100+ lines of detailed natural language specification (no code)
+
+- [x] **6.11** Create `06-btree-shrink.md` - **[DONE]**
   - **DESCRIBE**: Tree shrink (root merge)
   - **EXPLAIN**: Height decrease
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive tree shrink specification complete
 
-- [ ] **6.12** Create `06-btree-scan.md`
+  **Work Summary**:
+  - **Complete tree shrink algorithm** documented with root merge mechanics
+  - **3 core types** specified (TreeShrinkContext, ShrinkResult, ShrinkError)
+  - **4 primary functions** detailed (shrink_tree, can_shrink_root, promote_child_to_root, update_metadata)
+  - **Shrink algorithm** fully specified with 8-step process
+  - **Child promotion** explained for internal and leaf nodes
+  - **Metadata updates** documented with WAL integration
+  - **Comprehensive invariants** defined (pre-shrink, post-shrink, operational)
+
+  **Key Deliverables**:
+  - shrink_tree() main entry point with validation, promotion, metadata update, free
+  - can_shrink_root() criteria check for shrink eligibility
+  - promote_child_to_root() for promoting sole child to new root
+  - TreeShrinkContext tracking state during shrink (6 fields)
+  - ShrinkResult with success, abort, and error variants
+  - Parent pointer clearing and root flag updates
+  - Height decrement and metadata persistence
+  - Complete error handling for all failure modes
+  - Rust implementation guidance with type definitions
+  - 35+ test scenarios across unit, integration, property, recovery, and stress tests
+  - 900+ lines of detailed natural language specification (no code)
+
+- [x] **6.12** Create `06-btree-scan.md` - **[DONE]**
   - **DESCRIBE**: Range scan algorithm
   - **EXPLAIN**: Iteration strategy
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive range scan specification complete
 
-- [ ] **6.13** Create `06-btree-iterator.md`
+  **Work Summary**:
+  - **Complete range scan algorithm** documented with leaf traversal strategy
+  - **6 core types** specified (ScanRange, ScanOptions, ScanResult, ScanStats, and 2 more)
+  - **5 primary functions** detailed (scan, find_start_leaf, next_scan, next_scan_reverse, collect_stats)
+  - **Scan algorithms** fully specified for forward and reverse iteration
+  - **Start positioning** explained for bounded and unbounded ranges
+  - **Leaf traversal** documented with linked list navigation
+  - **Visibility checking** integrated with MVCC snapshot LSN
+  - **Statistics collection** for performance monitoring
+
+  **Key Deliverables**:
+  - scan() entry point creating ScanIterator for range queries
+  - find_start_leaf() locating start position via search or leftmost/rightmost
+  - next_scan() forward iteration with 7-step algorithm
+  - next_scan_reverse() backward iteration with prev pointers
+  - ScanRange with inclusive/exclusive bounds support
+  - ScanOptions with reverse, max_results, skip_deleted, snapshot_lsn
+  - ScanResult containing key, value, LSN
+  - ScanStats tracking entries_scanned, entries_returned, pages_read, bytes_read, duration
+  - Range boundary checking and monotonic key ordering
+  - Complete Rust implementation guidance with Iterator trait
+  - 50+ test scenarios across unit, property, integration, performance, and edge case tests
+  - 1000+ lines of detailed natural language specification (no code)
+
+- [x] **6.13** Create `06-btree-iterator.md` - **[DONE]**
   - **DESCRIBE**: Iterator state machine
   - **EXPLAIN**: Stack-based traversal
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive iterator specification complete
+
+  **Work Summary**:
+  - **Complete iterator state machine** documented with 4 states and transitions
+  - **8 core types** specified (IteratorState, IteratorPosition, TraversalStack, ScanContext, BTreeIterator, StackFrame, and 2 more)
+  - **6 primary functions** detailed (create_iterator, next, next_back, traverse_to_leaf, update_stack_for_next_leaf, validate_position)
+  - **State machine** fully defined with transitions and validity checks
+  - **Stack-based traversal** explained with path tracking from root to current position
+  - **Position tracking** documented with current page, index, and neighbors
+  - **Forward and reverse iteration** with comprehensive algorithms
+  - **Stack updates** on leaf transitions and backtracking
+
+  **Key Deliverables**:
+  - BTreeIterator main struct with state, position, stack, context, stats
+  - IteratorState enum (Initialized, Active, Exhausted, Error) with transitions
+  - TraversalStack with StackFrame for each tree level
+  - create_iterator() factory function with traversal and initialization
+  - next() forward iteration with 9-step algorithm and state transitions
+  - next_back() reverse iteration with prev_leaf navigation
+  - traverse_to_leaf() building stack path from root to leaf
+  - update_stack_for_next_leaf() handling leaf transitions
+  - validate_position() checking consistency of position and stack
+  - Complete error handling with state machine transitions
+  - Rust implementation guidance with Iterator and DoubleEndedIterator traits
+  - 45+ test scenarios across unit, property, integration, edge case, and performance tests
+  - 1200+ lines of detailed natural language specification (no code)
 
 - [ ] **6.14** Create `06-btree-key.md`
   - **DESCRIBE**: Key encoding
