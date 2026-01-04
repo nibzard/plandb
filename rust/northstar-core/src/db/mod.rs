@@ -560,6 +560,15 @@ impl Db {
         inner.snap_registry.with_btree(root_page_id, f)
     }
 
+    /// Execute a read-only operation that tracks pages on the B+Tree (internal use).
+    pub(crate) fn with_btree_and_pages<F, R>(&self, root_page_id: crate::PageId, f: F) -> Result<R>
+    where
+        F: FnOnce(&mut crate::btree::BTree) -> Result<R>,
+    {
+        let mut inner = self.inner_mut()?;
+        inner.snap_registry.with_btree(root_page_id, f)
+    }
+
     /// Get reference to query cache (internal use for transaction operations).
     pub(crate) fn query_cache(&self) -> Result<QueryCache> {
         let inner = self.inner.read()

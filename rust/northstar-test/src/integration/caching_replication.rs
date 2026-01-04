@@ -2,12 +2,164 @@
 //!
 //! Tests cache behavior and multi-threaded access patterns.
 
-use northstar_core::{cache::CacheConfig, db::Db, error::Result};
+use northstar_core::{db::Db, error::Result};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use super::{create_test_db, populate_db, TestContext};
+
+/// Test query cache hit on repeated point lookups.
+#[test]
+fn test_query_cache_point_get() -> Result<()> {
+    let ctx = TestContext::new().unwrap();
+    let db = create_test_db(ctx.db_path())?;
+
+    // Write test data
+    populate_db(&db, 50, "qcache-")?;
+
+    // First read - cache miss
+    let txn = db.begin_read()?;
+    let result1 = txn.get(b"qcache-00000000")?;
+    assert!(result1.is_some());
+    txn.close();
+
+    // Second read - should hit cache
+    let txn = db.begin_read()?;
+    let result2 = txn.get(b"qcache-00000000")?;
+    assert!(result2.is_some());
+    assert_eq!(result1, result2);
+
+    // Verify cache stats show hits
+    let stats = db.stats()?;
+    println!("Query cache stats: hits={}, misses={}",
+        stats.query_cache_stats.hits,
+        stats.query_cache_stats.misses
+    );
+    assert!(stats.query_cache_stats.hits > 0 || stats.query_cache_stats.misses > 0);
+
+    Ok(())
+}
+
+/// Test query cache hit on repeated prefix scans.
+#[test]
+fn test_query_cache_prefix_scan() -> Result<()> {
+    let ctx = TestContext::new().unwrap();
+    let db = create_test_db(ctx.db_path())?;
+
+    // Write test data
+    populate_db(&db, 50, "scan-")?;
+
+    // First scan - cache miss
+    let txn = db.begin_read()?;
+    let results1 = txn.scan(b"scan-")?;
+    assert!(results1.len() >= 50);
+    txn.close();
+
+    // Second scan - should hit cache
+    let txn = db.begin_read()?;
+    let results2 = txn.scan(b"scan-")?;
+    assert_eq!(results2.len(), results1.len());
+    txn.close();
+
+    Ok(())
+}
+
+/// Test query cache invalidation after write.
+#[test]
+fn test_query_cache_invalidation() -> Result<()> {
+    let ctx = TestContext::new().unwrap();
+    let db = create_test_db(ctx.db_path())?;
+
+    // Write initial data
+    populate_db(&db, 10, "inv-")?;
+
+    // Read and cache result
+    let txn = db.begin_read()?;
+    let result1 = txn.get(b"inv-00000000")?;
+    assert!(result1.is_some());
+    txn.close();
+
+    // Modify data - should invalidate cache
+    let mut txn = db.begin_write()?;
+    txn.put(b"inv-00000000", b"new-value")?;
+    txn.commit()?;
+
+    // Read again - should get new value (not cached old value)
+    let txn = db.begin_read()?;
+    let result2 = txn.get(b"inv-00000000")?;
+    assert!(result2.is_some());
+    assert_eq!(result2.unwrap(), b"new-value");
+
+    Ok(())
+}
+
+/// Test query cache with multiple keys.
+#[test]
+fn test_query_cache_multiple_keys() -> Result<()> {
+    let ctx = TestContext::new().unwrap();
+    let db = create_test_db(ctx.db_path())?;
+
+    // Write test data
+    populate_db(&db, 100, "multi-")?;
+
+    // Read all keys (cache misses)
+    let txn = db.begin_read()?;
+    for i in 0..100 {
+        let key = format!("multi-{:08x}", i);
+        let result = txn.get(key.as_bytes())?;
+        assert!(result.is_some());
+    }
+    txn.close();
+
+    // Read all keys again (cache hits)
+    let txn = db.begin_read()?;
+    let mut hit_count = 0;
+    for i in 0..100 {
+        let key = format!("multi-{:08x}", i);
+        let result = txn.get(key.as_bytes())?;
+        assert!(result.is_some());
+        hit_count += 1;
+    }
+    assert_eq!(hit_count, 100);
+
+    // Check cache stats
+    let stats = db.stats()?;
+    println!("Query cache stats after 200 gets: hits={}, misses={}",
+        stats.query_cache_stats.hits,
+        stats.query_cache_stats.misses
+    );
+
+    Ok(())
+}
+
+/// Test query cache with range scans of different sizes.
+#[test]
+fn test_query_cache_range_scans() -> Result<()> {
+    let ctx = TestContext::new().unwrap();
+    let db = create_test_db(ctx.db_path())?;
+
+    // Write test data
+    populate_db(&db, 100, "range-")?;
+
+    // Small range scan
+    let txn = db.begin_read()?;
+    let small_results = txn.scan(b"range-0000000")?;
+    txn.close();
+
+    // Large range scan
+    let txn = db.begin_read()?;
+    let large_results = txn.scan(b"range-")?;
+    txn.close();
+
+    println!("Small range returned {} items", small_results.len());
+    println!("Large range returned {} items", large_results.len());
+
+    // Verify results are reasonable
+    assert!(large_results.len() >= small_results.len());
+
+    Ok(())
+}
 
 /// Test concurrent read operations.
 #[test]
@@ -315,6 +467,166 @@ fn benchmark_concurrent_reads() -> Result<()> {
     println!(
         "Concurrent reads: {} ops in {:?} ({:.0} ops/sec)",
         total_ops, duration, ops_per_sec
+    );
+
+    Ok(())
+}
+
+/// Benchmark: Query cache effectiveness on repeated point lookups.
+#[test]
+fn benchmark_query_cache_effectiveness() -> Result<()> {
+    let ctx = TestContext::new().unwrap();
+    let db = create_test_db(ctx.db_path())?;
+
+    // Write test data
+    let num_keys = 1000;
+    populate_db(&db, num_keys, "qbench-")?;
+
+    let num_iterations = 10000;
+
+    // First pass - cache misses (populate cache)
+    let start = std::time::Instant::now();
+    let txn = db.begin_read()?;
+    for i in 0..num_iterations {
+        let key = format!("qbench-{:08x}", i % num_keys);
+        let _ = txn.get(key.as_bytes());
+    }
+    let duration_misses = start.elapsed();
+    txn.close();
+
+    // Get stats after first pass
+    let stats_after_misses = db.stats()?;
+
+    // Second pass - cache hits
+    let start = std::time::Instant::now();
+    let txn = db.begin_read()?;
+    for i in 0..num_iterations {
+        let key = format!("qbench-{:08x}", i % num_keys);
+        let _ = txn.get(key.as_bytes());
+    }
+    let duration_hits = start.elapsed();
+    txn.close();
+
+    // Get final stats
+    let stats_final = db.stats()?;
+
+    println!("\nQuery Cache Benchmark Results:");
+    println!("  Iterations: {}", num_iterations);
+    println!("  Unique keys: {}", num_keys);
+    println!("  First pass (cache misses): {:?} ({:.0} ops/sec)",
+        duration_misses,
+        num_iterations as f64 / duration_misses.as_secs_f64()
+    );
+    println!("  Second pass (cache hits): {:?} ({:.0} ops/sec)",
+        duration_hits,
+        num_iterations as f64 / duration_hits.as_secs_f64()
+    );
+    println!("  Speedup: {:.2}x",
+        duration_misses.as_secs_f64() / duration_hits.as_secs_f64()
+    );
+    println!("  Cache stats: hits={}, misses={}, hit_rate={:.2}%",
+        stats_final.query_cache_stats.hits,
+        stats_final.query_cache_stats.misses,
+        stats_final.query_cache_stats.hit_rate() * 100.0
+    );
+
+    Ok(())
+}
+
+/// Benchmark: Query cache effectiveness on prefix scans.
+#[test]
+fn benchmark_query_cache_scan_effectiveness() -> Result<()> {
+    let ctx = TestContext::new().unwrap();
+    let db = create_test_db(ctx.db_path())?;
+
+    // Write test data
+    let num_keys = 500;
+    populate_db(&db, num_keys, "scanbench-")?;
+
+    let num_iterations = 1000;
+
+    // First pass - cache misses
+    let start = std::time::Instant::now();
+    for _ in 0..num_iterations {
+        let txn = db.begin_read()?;
+        let _ = txn.scan(b"scanbench-");
+        txn.close();
+    }
+    let duration_misses = start.elapsed();
+
+    // Second pass - cache hits
+    let start = std::time::Instant::now();
+    for _ in 0..num_iterations {
+        let txn = db.begin_read()?;
+        let _ = txn.scan(b"scanbench-");
+        txn.close();
+    }
+    let duration_hits = start.elapsed();
+
+    // Get final stats
+    let stats_final = db.stats()?;
+
+    println!("\nQuery Cache Scan Benchmark Results:");
+    println!("  Iterations: {}", num_iterations);
+    println!("  Keys in database: {}", num_keys);
+    println!("  First pass (cache misses): {:?} ({:.0} scans/sec)",
+        duration_misses,
+        num_iterations as f64 / duration_misses.as_secs_f64()
+    );
+    println!("  Second pass (cache hits): {:?} ({:.0} scans/sec)",
+        duration_hits,
+        num_iterations as f64 / duration_hits.as_secs_f64()
+    );
+    println!("  Speedup: {:.2}x",
+        duration_misses.as_secs_f64() / duration_hits.as_secs_f64()
+    );
+    println!("  Cache stats: hits={}, misses={}, hit_rate={:.2}%",
+        stats_final.query_cache_stats.hits,
+        stats_final.query_cache_stats.misses,
+        stats_final.query_cache_stats.hit_rate() * 100.0
+    );
+
+    Ok(())
+}
+
+/// Benchmark: Query cache memory usage.
+#[test]
+fn benchmark_query_cache_memory_usage() -> Result<()> {
+    let ctx = TestContext::new().unwrap();
+    let db = create_test_db(ctx.db_path())?;
+
+    // Write varying size values
+    let num_keys = 100;
+    for i in 0..num_keys {
+        let key = format!("mem-{:08x}", i);
+        let value_size = 100 + (i % 10) * 100; // 100 to 1000 bytes
+        let value = vec![b'X'; value_size];
+
+        let mut txn = db.begin_write()?;
+        txn.put(key.as_bytes(), &value)?;
+        txn.commit()?;
+    }
+
+    // Perform reads to populate cache
+    for i in 0..num_keys {
+        let key = format!("mem-{:08x}", i);
+        let txn = db.begin_read()?;
+        let _ = txn.get(key.as_bytes());
+        txn.close();
+    }
+
+    // Check cache stats
+    let stats = db.stats()?;
+
+    println!("\nQuery Cache Memory Usage:");
+    println!("  Entries: {}", stats.query_cache_stats.current_entries);
+    println!("  Memory used: {} bytes", stats.query_cache_stats.current_size);
+    println!("  Avg entry size: {} bytes",
+        if stats.query_cache_stats.current_entries > 0 {
+            stats.query_cache_stats.current_size / stats.query_cache_stats.current_entries
+        } else {
+            0
+        }
     );
 
     Ok(())

@@ -15,6 +15,7 @@ use super::{
     header::NodeType,
     overflow::ValueStorage,
 };
+use std::collections::HashSet;
 
 /// B+Tree index structure
 pub struct BTree<'a> {
@@ -75,14 +76,21 @@ impl<'a> BTree<'a> {
 
     /// Get a value by key
     pub fn get(&mut self, key: &[u8], snapshot_lsn: Lsn) -> Result<Option<Vec<u8>>> {
+        self.get_with_pages(key, snapshot_lsn).map(|(result, _pages)| result)
+    }
+
+    /// Get a value by key and return page dependencies for query cache
+    pub fn get_with_pages(&mut self, key: &[u8], snapshot_lsn: Lsn) -> Result<(Option<Vec<u8>>, HashSet<PageId>)> {
         let key_str = std::str::from_utf8(key).unwrap_or("<binary>");
-        println!("BTree::get: root_page_id={}, key={}, snapshot_lsn={}", self.root_page_id.as_u64(), key_str, snapshot_lsn.as_u64());
+        println!("BTree::get_with_pages: root_page_id={}, key={}, snapshot_lsn={}", self.root_page_id.as_u64(), key_str, snapshot_lsn.as_u64());
 
         let mut current_page_id = self.root_page_id;
         let mut ctx = SearchContext::new();
+        let mut pages_read = HashSet::new();
 
         // Traverse from root to leaf
         loop {
+            pages_read.insert(current_page_id);
             let node = self.pager.read_btree_node(current_page_id)?;
 
             match node {
@@ -105,17 +113,20 @@ impl<'a> BTree<'a> {
                                 let overflow_ref = ValueStorage::decode(&entry.value)?;
                                 if let ValueStorage::Overflow(page_id) = overflow_ref {
                                     let value = self.pager.read_overflow_chain(page_id)?;
-                                    return Ok(Some(value));
+                                    // Note: We don't track overflow pages for invalidation
+                                    // to keep things simple. Overflow values are immutable
+                                    // once written, so they don't need cache invalidation.
+                                    return Ok((Some(value), pages_read));
                                 }
                             }
-                            return Ok(Some(entry.value.clone()));
+                            return Ok((Some(entry.value.clone()), pages_read));
                         } else {
                             println!("  LSN check failed: entry.lsn={} > snapshot_lsn={}", entry.lsn, snapshot_lsn.as_u64());
                         }
                     } else {
                         println!("  Key not found in leaf");
                     }
-                    return Ok(None);
+                    return Ok((None, pages_read));
                 }
             }
         }
@@ -345,6 +356,17 @@ impl<'a> BTree<'a> {
         end: Option<&[u8]>,
         snapshot_lsn: Lsn,
     ) -> Result<ScanIter> {
+        let (items, _pages) = self.scan_with_pages(start, end, snapshot_lsn)?;
+        Ok(ScanIter::forward(items, end.map(|k| k.to_vec()), snapshot_lsn))
+    }
+
+    /// Create a range scan and return page dependencies for query cache
+    pub fn scan_with_pages(
+        &mut self,
+        start: Option<&[u8]>,
+        end: Option<&[u8]>,
+        snapshot_lsn: Lsn,
+    ) -> Result<(Vec<ScanItem>, HashSet<PageId>)> {
         // Find starting leaf
         let start_page = if let Some(start_key) = start {
             self.find_leaf_for_key(start_key)?
@@ -355,8 +377,11 @@ impl<'a> BTree<'a> {
         // Collect all items in range (simplified - in production would stream)
         let mut items = Vec::new();
         let mut current_page_id = start_page;
+        let mut pages_read = HashSet::new();
 
         while current_page_id.as_u64() != 0 {
+            pages_read.insert(current_page_id);
+
             // Record access for sequential scan detection
             if self.scan_detector.record_access(current_page_id) {
                 // Sequential scan detected - prefetch next pages
@@ -398,7 +423,7 @@ impl<'a> BTree<'a> {
             }
         }
 
-        Ok(ScanIter::forward(items, end.map(|k| k.to_vec()), snapshot_lsn))
+        Ok((items, pages_read))
     }
 
     /// Get tree statistics

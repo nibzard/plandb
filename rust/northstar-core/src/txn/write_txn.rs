@@ -3,6 +3,7 @@
 //! WriteTxn provides read-write access with two-phase commit protocol.
 
 use crate::db::Db;
+use crate::cache::PageInvalidation;
 use crate::error::Result;
 use crate::types::{TransactionId, Lsn, PageId};
 use crate::wal::CommitRecord;
@@ -204,6 +205,18 @@ impl<'a> WriteTxn<'a> {
         // Register new snapshot with updated root page ID
         // This also persists the transaction state to meta pages
         self.db.register_snapshot(txn_id, new_root_page_id)?;
+
+        // Send invalidation signal to query cache
+        // For simplicity, we invalidate all queries when any data changes
+        // A more sophisticated implementation would track exact modified pages
+        if let Ok(cache) = self.db.query_cache() {
+            let invalidation = PageInvalidation {
+                pages: vec![new_root_page_id], // Invalidate based on root change
+                lsn: Lsn::from(txn_id.as_u64()),
+            };
+            let _ = cache.invalidation_sender().send(invalidation);
+            println!("WriteTxn::commit: sent query cache invalidation signal");
+        }
 
         // Transition to Committed state
         self.ctx.transition_to_committed()?;

@@ -3,8 +3,9 @@
 //! ReadTxn provides read-only access to a consistent snapshot of the database.
 
 use crate::db::Db;
+use crate::cache::{QueryKey, QueryResult};
 use crate::error::Result;
-use crate::types::{PageId, TransactionId};
+use crate::types::{PageId, TransactionId, Lsn};
 
 /// Read-only transaction providing consistent snapshot reads.
 ///
@@ -37,11 +38,33 @@ impl<'a> ReadTxn<'a> {
     /// Returns None if the key doesn't exist.
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         println!("ReadTxn::get: txn_id={}, root_page_id={}, key={:?}", self.txn_id.as_u64(), self.root_page_id.as_u64(), std::str::from_utf8(key).unwrap_or("<binary>"));
-        let result = self.db.with_btree(self.root_page_id, |btree| {
-            let snapshot_lsn = crate::types::Lsn::from(self.txn_id.as_u64());
-            println!("  snapshot_lsn={}", snapshot_lsn.as_u64());
-            btree.get(key, snapshot_lsn)
+
+        // Try to get from query cache first
+        let snapshot_lsn = Lsn::from(self.txn_id.as_u64());
+        let query_key = QueryKey::point_get(key, snapshot_lsn);
+
+        if let Ok(cache) = self.db.query_cache() {
+            if let Some(cached_result) = cache.cache_get(&query_key, snapshot_lsn) {
+                println!("ReadTxn::get: CACHE HIT for key={:?}", std::str::from_utf8(key).unwrap_or("<binary>"));
+                return Ok(match cached_result {
+                    QueryResult::PointGet(value) => value,
+                    _ => None,
+                });
+            }
+        }
+
+        // Cache miss - execute query and cache result
+        println!("ReadTxn::get: CACHE MISS - executing query");
+        let (result, pages_read) = self.db.with_btree_and_pages(self.root_page_id, |btree| {
+            btree.get_with_pages(key, snapshot_lsn)
         })?;
+
+        // Cache the result for future queries
+        if let Ok(cache) = self.db.query_cache() {
+            let query_result = QueryResult::PointGet(result.clone());
+            let _ = cache.cache_put(query_key, query_result, snapshot_lsn, pages_read);
+        }
+
         println!("ReadTxn::get: result={:?}", result.is_some());
         Ok(result)
     }
@@ -50,24 +73,44 @@ impl<'a> ReadTxn<'a> {
     ///
     /// Returns all key-value pairs where keys start with the prefix.
     pub fn scan(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
-        self.db.with_btree(self.root_page_id, |btree| {
-            let snapshot_lsn = crate::types::Lsn::from(self.txn_id.as_u64());
+        let snapshot_lsn = Lsn::from(self.txn_id.as_u64());
 
-            // Scan from prefix to next possible prefix (prefix + 0xFF...)
-            let start = Some(prefix);
-            let mut end_prefix = prefix.to_vec();
-            end_prefix.push(0xFF);
-            let end = Some(end_prefix.as_slice());
+        // Try to get from query cache first
+        let start = Some(prefix);
+        let mut end_prefix = prefix.to_vec();
+        end_prefix.push(0xFF);
+        let end = Some(end_prefix.as_slice());
+        let query_key = QueryKey::range_scan(start, end, snapshot_lsn);
 
-            let iter = btree.scan(start, end, snapshot_lsn)?;
-
-            // Collect all items from the iterator
-            let mut results = Vec::new();
-            for item in iter {
-                results.push((item.key, item.value));
+        if let Ok(cache) = self.db.query_cache() {
+            if let Some(cached_result) = cache.cache_get(&query_key, snapshot_lsn) {
+                println!("ReadTxn::scan: CACHE HIT for prefix={:?}", std::str::from_utf8(prefix).unwrap_or("<binary>"));
+                return Ok(match cached_result {
+                    QueryResult::RangeScan(pairs) => pairs,
+                    _ => Vec::new(),
+                });
             }
-            Ok(results)
-        })
+        }
+
+        // Cache miss - execute query and cache result
+        println!("ReadTxn::scan: CACHE MISS - executing scan");
+        let (scan_items, pages_read) = self.db.with_btree_and_pages(self.root_page_id, |btree| {
+            btree.scan_with_pages(start, end, snapshot_lsn)
+        })?;
+
+        // Convert scan items to result pairs
+        let results: Vec<(Vec<u8>, Vec<u8>)> = scan_items
+            .into_iter()
+            .map(|item| (item.key, item.value))
+            .collect();
+
+        // Cache the result for future queries
+        if let Ok(cache) = self.db.query_cache() {
+            let query_result = QueryResult::RangeScan(results.clone());
+            let _ = cache.cache_put(query_key, query_result, snapshot_lsn, pages_read);
+        }
+
+        Ok(results)
     }
 
     /// Close the transaction and release resources.
