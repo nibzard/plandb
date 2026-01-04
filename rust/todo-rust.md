@@ -1294,7 +1294,7 @@
 - [x] **6.5** Create `06-btree-insert.md` - **[DONE]**
   - **DESCRIBE**: Insert operation flow
   - **EXPLAIN**: Split propagation
-  - **Completed**: 2026-01-04
+  - **Completed**: 2026-01-04 (commit dd184fa)
   - **Blockers**: None - comprehensive insert specification complete
 
   **Work Summary**:
