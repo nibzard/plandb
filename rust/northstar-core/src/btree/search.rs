@@ -3,6 +3,7 @@
 //! Tree traversal and key lookup functionality.
 
 use crate::{types::PageId, Result};
+use crate::btree::overflow::{ValueStorage, OVERFLOW_VALUE_MARKER};
 use super::node::{InternalNode, LeafNode, Node, Entry};
 
 /// Result of a search operation
@@ -155,6 +156,41 @@ pub fn find_separator_position(separators: &[Vec<u8>], separator: &[u8]) -> usiz
         .unwrap_or_else(|pos| pos)
 }
 
+/// Check if an entry value is stored as overflow
+pub fn is_entry_overflow(entry: &Entry) -> bool {
+    // An entry is overflow if value.len() == 10 and first 2 bytes are 0xFFFF
+    if entry.value.len() == 10 {
+        let marker = u16::from_le_bytes([entry.value[0], entry.value[1]]);
+        marker == OVERFLOW_VALUE_MARKER
+    } else {
+        false
+    }
+}
+
+/// Resolve an entry value - handles both inline and overflow values
+///
+/// For inline values, returns the value directly.
+/// For overflow values, decodes the overflow reference (caller must read from pager).
+pub fn resolve_entry_value(entry: &Entry) -> Result<ValueStorage> {
+    ValueStorage::decode(&entry.value)
+}
+
+/// Get the overflow page ID from an entry
+///
+/// Returns None if the value is inline, Some(page_id) if overflow.
+pub fn get_overflow_page_id(entry: &Entry) -> Option<PageId> {
+    if is_entry_overflow(entry) {
+        // Decode the overflow reference to get the page ID
+        if let Ok(ValueStorage::Overflow(page_id)) = ValueStorage::decode(&entry.value) {
+            Some(page_id)
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,5 +303,83 @@ mod tests {
         assert!(!traverse.is_found());
         assert!(traverse.should_traverse());
         assert_eq!(traverse.child_id(), Some(PageId::from(42u64)));
+    }
+
+    #[test]
+    fn test_is_entry_overflow_inline() {
+        let entry = Entry::new(
+            b"key".to_vec(),
+            b"inline value".to_vec(),
+            crate::types::Lsn::from(1)
+        );
+
+        assert!(!is_entry_overflow(&entry));
+    }
+
+    #[test]
+    fn test_is_entry_overflow_overflow() {
+        let overflow_ref = ValueStorage::Overflow(PageId::new(42)).encode();
+        let entry = Entry::new(
+            b"key".to_vec(),
+            overflow_ref,
+            crate::types::Lsn::from(1)
+        );
+
+        assert!(is_entry_overflow(&entry));
+    }
+
+    #[test]
+    fn test_resolve_entry_value_inline() {
+        // Entry stores value in the same format as ValueStorage encoding
+        let inline_value = ValueStorage::Inline(b"inline value".to_vec()).encode();
+        let entry = Entry::new(
+            b"key".to_vec(),
+            inline_value,
+            crate::types::Lsn::from(1)
+        );
+
+        let resolved = resolve_entry_value(&entry).unwrap();
+        assert!(matches!(resolved, ValueStorage::Inline(_)));
+        if let ValueStorage::Inline(data) = resolved {
+            assert_eq!(data, b"inline value");
+        }
+    }
+
+    #[test]
+    fn test_resolve_entry_value_overflow() {
+        let overflow_ref = ValueStorage::Overflow(PageId::new(42)).encode();
+        let entry = Entry::new(
+            b"key".to_vec(),
+            overflow_ref,
+            crate::types::Lsn::from(1)
+        );
+
+        let resolved = resolve_entry_value(&entry).unwrap();
+        assert!(matches!(resolved, ValueStorage::Overflow(_)));
+    }
+
+    #[test]
+    fn test_get_overflow_page_id_inline() {
+        // Entry stores value in the same format as ValueStorage encoding
+        let inline_value = ValueStorage::Inline(b"inline value".to_vec()).encode();
+        let entry = Entry::new(
+            b"key".to_vec(),
+            inline_value,
+            crate::types::Lsn::from(1)
+        );
+
+        assert_eq!(get_overflow_page_id(&entry), None);
+    }
+
+    #[test]
+    fn test_get_overflow_page_id_overflow() {
+        let overflow_ref = ValueStorage::Overflow(PageId::new(123)).encode();
+        let entry = Entry::new(
+            b"key".to_vec(),
+            overflow_ref,
+            crate::types::Lsn::from(1)
+        );
+
+        assert_eq!(get_overflow_page_id(&entry), Some(PageId::new(123)));
     }
 }

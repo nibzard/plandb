@@ -39,6 +39,8 @@ pub enum PageType {
     Freelist = 3,
     /// WAL log segment
     LogSegment = 4,
+    /// Overflow page for large values
+    Overflow = 5,
 }
 
 impl PageType {
@@ -50,6 +52,7 @@ impl PageType {
             2 => Some(Self::BtreeLeaf),
             3 => Some(Self::Freelist),
             4 => Some(Self::LogSegment),
+            5 => Some(Self::Overflow),
             _ => None,
         }
     }
@@ -372,10 +375,12 @@ mod tests {
         assert_eq!(PageType::from_u8(2), Some(PageType::BtreeLeaf));
         assert_eq!(PageType::from_u8(3), Some(PageType::Freelist));
         assert_eq!(PageType::from_u8(4), Some(PageType::LogSegment));
-        assert_eq!(PageType::from_u8(5), None);
+        assert_eq!(PageType::from_u8(5), Some(PageType::Overflow));
+        assert_eq!(PageType::from_u8(6), None);
 
         assert_eq!(PageType::Meta.to_u8(), 0);
         assert_eq!(PageType::BtreeLeaf.to_u8(), 2);
+        assert_eq!(PageType::Overflow.to_u8(), 5);
     }
 
     #[test]

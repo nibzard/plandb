@@ -8,6 +8,7 @@ use super::allocator::PageAllocator;
 use super::cache::PageCache;
 use super::meta::{choose_best_meta, MetaState};
 use super::storage::Storage;
+use crate::btree::overflow::{OverflowPage, OVERFLOW_DATA_SIZE, OVERFLOW_MAGIC};
 use crate::error::{Error, IoError, Result, ValidationError};
 use crate::page::{Page, PageHeader, PageType, PAGE_MAGIC, PAGE_SIZE};
 use crate::types::{Lsn, PageId, TransactionId};
@@ -297,6 +298,175 @@ impl Pager {
         self.storage.sync()
     }
 
+    // ========== Overflow Page Management ==========
+
+    /// Allocate a new overflow page
+    pub fn allocate_overflow_page(&mut self) -> Result<PageId> {
+        let page_id = self.allocate_page()?;
+
+        // Initialize overflow page with valid structure
+        let overflow_page = OverflowPage::new();
+        self.write_overflow_page(page_id, &overflow_page)?;
+
+        Ok(page_id)
+    }
+
+    /// Read an overflow page from storage
+    pub fn read_overflow_page(&mut self, page_id: PageId) -> Result<OverflowPage> {
+        // Read the full page from storage
+        let page_bytes = self.read_page_cached(page_id)?;
+
+        // Parse as Page to validate structure
+        let page = Page::from_bytes(&page_bytes)?;
+
+        // Verify it's an overflow page type
+        if page.page_type() != Some(PageType::Overflow) {
+            return Err(Error::Validation(ValidationError::Generic(format!(
+                "Expected overflow page, got {:?}", page.page_type()
+            ))));
+        }
+
+        // Parse the payload as OverflowPage
+        let overflow_page = OverflowPage::from_bytes(&page.payload)?;
+
+        Ok(overflow_page)
+    }
+
+    /// Write an overflow page to storage
+    pub fn write_overflow_page(&mut self, page_id: PageId, overflow_page: &OverflowPage) -> Result<()> {
+        // Validate overflow page
+        overflow_page.validate()?;
+
+        // Create page with overflow type
+        let mut page = Page::new(page_id, PageType::Overflow);
+
+        // Serialize overflow page as payload
+        let payload = overflow_page.to_bytes();
+        page.update_payload(payload)?;
+
+        // Write page
+        let page_bytes = page.to_bytes();
+        self.write_page(page_id, &page_bytes)
+    }
+
+    /// Allocate a chain of overflow pages for a large value
+    ///
+    /// Returns the first page ID of the chain
+    pub fn allocate_overflow_chain(&mut self, value: &[u8]) -> Result<PageId> {
+        if value.is_empty() {
+            return Err(Error::Validation(ValidationError::Generic(
+                "Cannot allocate overflow chain for empty value".to_string()
+            )));
+        }
+
+        let num_pages = OverflowPage::pages_needed(value.len());
+        let mut first_page_id = None;
+        let mut prev_page_id = None;
+
+        for i in 0..num_pages {
+            let page_id = self.allocate_overflow_page()?;
+
+            let start = i * OVERFLOW_DATA_SIZE;
+            let end = std::cmp::min(start + OVERFLOW_DATA_SIZE, value.len());
+            let chunk = value[start..end].to_vec();
+
+            let overflow_page = OverflowPage::with_data(chunk, 0);
+            self.write_overflow_page(page_id, &overflow_page)?;
+
+            // Link pages
+            if let Some(prev_id) = prev_page_id {
+                let mut prev_page = self.read_overflow_page(prev_id)?;
+                prev_page.set_next_page(page_id);
+                self.write_overflow_page(prev_id, &prev_page)?;
+            } else {
+                first_page_id = Some(page_id);
+            }
+
+            prev_page_id = Some(page_id);
+        }
+
+        first_page_id.ok_or_else(|| {
+            Error::Validation(ValidationError::Generic(
+                "Failed to allocate any overflow pages".to_string()
+            ))
+        })
+    }
+
+    /// Read a complete value from an overflow page chain
+    pub fn read_overflow_chain(&mut self, first_page_id: PageId) -> Result<Vec<u8>> {
+        let mut buffer = Vec::new();
+        let mut current_page_id = first_page_id;
+        let mut visited = std::collections::HashSet::new();
+
+        loop {
+            // Check for circular references
+            if !visited.insert(current_page_id) {
+                return Err(Error::Validation(ValidationError::Generic(
+                    format!("Circular reference detected in overflow chain at page {}", current_page_id.as_u64())
+                )));
+            }
+
+            // Limit chain length to prevent infinite loops
+            if visited.len() > 2000 {
+                return Err(Error::Validation(ValidationError::Generic(
+                    "Overflow chain too long (max 2000 pages)".to_string()
+                )));
+            }
+
+            let overflow_page = self.read_overflow_page(current_page_id)?;
+
+            // Append data chunk
+            buffer.extend_from_slice(&overflow_page.data);
+
+            // Check if last page
+            if overflow_page.is_last() {
+                break;
+            }
+
+            current_page_id = overflow_page.get_next_page();
+        }
+
+        Ok(buffer)
+    }
+
+    /// Free an overflow page chain
+    ///
+    /// NOTE: This should be called after all snapshots that might reference
+    /// the chain have been released (MVCC safety)
+    pub fn free_overflow_chain(&mut self, first_page_id: PageId) -> Result<()> {
+        let mut current_page_id = first_page_id;
+        let mut visited = std::collections::HashSet::new();
+
+        loop {
+            // Check for circular references
+            if !visited.insert(current_page_id) {
+                return Err(Error::Validation(ValidationError::Generic(
+                    format!("Circular reference detected in overflow chain at page {}", current_page_id.as_u64())
+                )));
+            }
+
+            // Limit chain length
+            if visited.len() > 2000 {
+                return Err(Error::Validation(ValidationError::Generic(
+                    "Overflow chain too long (max 2000 pages)".to_string()
+                )));
+            }
+
+            let overflow_page = self.read_overflow_page(current_page_id)?;
+            let next_page_id = overflow_page.get_next_page();
+
+            self.free_page(current_page_id)?;
+
+            if next_page_id.as_u64() == 0 {
+                break;
+            }
+
+            current_page_id = next_page_id;
+        }
+
+        Ok(())
+    }
+
     /// Read a meta page from storage
     fn read_meta_page(storage: &Storage, page_id: PageId) -> Option<MetaState> {
         let mut buffer = vec![0u8; PAGE_SIZE];
@@ -464,5 +634,83 @@ mod tests {
 
         let stats = pager.cache_stats();
         assert_eq!(stats.total_pages, 1);
+    }
+
+    #[test]
+    fn test_allocate_overflow_page() {
+        let mut pager = Pager::create_memory().unwrap();
+
+        let page_id = pager.allocate_overflow_page().unwrap();
+
+        // Read back and verify
+        let overflow_page = pager.read_overflow_page(page_id).unwrap();
+        assert_eq!(overflow_page.magic, OVERFLOW_MAGIC);
+        assert_eq!(overflow_page.next_page, 0);
+        assert_eq!(overflow_page.data.len(), 0);
+    }
+
+    #[test]
+    fn test_write_and_read_overflow_page() {
+        let mut pager = Pager::create_memory().unwrap();
+
+        let page_id = pager.allocate_overflow_page().unwrap();
+
+        // Write data
+        let data = vec![1u8, 2, 3, 4, 5];
+        let mut overflow_page = OverflowPage::with_data(data.clone(), 42);
+        pager.write_overflow_page(page_id, &overflow_page).unwrap();
+
+        // Read back
+        let read_page = pager.read_overflow_page(page_id).unwrap();
+        assert_eq!(read_page.data, data);
+        assert_eq!(read_page.next_page, 42);
+    }
+
+    #[test]
+    fn test_allocate_overflow_chain_single_page() {
+        let mut pager = Pager::create_memory().unwrap();
+
+        let value = vec![1u8, 2, 3, 4, 5];
+        let first_page_id = pager.allocate_overflow_chain(&value).unwrap();
+
+        // Read back
+        let read_value = pager.read_overflow_chain(first_page_id).unwrap();
+        assert_eq!(read_value, value);
+    }
+
+    #[test]
+    fn test_allocate_overflow_chain_multiple_pages() {
+        let mut pager = Pager::create_memory().unwrap();
+
+        // Create value larger than OVERFLOW_DATA_SIZE
+        let value = vec![42u8; OVERFLOW_DATA_SIZE + 100];
+        let first_page_id = pager.allocate_overflow_chain(&value).unwrap();
+
+        // Read back
+        let read_value = pager.read_overflow_chain(first_page_id).unwrap();
+        assert_eq!(read_value.len(), value.len());
+        assert_eq!(read_value, value);
+    }
+
+    #[test]
+    fn test_free_overflow_chain() {
+        let mut pager = Pager::create_memory().unwrap();
+
+        let value = vec![1u8, 2, 3, 4, 5];
+        let first_page_id = pager.allocate_overflow_chain(&value).unwrap();
+
+        // Free the chain
+        pager.free_overflow_chain(first_page_id).unwrap();
+
+        // Next allocation should reuse one of the freed pages
+        let _new_page = pager.allocate_overflow_page().unwrap();
+    }
+
+    #[test]
+    fn test_empty_overflow_chain_rejected() {
+        let mut pager = Pager::create_memory().unwrap();
+
+        let result = pager.allocate_overflow_chain(&[]);
+        assert!(result.is_err());
     }
 }

@@ -412,6 +412,14 @@ mod tests {
                 .cloned()
                 .ok_or_else(|| Error::Validation(ValidationError::Generic("Node not found".to_string())))
         }
+
+        fn allocate_overflow_chain(&mut self, _value: &[u8]) -> Result<PageId> {
+            Ok(PageId::from(999u64))
+        }
+
+        fn free_overflow_chain(&mut self, _first_page_id: PageId) -> Result<()> {
+            Ok(())
+        }
     }
 
     #[test]

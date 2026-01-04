@@ -3,7 +3,7 @@
 //! Insert logic and split handling.
 
 use crate::{types::{PageId, Lsn}, error::{FeatureError, ValidationError, StorageError}, Error, Result};
-use super::{node::{InternalNode, LeafNode, Node, Entry}, header::{NodeHeader, NodeFlags}};
+use super::{node::{InternalNode, LeafNode, Node, Entry}, header::{NodeHeader, NodeFlags}, overflow::{OverflowPage, ValueStorage, INLINE_THRESHOLD, MAX_VALUE_SIZE, OVERFLOW_VALUE_MARKER}};
 
 /// Split threshold (percentage of node capacity)
 pub const SPLIT_THRESHOLD: f64 = 0.8;
@@ -138,6 +138,10 @@ pub trait PagerTrait {
     fn allocate_page(&mut self) -> Result<PageId>;
     fn write_node(&mut self, page_id: PageId, node: &Node) -> Result<()>;
     fn read_node(&mut self, page_id: PageId) -> Result<Node>;
+
+    // Overflow page management
+    fn allocate_overflow_chain(&mut self, value: &[u8]) -> Result<PageId>;
+    fn free_overflow_chain(&mut self, first_page_id: PageId) -> Result<()>;
 }
 
 // Implement PagerTrait for Pager
@@ -152,6 +156,54 @@ impl<'a> PagerTrait for &'a mut crate::pager::Pager {
 
     fn read_node(&mut self, page_id: PageId) -> Result<Node> {
         crate::pager::Pager::read_btree_node(self, page_id)
+    }
+
+    fn allocate_overflow_chain(&mut self, value: &[u8]) -> Result<PageId> {
+        crate::pager::Pager::allocate_overflow_chain(self, value)
+    }
+
+    fn free_overflow_chain(&mut self, first_page_id: PageId) -> Result<()> {
+        crate::pager::Pager::free_overflow_chain(self, first_page_id)
+    }
+}
+
+/// Prepare an entry value for storage - converts to overflow if needed
+pub fn prepare_entry_value(
+    key: Vec<u8>,
+    value: Vec<u8>,
+    lsn: Lsn,
+    pager: &mut impl PagerTrait,
+) -> Result<Entry> {
+    // Validate value size
+    if value.len() > MAX_VALUE_SIZE {
+        return Err(Error::Validation(ValidationError::Generic(
+            format!("Value too large: {} bytes (max {})", value.len(), MAX_VALUE_SIZE)
+        )));
+    }
+
+    // Check if we should store inline or use overflow
+    if OverflowPage::should_store_inline(value.len()) {
+        // Store inline value
+        Ok(Entry::new(key, value, lsn))
+    } else {
+        // Allocate overflow page chain
+        let overflow_page_id = pager.allocate_overflow_chain(&value)?;
+
+        // Encode overflow reference as value
+        let overflow_ref = ValueStorage::Overflow(overflow_page_id).encode();
+
+        Ok(Entry::new(key, overflow_ref, lsn))
+    }
+}
+
+/// Check if an entry value is stored as overflow
+pub fn is_overflow_value(entry: &Entry) -> bool {
+    // An entry is overflow if value.len() == 10 and first 2 bytes are 0xFFFF
+    if entry.value.len() == 10 {
+        let marker = u16::from_le_bytes([entry.value[0], entry.value[1]]);
+        marker == OVERFLOW_VALUE_MARKER
+    } else {
+        false
     }
 }
 
@@ -172,6 +224,14 @@ mod tests {
 
         fn read_node(&mut self, _page_id: PageId) -> Result<Node> {
             Err(Error::Validation(ValidationError::Generic("MockPager does not support read_node".to_string())))
+        }
+
+        fn allocate_overflow_chain(&mut self, _value: &[u8]) -> Result<PageId> {
+            Ok(PageId::from(888u64))
+        }
+
+        fn free_overflow_chain(&mut self, _first_page_id: PageId) -> Result<()> {
+            Ok(())
         }
     }
 
@@ -197,5 +257,77 @@ mod tests {
             &mut pager
         ).unwrap();
         assert!(matches!(result, InsertResult::Success));
+    }
+
+    #[test]
+    fn test_prepare_entry_value_inline() {
+        let mut pager = MockPager;
+
+        // Small value should be stored inline
+        let entry = prepare_entry_value(
+            b"key".to_vec(),
+            b"small value".to_vec(),
+            Lsn::from(1),
+            &mut pager
+        ).unwrap();
+
+        assert!(!is_overflow_value(&entry));
+        assert_eq!(entry.value, b"small value");
+    }
+
+    #[test]
+    fn test_prepare_entry_value_overflow() {
+        let mut pager = MockPager;
+
+        // Large value should trigger overflow
+        let large_value = vec![42u8; INLINE_THRESHOLD + 1];
+        let entry = prepare_entry_value(
+            b"key".to_vec(),
+            large_value.clone(),
+            Lsn::from(1),
+            &mut pager
+        ).unwrap();
+
+        assert!(is_overflow_value(&entry));
+        assert_eq!(entry.value.len(), 10); // Overflow reference size
+    }
+
+    #[test]
+    fn test_prepare_entry_value_too_large() {
+        let mut pager = MockPager;
+
+        // Value exceeding MAX_VALUE_SIZE should fail
+        let too_large = vec![0u8; MAX_VALUE_SIZE + 1];
+        let result = prepare_entry_value(
+            b"key".to_vec(),
+            too_large,
+            Lsn::from(1),
+            &mut pager
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_is_overflow_value_inline() {
+        let entry = Entry::new(
+            b"key".to_vec(),
+            b"inline value".to_vec(),
+            Lsn::from(1)
+        );
+
+        assert!(!is_overflow_value(&entry));
+    }
+
+    #[test]
+    fn test_is_overflow_value_overflow() {
+        let overflow_ref = ValueStorage::Overflow(PageId::new(42)).encode();
+        let entry = Entry::new(
+            b"key".to_vec(),
+            overflow_ref,
+            Lsn::from(1)
+        );
+
+        assert!(is_overflow_value(&entry));
     }
 }

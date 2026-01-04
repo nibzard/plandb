@@ -3,6 +3,7 @@
 //! Delete logic and merge/borrow handling.
 
 use crate::{types::{PageId, Lsn}, error::{ValidationError, StorageError}, Error, Result};
+use crate::btree::overflow::{ValueStorage, OVERFLOW_VALUE_MARKER};
 use super::{node::{InternalNode, LeafNode, Node}, header::{HEADER_SIZE, DEFAULT_PAGE_SIZE}};
 
 /// Minimum occupancy threshold (percentage of node capacity)
@@ -162,6 +163,48 @@ fn calculate_min_internal_entries() -> u16 {
     (max_entries as f64 * MIN_OCCUPANCY) as u16
 }
 
+/// Check if an entry value is stored as overflow
+pub fn is_entry_overflow(entry: &crate::btree::node::Entry) -> bool {
+    // An entry is overflow if value.len() == 10 and first 2 bytes are 0xFFFF
+    if entry.value.len() == 10 {
+        let marker = u16::from_le_bytes([entry.value[0], entry.value[1]]);
+        marker == OVERFLOW_VALUE_MARKER
+    } else {
+        false
+    }
+}
+
+/// Get the overflow page ID from an entry
+///
+/// Returns None if the value is inline, Some(page_id) if overflow.
+pub fn get_entry_overflow_page_id(entry: &crate::btree::node::Entry) -> Option<PageId> {
+    if is_entry_overflow(entry) {
+        // Decode the overflow reference to get the page ID
+        if let Ok(ValueStorage::Overflow(page_id)) = ValueStorage::decode(&entry.value) {
+            Some(page_id)
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
+/// Track overflow pages for cleanup after MVCC safety
+///
+/// This should be called when deleting entries with overflow values.
+/// The overflow pages are not immediately freed but tracked for later
+/// reclamation after all snapshots have released the LSN.
+pub fn track_overflow_for_cleanup(
+    entry: &crate::btree::node::Entry,
+    cleanup_list: &mut Vec<PageId>,
+) {
+    if let Some(page_id) = get_entry_overflow_page_id(entry) {
+        cleanup_list.push(page_id);
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,5 +256,60 @@ mod tests {
         assert_eq!(separator, b"key1");
         assert_eq!(underfull.entries.len(), 1);
         assert_eq!(sibling.entries.len(), 0);
+    }
+
+    #[test]
+    fn test_is_entry_overflow_inline() {
+        let inline_value = ValueStorage::Inline(b"inline value".to_vec()).encode();
+        let entry = Entry::new(b"key".to_vec(), inline_value, Lsn::from(1));
+
+        assert!(!is_entry_overflow(&entry));
+    }
+
+    #[test]
+    fn test_is_entry_overflow_overflow() {
+        let overflow_ref = ValueStorage::Overflow(PageId::new(42)).encode();
+        let entry = Entry::new(b"key".to_vec(), overflow_ref, Lsn::from(1));
+
+        assert!(is_entry_overflow(&entry));
+    }
+
+    #[test]
+    fn test_get_entry_overflow_page_id_inline() {
+        let inline_value = ValueStorage::Inline(b"inline value".to_vec()).encode();
+        let entry = Entry::new(b"key".to_vec(), inline_value, Lsn::from(1));
+
+        assert_eq!(get_entry_overflow_page_id(&entry), None);
+    }
+
+    #[test]
+    fn test_get_entry_overflow_page_id_overflow() {
+        let overflow_ref = ValueStorage::Overflow(PageId::new(123)).encode();
+        let entry = Entry::new(b"key".to_vec(), overflow_ref, Lsn::from(1));
+
+        assert_eq!(get_entry_overflow_page_id(&entry), Some(PageId::new(123)));
+    }
+
+    #[test]
+    fn test_track_overflow_for_cleanup_inline() {
+        let inline_value = ValueStorage::Inline(b"inline value".to_vec()).encode();
+        let entry = Entry::new(b"key".to_vec(), inline_value, Lsn::from(1));
+
+        let mut cleanup_list = Vec::new();
+        track_overflow_for_cleanup(&entry, &mut cleanup_list);
+
+        assert_eq!(cleanup_list.len(), 0);
+    }
+
+    #[test]
+    fn test_track_overflow_for_cleanup_overflow() {
+        let overflow_ref = ValueStorage::Overflow(PageId::new(456)).encode();
+        let entry = Entry::new(b"key".to_vec(), overflow_ref, Lsn::from(1));
+
+        let mut cleanup_list = Vec::new();
+        track_overflow_for_cleanup(&entry, &mut cleanup_list);
+
+        assert_eq!(cleanup_list.len(), 1);
+        assert_eq!(cleanup_list[0], PageId::new(456));
     }
 }
