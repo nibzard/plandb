@@ -2057,77 +2057,196 @@
   - **NOTE**: Exceeds requirements - 11+ event types (vs 7 planned), 1MB payload limit (vs 4KB planned), complete Rust implementation guidance with serialization format and testing strategy
   - **Blockers**: None
 
-- [ ] **9.2** Create `09-events-storage.md`
+- [x] **9.2** Create `09-events-storage.md` - **[DONE]**
   - **DESCRIBE**: Persistent event storage with efficient append operations
   - **LIST**: Storage operations (append, batch_append, query_by_type, query_by_time_range)
   - **EXPLAIN**: Time-based indexing and efficient retrieval
   - **DEFINE**: Rust storage backend with batch support
-  - **STATUS**: ⏳ Pending
-  - **Blockers**: None
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive event storage specification complete
 
-- [ ] **9.3** Create `09-plugin-system.md`
+  **Work Summary**:
+  - **EventStore** fully specified with append-only semantics
+  - **10 storage functions** documented (open, deinit, append_event, query_events, get_event, get_session_events, get_actor_events, get_events_as_of, compact, read_event_payload)
+  - **On-disk format** specified with EventRecordHeader (30B) and EventRecordTrailer (8B)
+  - **Index file format** with EventIndexEntry (35 bytes per entry)
+  - **Complete persistence** and recovery algorithms
+
+  **Key Deliverables**:
+  - EventStore struct with in-memory index for fast lookups
+  - Event query with EventFilter (by type, actor, session, time range, visibility)
+  - Time-travel queries (get_events_as_of)
+  - Compaction for retention management
+  - Index persistence and recovery
+  - Rust implementation guidance with Arc<RwLock<EventStore>> for concurrency</think>
+
+- [x] **9.3** Create `09-plugin-system.md` - **[DONE]**
   - **DESCRIBE**: Plugin lifecycle management and hook system
   - **LIST**: Hook types (init, pre_txn, post_txn, shutdown, session_start, session_end, operation_start, operation_end)
   - **EXPLAIN**: Plugin registration, lifecycle, and event routing
   - **DEFINE**: Rust plugin trait system with automatic event logging
-  - **STATUS**: ⏳ Pending
-  - **Blockers**: None
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive plugin system specification complete
 
-- [ ] **9.4** Create `09-llm-provider.md`
+  **Work Summary**:
+  - **PluginManager** fully specified with hook registry
+  - **10 hook types** documented (on_commit, on_commit_streaming, on_query, on_schedule, get_functions, on_agent_session_start, on_agent_operation, on_review_request, on_perf_sample, on_benchmark_complete)
+  - **Resource tracking** with quotas for AI operations
+  - **Performance isolation** guarantees
+
+  **Key Deliverables**:
+  - Plugin trait with lifecycle methods (init, cleanup)
+  - Hook function types for all commit/query/schedule events
+  - Function registry for LLM function calling
+  - ResourceTracker with quota enforcement
+  - Rust implementation guidance with trait objects
+
+- [x] **9.4** Create `09-llm-provider.md` - **[DONE]**
   - **DESCRIBE**: Provider-agnostic LLM interface for function calling
   - **LIST**: Provider types (OpenAI, Anthropic, Local), function call types, response formats
   - **EXPLAIN**: Provider selection, request/response handling, error handling
   - **DEFINE**: Rust LLM client trait with multiple provider implementations
-  - **STATUS**: ⏳ Pending
-  - **Blockers**: None
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive LLM provider specification complete
 
-- [ ] **9.5** Create `09-function-calling.md`
+  **Work Summary**:
+  - **LLMProvider trait** fully specified for provider abstraction
+  - **3 provider types** documented (OpenAI, Anthropic, Local)
+  - **Function calling** with schema registration and execution
+  - **Streaming support** for real-time responses
+  - **Error handling** with timeout and retry logic
+
+  **Key Deliverables**:
+  - LLMProvider trait with call_function and call_function_streaming
+  - ProviderConfig for provider selection and credentials
+  - FunctionSchema for type-safe function calling
+  - Streaming response handling
+  - Rust implementation guidance with async/await
+
+- [x] **9.5** Create `09-function-calling.md` - **[DONE]**
   - **DESCRIBE**: Structured function calling interface for AI operations
   - **LIST**: Function schema types, parameter validation, response parsing
   - **EXPLAIN**: Function registration, argument validation, result extraction
   - **DEFINE**: Rust function registry with type-safe call handling
-  - **STATUS**: ⏳ Pending
-  - **Blockers**: None
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive function calling specification complete
 
-- [ ] **9.6** Create `09-cartridges-base.md`
+  **Work Summary**:
+  - **FunctionRegistry** fully specified with schema validation
+  - **FunctionSchema** type with parameters and return types
+  - **JSON Schema** compatibility for LLM integration
+  - **Argument validation** with type checking
+  - **Result extraction** with error handling
+
+  **Key Deliverables**:
+  - FunctionRegistry for dynamic function registration
+  - FunctionSchema with name, description, parameters, return_type
+  - Parameter validation with type checking
+  - Function call execution with error handling
+  - Rust implementation guidance with serde for JSON
+
+- [x] **9.6** Create `09-cartridges-base.md` - **[DONE]**
   - **DESCRIBE**: Base cartridge types for structured memory storage
   - **LIST**: Cartridge traits, entity storage, topic storage, relationship storage
   - **EXPLAIN**: Cartridge lifecycle, persistence, indexing strategies
   - **DEFINE**: Rust cartridge trait system with common implementations
-  - **STATUS**: ⏳ Pending
-  - **Blockers**: None
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive cartridge base specification complete
 
-- [ ] **9.7** Create `09-cartridges-code-review.md`
+  **Work Summary**:
+  - **Cartridge trait** fully specified for extensible memory
+  - **3 core cartridge types** (Entity, Topic, Relationship)
+  - **Persistence layer** with write-ahead logging
+  - **Indexing strategies** for efficient queries
+
+  **Key Deliverables**:
+  - Cartridge trait with CRUD operations
+  - EntityCartridge for structured entity storage
+  - TopicCartridge for topic organization
+  - RelationshipCartridge for graph relationships
+  - Rust implementation guidance with trait objects
+
+- [x] **9.7** Create `09-cartridges-code-review.md` - **[DONE]**
   - **DESCRIBE**: Code review cartridge for storing and querying review notes
   - **LIST**: Review note types, metadata fields, query operations
   - **EXPLAIN**: Review storage with links to commits, files, symbols
   - **DEFINE**: Rust CodeReviewCartridge implementation
-  - **STATUS**: ⏳ Pending
-  - **Blockers**: None
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive code review cartridge specification complete
 
-- [ ] **9.8** Create `09-cartridges-observability.md`
+  **Work Summary**:
+  - **CodeReviewCartridge** fully specified
+  - **ReviewNote** type with metadata and content
+  - **VCS integration** with commit and file linking
+  - **Query operations** for review retrieval
+
+  **Key Deliverables**:
+  - ReviewNote struct with author, timestamp, severity
+  - Review storage with VCS metadata
+  - Query by commit, file, symbol, severity
+  - Rust implementation guidance
+
+- [x] **9.8** Create `09-cartridges-observability.md` - **[DONE]**
   - **DESCRIBE**: Observability cartridge for metrics and regression detection
   - **LIST**: Metric types (counter, gauge, histogram, timing), regression detection algorithms
   - **EXPLAIN**: Metric ingestion, time-series aggregation, baseline comparison
   - **DEFINE**: Rust ObservabilityCartridge with rate limiting and alerting
-  - **STATUS**: ⏳ Pending
-  - **Blockers**: None
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive observability cartridge specification complete
 
-- [ ] **9.9** Create `09-natural-language-queries.md`
+  **Work Summary**:
+  - **ObservabilityCartridge** fully specified
+  - **4 metric types** documented (counter, gauge, histogram, timing)
+  - **Regression detection** with statistical analysis
+  - **Alerting system** with thresholds
+
+  **Key Deliverables**:
+  - Metric types with aggregation methods
+  - Time-series storage and querying
+  - Regression detection algorithms
+  - Alert configuration and delivery
+  - Rust implementation guidance
+
+- [x] **9.9** Create `09-natural-language-queries.md` - **[DONE]**
   - **DESCRIBE**: Natural language query planning and optimization
   - **LIST**: Intent types, query patterns, optimization strategies
   - **EXPLAIN**: NL parsing, structured query generation, semantic search
   - **DEFINE**: Rust query planner with LLM integration
-  - **STATUS**: ⏳ Pending
-  - **Blockers**: None
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive NL query specification complete
 
-- [ ] **9.10** Create `09-ai-tests.md`
+  **Work Summary**:
+  - **QueryPlanner** fully specified with LLM integration
+  - **Intent classification** for query understanding
+  - **Query transformation** from NL to structured
+  - **Result ranking** and optimization
+
+  **Key Deliverables**:
+  - Intent types (SELECT, INSERT, UPDATE, DELETE, ANALYZE)
+  - Query planning with function calling
+  - Semantic search with entity linking
+  - Rust implementation guidance
+
+- [x] **9.10** Create `09-ai-tests.md` - **[DONE]**
   - **LIST**: AI component test scenarios
   - **DESCRIBE**: Test patterns for event system, plugins, LLM integration, cartridges
   - **EXPLAIN**: Mock LLM responses, event injection testing, cartridge validation
   - **DEFINE**: Rust test utilities for AI components
-  - **STATUS**: ⏳ Pending
-  - **Blockers**: None
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive AI testing specification complete
+
+  **Work Summary**:
+  - **6 test categories** documented (unit, integration, property, mock, performance, hardening)
+  - **50+ test scenarios** specified across all AI components
+  - **Mock LLM** framework for testing
+  - **Property-based tests** for invariants
+
+  **Key Deliverables**:
+  - Event storage tests (append, query, recovery)
+  - Plugin system tests (lifecycle, hooks, resource limits)
+  - LLM integration tests (function calling, streaming, errors)
+  - Cartridge tests (CRUD, querying, persistence)
+  - Rust testing guidance with proptest
 
 ---
 
@@ -2266,7 +2385,9 @@ The Rust module should be organized as follows: [Description]
 
 ## Summary
 
-**Total tasks: 224** (103 complete + 10 Phase 9 + 111 Phases 10-15 future)
+**Total tasks: 224** (113 complete + 111 Phases 10-15 future)
+
+**Phase 9 Complete**: All 10 tasks finished. AI Intelligence Layer fully specified.
 
 Each task produces a **100% natural language** markdown file that includes:
 1. **Plain English descriptions** of all types, functions, algorithms
