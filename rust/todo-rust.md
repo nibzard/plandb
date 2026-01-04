@@ -881,9 +881,22 @@
   - InvalidState error type with state and required fields
   - Complete testing strategy with state machine invariants
 
-- [ ] **4.14** Create `04-txn-concurrency.md`
+- [x] **4.14** Create `04-txn-concurrency.md` - **[DONE]**
   - **DESCRIBE**: Concurrent transaction handling
   - **EXPLAIN**: Visibility rules
+  - **Completed**: 2026-01-04 (commit TBD)
+  - **Blockers**: None
+
+  **Work Summary**:
+  - **Concurrent transaction handling** fully documented with lock strategy and synchronization
+  - **Visibility rules** specified for read-read, read-write, write-write scenarios
+  - **Reader-writer lock** documented with RwLock for shared/exclusive access
+  - **Transaction registry** explained for active transaction tracking and cleanup
+  - **Single-writer guarantee** enforced via exclusive write lock
+  - **Concurrency model** with unlimited readers, single writer, non-blocking reads
+  - **Lock contention** handling with retry strategy and deadlock prevention
+  - **Thread safety** analysis with Send/Sync bounds for transaction types
+  - **20+ test scenarios** covering concurrent reads, writes, conflicts, and edge cases
 
 - [ ] **4.15** Create `04-txn-tests.md`
   - **LIST**: Isolation level tests
