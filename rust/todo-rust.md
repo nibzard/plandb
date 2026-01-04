@@ -985,13 +985,63 @@
   - Performance targets: O(1) creation, clone, and drop
   - 20+ test scenarios across unit, property, and integration tests
 
-- [ ] **5.4** Create `05-snapshot-vis.md`
+- [x] **5.4** Create `05-snapshot-vis.md` - **[DONE]**
   - **DESCRIBE**: Visibility calculation
   - **EXPLAIN**: Commit timestamp tracking
+  - **Completed**: 2026-01-04 (commit TBD)
+  - **Blockers**: None
 
-- [ ] **5.5** Create `05-snapshot-cleanup.md`
+  **Work Summary**:
+  - **Visibility calculation algorithm** fully specified with 3-tier lookup strategy
+  - **MVCC visibility rules** documented with transaction ID comparison logic
+  - **5 visibility outcomes** defined (Visible, Invisible, CommittedAfter, Deleted, NotExist)
+  - **B+tree version tracking** explained with root page ID mapping
+  - **Timestamp ordering** specified with monotonic transaction ID semantics
+  - **8 visibility scenarios** documented across read/write patterns
+
+  **Key Deliverables**:
+  - isVisible() algorithm with 5-step decision process (snapshot txn_id, record txn_id, deletion check, root page verification, visibility determination)
+  - MVCC visibility rules with transaction ID comparison (record_txn_id <= snapshot_txn_id for visibility)
+  - Deleted key handling with tombstone detection and transaction ID comparison
+  - B+tree version navigation using SnapshotRegistry for root page ID lookup
+  - Commit timestamp tracking via transaction ID monotonicity
+  - Concurrent read visibility explained (readers see consistent snapshot regardless of concurrent writes)
+  - Performance analysis: O(1) visibility check, O(log n) B+tree traversal
+  - Rust implementation guidance with lifetime parameters and Arc<Snapshot> sharing
+  - 40+ test scenarios covering visibility rules, edge cases, and concurrency
+  - Invariants documented (snapshot consistency, transaction ordering, deletion semantics)
+
+- [x] **5.5** Create `05-snapshot-cleanup.md` - **[DONE]**
   - **DESCRIBE**: Snapshot expiration
   - **EXPLAIN**: Garbage collection
+  - **Completed**: 2026-01-04 (commit 1a9055f)
+  - **Blockers**: None
+
+  **Work Summary**:
+  - **Snapshot expiration and cleanup** fully specified with retention policy strategies
+  - **4 CleanupPolicy variants** documented (CountBased, AgeBased, Hybrid, Manual)
+  - **CleanupStats structure** defined with 6 metrics (total_snapshots, cleaned_snapshots, skipped_snapshots, oldest_txn_id, newest_txn_id, cleanup_duration_ms)
+  - **Reference counting** explained with atomic increments/decrements and Drop trait integration
+  - **3 cleanup functions** specified (shouldCleanupSnapshot, cleanupSnapshots, cleanupExpiredSnapshots)
+  - **Garbage collection algorithm** detailed with 6-step process (calculate threshold, identify candidates, check references, remove entries, deallocate pages, update stats)
+  - **Cleanup triggering** documented (manual calls, automatic after commits, threshold-based)
+  - **Retention policies** comprehensive with configurable limits and safety checks
+  - **Concurrency considerations** analyzed (RwLock strategy, no blocking of readers)
+  - **Edge cases** handled (genesis snapshot protection, active snapshots, minimum retention)
+
+  **Key Deliverables**:
+  - CleanupPolicy enum with 4 variants (CountBased { min_keep }, AgeBased { max_age_seconds }, Hybrid { min_keep, max_age_seconds }, Manual)
+  - CleanupStats struct for monitoring and introspection
+  - shouldCleanupSnapshot(policy, snapshot_id, reference_count, current_timestamp) decision function
+  - cleanupSnapshots(policy, force_cleanup) main entry point with 6-step algorithm
+  - cleanupExpiredSnapshots(threshold_txn_id) helper for simple count-based cleanup
+  - Reference counting with Arc<SnapshotHandle> for automatic tracking
+  - Genesis snapshot protection (txn_id 0 never cleaned)
+  - Minimum retention enforcement (always keep N most recent snapshots)
+  - Safety checks (don't clean active snapshots, respect reference counts)
+  - Rust implementation guidance with RwLock and atomic operations
+  - 40+ test scenarios covering unit, integration, property, and performance tests
+  - Invariants documented (reference count accuracy, monotonic cleanup, safety)
 
 - [ ] **5.6** Create `05-snapshot-state.md`
   - **LIST**: SnapshotState fields
