@@ -16,6 +16,9 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 byteorder = { workspace = true }
 crc32c = { workspace = true }
+sha2 = { workspace = true }
+flate2 = { workspace = true }
+aes-gcm = { workspace = true }
 parking_lot = { workspace = true }
 crossbeam = { workspace = true }
 num_cpus = { workspace = true }

@@ -27,6 +27,13 @@ byteorder = "1.5"
 
 # Checksum
 crc32c = "0.6"
+sha2 = "0.10"
+
+# Compression
+flate2 = "1.0"
+
+# Encryption
+aes-gcm = "0.10"
 
 # Concurrency
 parking_lot = "0.12"
