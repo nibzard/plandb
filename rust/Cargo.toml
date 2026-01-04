@@ -1,0 +1,44 @@
+[workspace]
+members = [
+    "northstar-core",
+    "northstar-test",
+    "northstar-bench",
+    "northstar-cli",
+]
+
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/northstar-db/northstar-rust"
+authors = ["NorthstarDB Contributors"]
+
+[workspace.dependencies]
+# Core dependencies
+tokio = { version = "1.40", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+bytes = "1.7"
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Checksum
+crc32c = "0.6"
+
+# Testing
+proptest = "1.5"
+
+[profile.dev]
+opt-level = 0
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
+[profile.bench]
+inherits = "release"
+debug = true
