@@ -10,11 +10,13 @@
 
 pub mod bench;
 pub mod error;
+pub mod node;
 pub mod page;
 pub mod shard;
 pub mod types;
 
 pub use error::{CacheError, CacheResult};
+pub use node::{NodeCache, NodeKey};
 pub use page::PageCache;
 pub use shard::CacheShard;
 pub use types::{
