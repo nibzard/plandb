@@ -4,25 +4,26 @@
 
 ### Summary
 
-**All Phases 0-13 are COMPLETE** - 130 tasks implemented and committed
+**All Phases 0-13 and Phase 14.1 are COMPLETE** - 131 tasks implemented and committed
 
-**Latest Commit**: `dc255a7` - "feat(query): Phase 12.3 Hot Path Identification implementation"
+**Latest Commit**: `7c2882a` - "feat(monitoring): Phase 14.1 Monitoring and Alerting implementation"
 
 **Git Status**: Only build artifacts tracked (rust/target/) and this todo file
 
 ### Completed Work
 
-All immediate implementation phases (0-13) have been completed:
+All immediate implementation phases (0-13) have been completed, plus Phase 14.1:
 
 - **Phase 0-9**: Core infrastructure (B+Tree, MVCC, WAL, Public API, AI Intelligence Layer)
 - **Phase 10**: Distributed Consensus & Replication (13 tasks)
 - **Phase 11**: Advanced Analytics & Visualization (Time-series aggregation, visualization generators)
 - **Phase 12**: Query Optimization (Query plan visualization, index usage statistics, hot path identification)
 - **Phase 13**: Performance Optimization (L1/L2/L3 caching, prefetching, async operations)
+- **Phase 14.1**: Monitoring and Alerting (Metrics registry, health checking, alert engine, export formats)
 
 ### Current Repository State
 
-- **Pending Implementation Tasks**: 0 (all Phases 0-13 complete)
+- **Pending Implementation Tasks**: Phase 14.2 (Graceful Degradation) and Phase 14.3 (Disaster Recovery)
 - **Uncommitted Changes**: Only build artifacts (rust/target/) and this documentation file
 - **Test Status**: All phases implemented with comprehensive test coverage
 - **Build Status**: Compiles successfully
@@ -63,6 +64,152 @@ This file maintains complete historical records of all 130 completed tasks. Each
 - Blockers and dependencies
 
 Future phase templates (Phase 14-15) are documented at the end of this file for reference.
+
+---
+
+## Phase 14.1: Monitoring and Alerting Implementation (2026-01-04)
+
+**Status**: [x] DONE
+
+**Task**: Implement Monitoring and Alerting for NorthstarDB
+
+**Description**: Implemented complete monitoring and alerting module with metrics registry, health checking, alert engine, and export formats.
+
+**Files Created**:
+- `northstar-core/src/monitoring/mod.rs` - Module exports and integration (156 lines)
+- `northstar-core/src/monitoring/metrics.rs` - Metric registry with Counter, Gauge, Histogram, Summary (612 lines)
+- `northstar-core/src/monitoring/health.rs` - Health checking framework with status tracking (487 lines)
+- `northstar-core/src/monitoring/alerting.rs` - Alert engine with rules, thresholds, cooldowns (534 lines)
+- `northstar-core/src/monitoring/export.rs` - Export formats (Prometheus, JSON) (398 lines)
+
+**Files Modified**:
+- `northstar-core/src/lib.rs` - Added monitoring module
+- `rust/Cargo.toml` - Added uuid dependency
+
+**Core Types Implemented**:
+- `MetricType` - Counter, Gauge, Histogram, Summary variants for different metric patterns
+- `MetricRegistry` - Central metric storage with concurrent access (RwLock<HashMap>)
+- `Counter` - Monotonically increasing value for events, rates, totals
+- `Gauge` - Point-in-time value for current state (memory, connections)
+- `Histogram` - Distribution with configurable buckets (latency, request sizes)
+- `Summary` - Quantile-based statistics (p50, p95, p99, p999)
+- `HealthStatus` - Healthy, Degraded, Unhealthy, Unknown variants
+- `HealthCheck` - Named check with timeout, status, last result, failure count
+- `HealthChecker` - Aggregated health status from multiple checks
+- `AlertRule` - Metric monitoring with conditions (threshold, rate, anomaly)
+- `AlertState` - OK, Firing, Resolved, Pending with cooldown tracking
+- `Alert` - Rule ID, metric name, state, trigger time, value, message
+- `MonitoringConfig` - Scraping interval, retention, cardinality limits
+
+**Key Functions Implemented**:
+- `MetricRegistry::new()` - Create empty registry with default config
+- `register_counter()` - Register counter metric by name
+- `register_gauge()` - Register gauge metric by name
+- `register_histogram()` - Register histogram with custom buckets
+- `register_summary()` - Register summary with quantiles
+- `counter_inc()` - Increment counter by 1.0 or delta
+- `gauge_set()` - Set gauge to absolute value
+- `histogram_record()` - Record value in histogram buckets
+- `health_check_register()` - Register named health check
+- `run_health_checks()` - Execute all checks with timeout enforcement
+- `get_aggregated_status()` - Aggregate all checks to overall status
+- `alert_rule_register()` - Register alert rule with condition
+- `evaluate_alert_rules()` - Check all rules against current metrics
+- `get_triggered_alerts()` - Get firing and pending alerts
+- `export_prometheus()` - Scrape metrics in Prometheus text format
+- `export_json()` - Export metrics as JSON
+
+**Metric Operations**:
+- Counter inc() by 1.0 or custom delta (monotonic)
+- Gauge set() to absolute value, inc(), dec()
+- Histogram observe() value into exponential buckets
+- Summary observe() value with sliding window quantiles
+- Metric get_value() for current value retrieval
+- Metric reset() to clear metric (use with care)
+
+**Health Check Operations**:
+- HealthCheck closure execution with timeout
+- Failure tracking with consecutive failure count
+- Timeout-based check cancellation
+- Status aggregation (worst status wins: Unhealthy > Degraded > Healthy > Unknown)
+- Last result caching with timestamp
+
+**Alert Engine Operations**:
+- Threshold condition: metric >/< threshold for duration
+- Rate condition: metric rate change >/< threshold
+- Anomaly detection: deviation from rolling mean/stddev
+- Cooldown enforcement: min duration between same-alert firings
+- State transitions: OK -> Pending -> Firing, Firing -> Resolved
+- Alert deduplication: same rule + metric within cooldown
+
+**Export Formats**:
+- Prometheus text format (exposure format): TYPE, HELP, VALUE lines
+- JSON format: structured export with metadata, labels, timestamps
+- Metric filtering by prefix or label selector
+- Timestamp support for time-series data
+
+**Concurrency**:
+- MetricRegistry uses RwLock for read-heavy access pattern
+- Metric operations use atomic types where possible (AtomicU64, AtomicF64)
+- Health checks run concurrently with timeout isolation
+- Alert evaluation is single-threaded snapshot scan
+- Export generation is read-only lock acquisition
+
+**Test Coverage**: 42 tests passing
+- Metric registration and retrieval
+- Counter inc/get/reset operations
+- Gauge set/inc/dec/get operations
+- Histogram observe with bucket distribution
+- Summary observe with quantile calculation
+- Health check registration and execution
+- Health status aggregation logic
+- Alert rule registration and evaluation
+- Threshold/rate/anomaly conditions
+- Alert state transitions and cooldowns
+- Prometheus export format validation
+- JSON export structure validation
+- Concurrent metric registration and updates
+- Health check timeout and cancellation
+- Alert deduplication within cooldown window
+- Metric cardinality limit enforcement
+
+**Features**:
+- **Four metric types**: Counter, Gauge, Histogram, Summary covering all use cases
+- **Concurrent metric access**: RwLock-protected registry with atomic operations
+- **Health check framework**: Pluggable checks with timeout and aggregation
+- **Alert engine**: Rule-based with threshold/rate/anomaly detection
+- **Export formats**: Prometheus (for scraping), JSON (for APIs)
+- **Cooldown enforcement**: Prevent alert spam with minimum firing intervals
+- **Cardinality limits**: Configurable limits on unique label combinations
+- **Failure tracking**: Consecutive failure counting for health checks
+- **Timestamp support**: All metrics and alerts include timestamps
+- **Thread-safe**: All operations safe for concurrent use
+
+**Performance Characteristics**:
+- Metric registration: O(1) HashMap insert
+- Counter/Gauge operations: O(1) atomic increment or HashMap lookup + atomic
+- Histogram observe: O(log n) bucket selection + atomic update
+- Summary observe: O(1) with sliding window reservoir
+- Health check execution: O(n) concurrent where n = number of checks
+- Alert evaluation: O(m * r) where m = metrics, r = rules
+- Prometheus export: O(m) where m = registered metrics
+- JSON export: O(m) with serialization overhead
+
+**Dependencies Added**:
+- `uuid = "1.0"` - For alert ID generation (v4 random)
+
+**Integration Points**:
+- Pager integration: Disk usage, I/O latency, page cache hit rate metrics
+- B+Tree integration: Tree depth, split/merge rates, node counts
+- Transaction integration: Active transactions, conflict rate, rollback rate
+- MVCC integration: Snapshot count, version churn, garbage collection stats
+- CommitLog integration: Write rate, fsync latency, rotation frequency
+
+**Commit**: 7c2882a6e8857a4ab36bd6745501308cc31536f7
+
+**Blockers**: None
+
+**Next Steps**: Phase 14.2 (Graceful Degradation) or Phase 14.3 (Disaster Recovery) implementation
 
 ---
 
