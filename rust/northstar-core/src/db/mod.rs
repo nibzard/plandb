@@ -31,6 +31,7 @@
 
 mod config;
 
+use crate::cache::{QueryCache, QueryCacheStats};
 use crate::error::{Error, Result, TransactionError};
 use crate::pager::Pager;
 use crate::snap::{Snapshot, SnapshotOps, SnapshotRegistry, SnapshotStats};
@@ -109,6 +110,9 @@ struct DbInner {
 
     /// Configuration
     config: DbConfig,
+
+    /// L3 Query Cache for completed query results
+    query_cache: QueryCache,
 }
 
 impl Db {
@@ -191,6 +195,9 @@ impl Db {
         // Create snapshot registry (takes ownership of pager)
         let snap_registry = SnapshotRegistry::with_genesis(pager, root_page_id);
 
+        // Create query cache
+        let query_cache = QueryCache::new();
+
         let inner = DbInner {
             snap_registry,
             wal,
@@ -198,6 +205,7 @@ impl Db {
             is_closed: false,
             current_txn_id,
             config,
+            query_cache,
         };
 
         Ok(Db {
@@ -230,6 +238,9 @@ impl Db {
         let root_page_id = pager.root_page_id();
         let snap_registry = SnapshotRegistry::with_genesis(pager, root_page_id);
 
+        // Create query cache
+        let query_cache = QueryCache::new();
+
         let inner = DbInner {
             snap_registry,
             wal: None, // No WAL for in-memory
@@ -237,6 +248,7 @@ impl Db {
             is_closed: false,
             current_txn_id,
             config: DbConfig::default(),
+            query_cache,
         };
 
         Ok(Db {
@@ -491,6 +503,7 @@ impl Db {
             is_in_memory: inner.path.is_none(),
             wal_enabled: inner.wal.is_some(),
             snapshot_stats: inner.snap_registry.get_stats(),
+            query_cache_stats: inner.query_cache.stats(),
         })
     }
 
@@ -538,6 +551,13 @@ impl Db {
         let mut inner = self.inner_mut()?;
         inner.snap_registry.with_btree(root_page_id, f)
     }
+
+    /// Get reference to query cache (internal use for transaction operations).
+    pub(crate) fn query_cache(&self) -> Result<QueryCache> {
+        let inner = self.inner.read()
+            .map_err(|_| Error::Transaction(TransactionError::LockPoisoned))?;
+        Ok(inner.query_cache.clone())
+    }
 }
 
 /// Clone implementation for Db (creates a new handle to the same database)
@@ -566,6 +586,9 @@ pub struct DbStats {
 
     /// Snapshot registry statistics
     pub snapshot_stats: SnapshotStats,
+
+    /// Query cache statistics
+    pub query_cache_stats: QueryCacheStats,
 }
 
 #[cfg(test)]

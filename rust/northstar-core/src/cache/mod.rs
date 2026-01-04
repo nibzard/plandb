@@ -12,12 +12,17 @@ pub mod bench;
 pub mod error;
 pub mod node;
 pub mod page;
+pub mod query;
 pub mod shard;
 pub mod types;
 
 pub use error::{CacheError, CacheResult};
 pub use node::{NodeCache, NodeKey};
 pub use page::PageCache;
+pub use query::{
+    CachedResult, PageInvalidation, QueryCache, QueryCacheStats, QueryKey, QueryResult,
+    QueryType,
+};
 pub use shard::CacheShard;
 pub use types::{
     CacheConfig, CacheEntry, CachePolicy, CacheSnapshot, CacheStats, ClearResult, PinGuard,
