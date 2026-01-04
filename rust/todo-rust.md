@@ -792,8 +792,8 @@
   - **DESCRIBE**: Resource release (locks, buffers, handles)
   - **EXPLAIN**: Implicit rollback via Drop trait
   - **DESCRIBE**: Error rollback from failed commit
-  - **Completed**: 2026-01-04 (commit TBD)
-  - **Blockers**: None - completed successfully
+  - **Completed**: 2026-01-04 (commit 24a026c)
+  - **Blockers**: None
 
   **Work Summary**:
   - **Explicit rollback** fully documented with rollback() method specification
@@ -816,10 +816,27 @@
   - Rust implementation guidance with Drop, panic safety, and testing strategies
   - 40+ test scenarios covering explicit, implicit, error rollback, concurrency, and property tests
 
-- [ ] **4.11** Create `04-txn-conflict.md`
+- [x] **4.11** Create `04-txn-conflict.md`
   - **DESCRIBE**: Conflict detection
   - **EXPLAIN**: Write-write conflict rules
   - **DESCRIBE**: Retry strategy
+  - **Completed**: 2026-01-04 (commit TBD)
+  - **Blockers**: None
+
+  **Work Summary**:
+  - Transaction conflict detection with 3-phase algorithm (track reads, detect conflicts, retry)
+  - Write-write conflict rules (key-based, txn_id ordering, serializable equivalence)
+  - Read-write conflict detection (detectable vs non-detectable conflicts)
+  - Conflict detection during prepare phase (read set validation against committed state)
+  - Retry strategy with exponential backoff (100ms base, 2x multiplier, 10s max)
+  - Max retry attempts (default: 10) with TransactionConflicted error
+  - Read tracking in ReadTxn (read_set HashMap for conflict detection)
+  - Write tracking in WriteTxn (write_set HashMap for dirty checking and conflict detection)
+  - Isolation level semantics (ReadCommitted: no read tracking, Serializable: full tracking)
+  - Testing requirements (conflict detection, retry logic, backoff, isolation levels, false positives)
+  - Performance considerations (read set overhead, write set validation, lock-free conflict detection)
+  - Rust implementation guidance with RwLock, HashMap tracking, backoff strategies
+  - 20+ test scenarios covering basic conflicts, concurrent transactions, retry logic, edge cases, and isolation levels
 
 - [ ] **4.12** Create `04-txn-serialize.md`
   - **DESCRIBE**: CommitRecord serialization
