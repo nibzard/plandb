@@ -1103,9 +1103,34 @@
   - Isolation test scenarios
   - V0 limitations and future enhancements
 
-- [ ] **5.8** Create `05-mvcc-readers.md`
+- [x] **5.8** Create `05-mvcc-readers.md` - **[DONE]**
   - **DESCRIBE**: Reader handling
   - **EXPLAIN**: Reader scalability
+  - **Completed**: 2026-01-04
+  - **Blockers**: None
+
+  **Work Summary**:
+  - **Reader lifecycle management** fully documented with registration, active tracking, and cleanup
+  - **ReaderState enum** specified with 4 variants (Registered, Active, Quiescent, Unregistered)
+  - **ReaderRegistry structure** defined with HashMap-based tracking and statistics
+  - **Reader tracking** detailed with 5 metadata fields (reader_id, txn_id, start_lsn, current_lsn, state)
+  - **6 core functions** documented (registerReader, unregisterReader, getReader, getActiveReaders, updateReaderLsn, getReaderStats)
+  - **Scalability strategy** explained with lock-free reads and bounded write contention
+  - **Resource reclamation** specified with epoch-based reclamation and unblocking mechanisms
+
+  **Key Deliverables**:
+  - ReaderState enum with 4 states and valid transitions
+  - ReaderRegistry with HashMap<u64, ReaderState> and atomic counters
+  - ReaderStats structure with 5 metrics (total_readers, active_readers, quiescent_readers, oldest_start_lsn, newest_start_lsn)
+  - registerReader() algorithm with unique ID generation and state initialization
+  - unregisterReader() with state transition to Unregistered and stats cleanup
+  - getActiveReaders() filtering for active readers only
+  - updateReaderLsn() for LSN advancement tracking
+  - getReaderStats() for monitoring and introspection
+  - Epoch-based reclamation for safe cleanup without blocking readers
+  - Scalability analysis (O(1) ops, lock-free reads, bounded writes)
+  - Thread-safety analysis with RwLock strategy
+  - 30+ test scenarios covering lifecycle, state transitions, and concurrency
 
 - [ ] **5.9** Create `05-mvcc-serialization.md`
   - **DESCRIBE**: Snapshot persistence format
