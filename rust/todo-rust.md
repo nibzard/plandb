@@ -1287,9 +1287,11 @@
   - crc32fast crate recommendation for hardware-accelerated checksums
   - 815 lines of detailed natural language specification (no code)
 
-- [ ] **6.4** Create `06-btree-search.md`
+- [x] **6.4** Create `06-btree-search.md` - **[DONE]**
   - **DESCRIBE**: Binary search algorithm
   - **EXPLAIN**: Key comparison logic
+  - **Completed**: 2026-01-04 (commit 045ffe9)
+  - **Blockers**: None - comprehensive search specification complete
 
 - [x] **6.5** Create `06-btree-insert.md` - **[DONE]**
   - **DESCRIBE**: Insert operation flow
@@ -1330,9 +1332,35 @@
   - Comprehensive error detection and recovery
   - Performance optimization guidance
 
-- [ ] **6.6** Create `06-btree-split.md`
+- [x] **6.6** Create `06-btree-split.md` - **[DONE]**
   - **DESCRIBE**: Node split algorithm
   - **EXPLAIN**: Split point selection
+  - **Completed**: 2026-01-04 (commit TBD)
+  - **Blockers**: None - comprehensive split specification complete
+
+  **Work Summary**:
+  - **Complete split algorithms** documented for leaf and internal nodes
+  - **4 split point selection strategies** specified (Half, Balanced, LeftHeavy, RightHeavy)
+  - **Separator key promotion** detailed for both node types
+  - **Leaf linked list updates** fully specified with pointer manipulation
+  - **Parent pointer updates** comprehensive for internal node splits
+  - **Root split algorithm** documented with tree growth mechanics
+  - **Error handling** extensive with rollback and recovery strategies
+  - **Rust implementation guidance** provided for all operations
+
+  **Key Deliverables**:
+  - SplitResult and SplitContext types with comprehensive metadata
+  - Split point selection algorithms (4 strategies with O(1) to O(n) complexity)
+  - Leaf node split with 10-step process including linked list updates
+  - Internal node split with separator promotion and child redistribution
+  - Separator extraction differing for leaf (first key in right) vs internal (promoted separator)
+  - Linked list pointer updates maintaining doubly-linked list consistency
+  - Parent pointer updates for all moved children with rollback on failure
+  - Root split creating new internal root and increasing tree height by 1
+  - Complete error handling for allocation, I/O, structural, overflow, and concurrency errors
+  - Recovery and rollback strategies for all failure scenarios
+  - Rust implementation with type definitions, split algorithms, and validation
+  - Comprehensive testing guidance with unit, property, integration, fuzzing, and performance tests
 
 - [ ] **6.7** Create `06-btree-delete.md`
   - **DESCRIBE**: Delete operation
