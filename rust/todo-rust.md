@@ -1172,8 +1172,26 @@
   - Disk I/O integration functions (write_snapshot, read_snapshot)
   - Testing strategy with unit tests (round-trip, validation), property tests (invariants), and integration tests (persistence, crash recovery)
 
-- [ ] **5.10** Create `05-mvcc-tests.md`
+- [x] **5.10** Create `05-mvcc-tests.md` - **[DONE]**
   - **LIST**: Test scenarios
+  - **Completed**: 2026-01-04
+  - **Blockers**: None - comprehensive MVCC tests specification complete
+
+  **Work Summary**:
+  - **7 test categories** documented (registry operations, visibility calculation, reader lifecycle, reference counting, crash recovery, serialization, concurrency)
+  - **70+ test scenarios** specified across all categories
+  - **Test implementation** guidance provided for Rust
+  - **Performance benchmarks** defined for scalability validation
+
+  **Key Deliverables**:
+  - Snapshot registry operations tests (create, register, lookup, cleanup, stats, persistence)
+  - Visibility calculation tests (basic rules, deleted keys, concurrent writes, historical snapshots)
+  - Reader lifecycle management tests (registration, tracking, cleanup, stats)
+  - Reference counting tests (increment/decrement, cleanup prevention, active snapshot protection)
+  - Serialization/deserialization tests (round-trip, validation, corruption recovery, version compatibility)
+  - Crash recovery tests (registry rebuild, snapshot validation, wal-based recovery, corruption handling)
+  - Concurrency tests (parallel operations, reader scalability, concurrent cleanup, race conditions)
+  - Performance benchmarks (registration throughput, lookup latency, cleanup performance, reader scaling)
 
 ---
 
