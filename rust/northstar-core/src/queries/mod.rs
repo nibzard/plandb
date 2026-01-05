@@ -13,6 +13,13 @@ pub mod cache;
 pub mod adaptive_cost;
 pub mod plan_learning;
 pub mod stats_optimizer;
+pub mod multi_plan_executor;
+pub mod runtime_selection;
+pub mod plan_budgeting;
+
+// Examples module (only compiled when examples feature is enabled)
+#[cfg(feature = "examples")]
+pub mod multi_plan_examples;
 
 // Re-exports for convenience
 pub use types::{
@@ -38,4 +45,16 @@ pub use plan_learning::{
 pub use stats_optimizer::{
     StatisticsOptimizer, ColumnStatistics, HistogramBucket,
     CorrelationStatistics,
+};
+pub use multi_plan_executor::{
+    MultiPlanExecutor, MultiPlanConfig, PlanResult, MultiPlanExecutorStats,
+};
+pub use runtime_selection::{
+    RuntimePlanSelector, RuntimeSelectionConfig, SelectionMetadata,
+    RuntimeDecision, ExecutionMonitor,
+    SelectionReason, ExpectedPerformance, AbandonReason, SwitchReason,
+};
+pub use plan_budgeting::{
+    PlanBudgetManager, ResourcePool, BudgetAllocation, BudgetHandle,
+    ResourceUsage, BudgetCompliance, BudgetStatus, ResourceUtilization,
 };
