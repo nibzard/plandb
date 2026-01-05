@@ -14,10 +14,10 @@ const RESUMABLE_UPLOAD_THRESHOLD: usize = 5 * 1024 * 1024;
 const CHUNK_SIZE: usize = 256 * 1024;
 
 /// Progress callback for upload operations.
-pub type UploadProgress = Box<dyn Fn(u64, Option<u64>) + Send + Sync>;
+pub type UploadProgress = std::sync::Arc<dyn Fn(u64, Option<u64>) + Send + Sync>;
 
 /// Progress callback for download operations.
-pub type DownloadProgress = Box<dyn Fn(u64, Option<u64>) + Send + Sync>;
+pub type DownloadProgress = std::sync::Arc<dyn Fn(u64, Option<u64>) + Send + Sync>;
 
 /// Google Cloud Storage adapter with full GCS integration.
 ///

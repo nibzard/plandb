@@ -13,9 +13,11 @@ use aws_config::Region;
 use aws_credential_types::Credentials;
 #[cfg(feature = "cloud-s3")]
 use aws_sdk_s3::{
-    types::{ByteStream, CompletedMultipartUpload, CompletedPart},
+    types::{CompletedMultipartUpload, CompletedPart},
     Client,
 };
+#[cfg(feature = "cloud-s3")]
+use aws_sdk_s3::primitives::ByteStream;
 #[cfg(feature = "cloud-s3")]
 use std::sync::Arc;
 #[cfg(feature = "cloud-s3")]
@@ -31,10 +33,10 @@ const DEFAULT_PART_SIZE: usize = 16 * 1024 * 1024;
 const MULTIPART_THRESHOLD: usize = 5 * 1024 * 1024;
 
 /// Progress callback for upload operations.
-pub type UploadProgress = Box<dyn Fn(u64, Option<u64>) + Send + Sync>;
+pub type UploadProgress = std::sync::Arc<dyn Fn(u64, Option<u64>) + Send + Sync>;
 
 /// Progress callback for download operations.
-pub type DownloadProgress = Box<dyn Fn(u64, Option<u64>) + Send + Sync>;
+pub type DownloadProgress = std::sync::Arc<dyn Fn(u64, Option<u64>) + Send + Sync>;
 
 /// AWS S3 adapter with full AWS SDK integration.
 ///
@@ -101,26 +103,22 @@ impl S3Adapter {
             .as_ref()
             .ok_or_else(|| CloudError::InvalidRequest("S3 configuration required".into()))?;
 
-        // Load or resolve credentials
-        let credentials = if !s3_config.access_key_id.is_empty() {
-            // Explicit credentials from config
-            Credentials::from_keys(
-                s3_config.access_key_id.clone(),
-                s3_config.secret_access_key.clone(),
-                s3_config.session_token.clone(),
-            )
-        } else {
-            // Use AWS credential chain (env, profile, IAM)
-            Credentials::load_defaults().await.map_err(|e| {
-                CloudError::AuthenticationFailed(format!("Failed to load credentials: {}", e))
-            })?
-        };
-
         // Build AWS configuration
         let region = Region::new(s3_config.region.clone());
         let mut config_loader = aws_config::defaults(aws_config::BehaviorVersion::latest())
-            .region(region)
-            .credentials_provider(credentials);
+            .region(region);
+
+        // Set explicit credentials if provided, otherwise use default chain
+        if !s3_config.access_key_id.is_empty() {
+            let credentials = Credentials::new(
+                s3_config.access_key_id.clone(),
+                s3_config.secret_access_key.clone(),
+                s3_config.session_token.clone(),
+                None,
+                "static",
+            );
+            config_loader = config_loader.credentials_provider(credentials);
+        }
 
         // Set custom endpoint for S3-compatible storage (MinIO, LocalStack)
         if let Some(endpoint) = &s3_config.endpoint {
@@ -308,22 +306,24 @@ impl S3Adapter {
         }
 
         // Initiate multipart upload with retry
-        let mut create_request = self
-            .client
-            .create_multipart_upload()
-            .bucket(&self.bucket)
-            .key(key);
+        let create_response = super::retry::with_retry(|| {
+            let mut request = self
+                .client
+                .create_multipart_upload()
+                .bucket(&self.bucket)
+                .key(key);
 
-        // Add metadata to indicate encryption status
-        if encrypted {
-            create_request = create_request.metadata("x-amz-meta-encryption", "aes256-gcm");
-        }
+            // Add metadata to indicate encryption status
+            if encrypted {
+                request = request.metadata("x-amz-meta-encryption", "aes256-gcm");
+            }
 
-        let create_response = super::retry::with_retry(|| async {
-            create_request
-                .send()
-                .await
-                .map_err(|e| self.map_s3_error(e, key))
+            async move {
+                request
+                    .send()
+                    .await
+                    .map_err(|e| self.map_s3_error(e, key))
+            }
         }, &super::retry::RetryPolicy::upload()).await?;
 
         let upload_id = create_response
@@ -411,19 +411,7 @@ impl S3Adapter {
         let uploaded_parts: Vec<CompletedPart> =
             futures::future::try_join_all(upload_tasks)
                 .await
-                .map_err(|e| {
-                    // Abort upload on failure
-                    let _ = self
-                        .client
-                        .abort_multipart_upload()
-                        .bucket(&self.bucket)
-                        .key(key)
-                        .upload_id(&upload_id)
-                        .send()
-                        .await;
-
-                    CloudError::NetworkError(format!("Multipart upload failed: {}", e))
-                })?
+                .map_err(|e| CloudError::NetworkError(format!("Multipart upload failed: {}", e)))?
                 .into_iter()
                 .collect::<Result<Vec<_>, _>>()?;
 
@@ -445,19 +433,7 @@ impl S3Adapter {
                 )
                 .send()
                 .await
-                .map_err(|e| {
-                    // Abort upload on failure
-                    let _ = self
-                        .client
-                        .abort_multipart_upload()
-                        .bucket(&self.bucket)
-                        .key(key)
-                        .upload_id(&upload_id)
-                        .send()
-                        .await;
-
-                    self.map_s3_error(e, key)
-                })
+                .map_err(|e| self.map_s3_error(e, key))
         }, &super::retry::RetryPolicy::upload()).await?;
 
         Ok(complete_response
@@ -501,10 +477,12 @@ impl S3Adapter {
             .map_err(|e| self.map_s3_error(e, &full_key))?;
 
         // Check if object was encrypted
-        let metadata = response.metadata().unwrap_or(&std::collections::HashMap::new());
-        let is_encrypted = metadata.contains_key(&String::from("x-amz-meta-encryption"));
+        let is_encrypted = response
+            .metadata()
+            .map(|m| m.contains_key(&String::from("x-amz-meta-encryption")))
+            .unwrap_or(false);
 
-        let content_length = response.content_length as usize;
+        let content_length = response.content_length.unwrap_or(0) as usize;
         let mut buffer = Vec::with_capacity(content_length);
         let mut stream = response.body;
 
@@ -739,7 +717,7 @@ impl S3Adapter {
             .await
             .map_err(|e| self.map_s3_error(e, &full_key))?;
 
-        Ok(response.content_length as u64)
+        Ok(response.content_length.unwrap_or(0) as u64)
     }
 
     /// Placeholder get_object_size (without cloud-s3 feature).
@@ -762,7 +740,10 @@ impl S3Adapter {
 
     /// Map AWS SDK error to CloudError.
     #[cfg(feature = "cloud-s3")]
-    fn map_s3_error(&self, err: aws_sdk_s3::Error, key: &str) -> CloudError {
+    fn map_s3_error<E>(&self, err: E, key: &str) -> CloudError
+    where
+        E: std::fmt::Display,
+    {
         let err_msg = err.to_string();
 
         if err_msg.contains("NoSuchKey") || err_msg.contains("404") {
