@@ -228,6 +228,16 @@ impl RelationshipCartridge {
         Ok(result)
     }
 
+    /// Get all relationships from an entity (alias for get_from_entity)
+    pub fn get_from(&self, from_entity: &str) -> Result<Vec<Relationship>> {
+        self.get_from_entity(from_entity)
+    }
+
+    /// Get all relationships to an entity (alias for get_to_entity)
+    pub fn get_to(&self, to_entity: &str) -> Result<Vec<Relationship>> {
+        self.get_to_entity(to_entity)
+    }
+
     /// Get all relationships of a specific type
     pub fn get_by_type(&self, rel_type: RelationshipType) -> Result<Vec<Relationship>> {
         let by_type = self.by_type.read()

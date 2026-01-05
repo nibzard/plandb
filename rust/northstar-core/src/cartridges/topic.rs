@@ -292,6 +292,26 @@ impl TopicCartridge {
         Ok(())
     }
 
+    /// Get topic by name
+    pub fn get_by_name(&self, name: &str) -> Result<Option<Topic>> {
+        let topics = self.topics.read()
+            .map_err(|e| DbError::Io(IoError::InternalError(format!("Failed to acquire read lock: {}", e))))?;
+
+        // Find topic by name
+        for topic in topics.values() {
+            if topic.name == name {
+                return Ok(Some(topic.clone()));
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Get all topics
+    pub fn get_all_topics(&self) -> Result<Vec<Topic>> {
+        self.get_all()
+    }
+
     /// Add entity to topic
     pub fn add_entity_to_topic(&self, topic_id: &str, entity_id: String) -> Result<()> {
         let mut topics = self.topics.write()

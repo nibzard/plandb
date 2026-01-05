@@ -34,6 +34,9 @@ pub mod cartridges;
 #[cfg(any(feature = "llm-openai", feature = "llm-anthropic", feature = "llm-local"))]
 pub mod llm;
 
+#[cfg(any(feature = "llm-openai", feature = "llm-anthropic", feature = "llm-local"))]
+pub mod queries;
+
 // Re-exports for convenience
 pub use error::{DbError, Error, Result};
 pub use page::{Page, PageHeader, PageType};

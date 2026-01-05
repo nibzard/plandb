@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 
 /// Entity type enumeration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum EntityType {
     /// Source code file
     File,
@@ -89,6 +89,26 @@ impl Entity {
     pub fn with_metadata(mut self, key: String, value: String) -> Self {
         self.metadata.insert(key, value);
         self
+    }
+
+    /// Get entity ID
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// Get entity name
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Get entity confidence
+    pub fn confidence(&self) -> f32 {
+        self.confidence
+    }
+
+    /// Get commit ID
+    pub fn commit_id(&self) -> Option<TransactionId> {
+        Some(self.commit_id)
     }
 }
 
@@ -255,6 +275,65 @@ impl ConfigEntity {
     }
 }
 
+/// Unified entity enum for query system
+#[derive(Debug, Clone)]
+pub enum UnifiedEntity {
+    File(FileEntity),
+    Function(FunctionEntity),
+    Person(PersonEntity),
+    Config(ConfigEntity),
+    Base(Entity),
+}
+
+impl UnifiedEntity {
+    /// Get entity ID
+    pub fn id(&self) -> &str {
+        match self {
+            UnifiedEntity::File(f) => &f.entity.id,
+            UnifiedEntity::Function(f) => &f.entity.id,
+            UnifiedEntity::Person(p) => &p.entity.id,
+            UnifiedEntity::Config(c) => &c.entity.id,
+            UnifiedEntity::Base(e) => &e.id,
+        }
+    }
+
+    /// Get entity name
+    pub fn name(&self) -> &str {
+        match self {
+            UnifiedEntity::File(f) => &f.entity.name,
+            UnifiedEntity::Function(f) => &f.entity.name,
+            UnifiedEntity::Person(p) => &p.entity.name,
+            UnifiedEntity::Config(c) => &c.entity.name,
+            UnifiedEntity::Base(e) => &e.name,
+        }
+    }
+
+    /// Get entity confidence
+    pub fn confidence(&self) -> f32 {
+        match self {
+            UnifiedEntity::File(f) => f.entity.confidence,
+            UnifiedEntity::Function(f) => f.entity.confidence,
+            UnifiedEntity::Person(p) => p.entity.confidence,
+            UnifiedEntity::Config(c) => c.entity.confidence,
+            UnifiedEntity::Base(e) => e.confidence,
+        }
+    }
+
+    /// Get commit ID
+    pub fn commit_id(&self) -> Option<TransactionId> {
+        match self {
+            UnifiedEntity::File(f) => Some(f.entity.commit_id),
+            UnifiedEntity::Function(f) => Some(f.entity.commit_id),
+            UnifiedEntity::Person(p) => Some(p.entity.commit_id),
+            UnifiedEntity::Config(c) => Some(c.entity.commit_id),
+            UnifiedEntity::Base(e) => Some(e.commit_id),
+        }
+    }
+}
+
+// For backwards compatibility in the query system, we'll use Entity as an alias
+pub type EntityForQuery = UnifiedEntity;
+
 /// Entity cartridge for storing and querying entities
 #[derive(Debug)]
 pub struct EntityCartridge {
@@ -417,6 +496,31 @@ impl EntityCartridge {
         }
 
         Ok(())
+    }
+
+    /// Get entity by ID (alias for get)
+    pub fn get_by_id(&self, id: &str) -> Result<Option<Entity>> {
+        self.get(id)
+    }
+
+    /// Get all files
+    pub fn get_all_files(&self) -> Result<Vec<Entity>> {
+        self.get_by_type(EntityType::File)
+    }
+
+    /// Get all functions
+    pub fn get_all_functions(&self) -> Result<Vec<Entity>> {
+        self.get_by_type(EntityType::Function)
+    }
+
+    /// Get all persons
+    pub fn get_all_persons(&self) -> Result<Vec<Entity>> {
+        self.get_by_type(EntityType::Person)
+    }
+
+    /// Get all configs
+    pub fn get_all_configs(&self) -> Result<Vec<Entity>> {
+        self.get_by_type(EntityType::Config)
     }
 }
 

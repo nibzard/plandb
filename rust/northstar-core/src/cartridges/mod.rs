@@ -9,6 +9,9 @@ pub mod topic;
 pub mod relationship;
 
 // Re-exports for convenience
-pub use entity::{Entity, EntityCartridge, EntityType, FileEntity, FunctionEntity, PersonEntity, ConfigEntity};
+pub use entity::{Entity, EntityCartridge, EntityType, FileEntity, FunctionEntity, PersonEntity, ConfigEntity, UnifiedEntity};
 pub use topic::{Topic, TopicCartridge, TopicCategory};
 pub use relationship::{Relationship, RelationshipCartridge, RelationshipType};
+
+// Re-export UnifiedEntity as Entity for the query system
+pub use entity::UnifiedEntity as QueryEntity;

@@ -135,7 +135,6 @@ struct ExtractedRelationship {
 }
 
 /// Entity extractor plugin
-#[derive(Debug)]
 pub struct EntityExtractorPlugin {
     /// LLM provider for function calling
     llm: Arc<dyn LlmProvider>,
@@ -160,6 +159,20 @@ pub struct EntityExtractorPlugin {
 
     /// Relationship counter for generating IDs
     rel_counter: Arc<RwLock<usize>>,
+}
+
+impl std::fmt::Debug for EntityExtractorPlugin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EntityExtractorPlugin")
+            .field("config", &self.config)
+            .field("entity_cartridge", &self.entity_cartridge)
+            .field("topic_cartridge", &self.topic_cartridge)
+            .field("relationship_cartridge", &self.relationship_cartridge)
+            .field("entity_counter", &self.entity_counter)
+            .field("topic_counter", &self.topic_counter)
+            .field("rel_counter", &self.rel_counter)
+            .finish()
+    }
 }
 
 impl EntityExtractorPlugin {
@@ -268,6 +281,7 @@ impl EntityExtractorPlugin {
                     }
                 }
             }),
+            validate_params: true,
         };
 
         let request = crate::llm::FunctionCallRequest {
@@ -313,11 +327,13 @@ impl EntityExtractorPlugin {
 
         for mutation in &event.mutations {
             prompt.push_str(&format!(
-                "Mutation: {} on key {:?}\n",
-                mutation.mutation_type, mutation.key
+                "Mutation: {:?} on key {:?}\n",
+                mutation.op_type, mutation.key
             ));
             if let Some(value) = &mutation.value {
-                prompt.push_str(&format!("Value: {}\n", value));
+                // Convert bytes to string representation
+                let value_str = String::from_utf8_lossy(value);
+                prompt.push_str(&format!("Value: {}\n", value_str));
             }
         }
 
@@ -446,6 +462,7 @@ impl EntityExtractorPlugin {
                     }
                 }
             }),
+            validate_params: true,
         };
 
         let request = crate::llm::FunctionCallRequest {
@@ -659,18 +676,21 @@ impl Plugin for EntityExtractorPlugin {
     async fn on_init(&mut self, _context: &PluginContext) -> Result<()> {
         // Validate configuration
         if self.config.min_confidence < 0.0 || self.config.min_confidence > 1.0 {
-            return Err(DbError::Validation(crate::error::ValidationError::InvalidInput)(
+            return Err(DbError::Validation(crate::error::ValidationError::Generic(
                 "min_confidence must be between 0.0 and 1.0".to_string(),
-            ));
+            )));
         }
 
         // Check LLM provider availability
-        let health = self.llm.health_check().await?;
-        if !health.is_healthy() {
-            return Err(DbError::Io(IoError::InternalError(format!((
+        let health = self.llm.health_check().await.map_err(|e| DbError::Io(IoError::InternalError(format!(
+            "LLM health check failed: {}",
+            e
+        ))))?;
+        if health != crate::llm::provider::HealthStatus::Healthy {
+            return Err(DbError::Io(IoError::InternalError(format!(
                 "LLM provider not healthy: {:?}",
                 health
-            )));
+            ))));
         }
 
         Ok(())
