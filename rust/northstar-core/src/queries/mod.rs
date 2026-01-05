@@ -9,6 +9,7 @@ pub mod types;
 pub mod planner;
 pub mod entity_linker;
 pub mod optimizer;
+pub mod cache;
 
 // Re-exports for convenience
 pub use types::{
@@ -19,3 +20,8 @@ pub use types::{
 pub use planner::{QueryPlanner, QueryPlannerConfig};
 pub use entity_linker::{EntityLinker, EntityLinkerConfig};
 pub use optimizer::{QueryOptimizer, ResultRanker};
+pub use cache::{
+    QueryCacheIntegration, QueryCacheConfig, QueryPlanKey, CachedPlan,
+    QueryFrequency, CachePriority, CommitInvalidation, QueryCacheIntegrationStats,
+    QueryFrequencySummary,
+};
