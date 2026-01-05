@@ -13,12 +13,28 @@ path = "src/main.rs"
 [dependencies]
 northstar-core = { path = "../northstar-core" }
 northstar-bench = { path = "../northstar-bench" }
-tokio = { workspace = true }
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Async
+tokio = { workspace = true, features = ["full"] }
+
+# Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
-thiserror = { workspace = true }
-anyhow = { workspace = true }
-clap = { version = "4.5", features = ["derive"] }
+
+# Compression
+flate2 = "1.0"
+
+# Chrono for timestamps in metadata
+chrono = { version = "0.4", features = ["serde"] }
 
 [features]
 default = []
+s3 = []
+gcs = []
+azure = []
+all-clouds = ["s3", "gcs", "azure"]

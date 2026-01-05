@@ -2509,7 +2509,9 @@ name = "northstar-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
+ "flate2",
  "northstar-bench",
  "northstar-core",
  "serde",
