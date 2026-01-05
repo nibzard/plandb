@@ -5,6 +5,7 @@
 
 use super::adapter::CloudStorageAdapter;
 use super::types::{CloudStorageConfig, CloudError, CloudStorageProvider, AzureConfig};
+use super::encrypt::{EncryptionConfig, encrypt_data, decrypt_data};
 
 #[cfg(feature = "cloud-azure")]
 use azure_storage::StorageCredentials;
@@ -259,12 +260,23 @@ impl AzureAdapter {
         data: &[u8],
         progress: Option<UploadProgress>,
     ) -> Result<String, CloudError> {
+        // Encrypt data if encryption is enabled
+        let (upload_data, _encrypted) = if let Some(encryption_key) = &self.config.encryption {
+            let encryption_config = EncryptionConfig::CustomerKey {
+                key: encryption_key.clone()
+            };
+            let encrypted = encrypt_data(data, &encryption_config)?;
+            (encrypted, true)
+        } else {
+            (data.to_vec(), false)
+        };
+
         let blob_client = self.container_client.blob_client(key);
 
         let put_response = blob_client
             .put_blob()
             .content_type("application/octet-stream")
-            .body(data.to_vec())
+            .body(upload_data)
             .execute()
             .await
             .map_err(|e| self.map_azure_error(e, key))?;
@@ -287,6 +299,17 @@ impl AzureAdapter {
         data: &[u8],
         progress: Option<UploadProgress>,
     ) -> Result<String, CloudError> {
+        // Encrypt data if encryption is enabled
+        let (upload_data, _encrypted) = if let Some(encryption_key) = &self.config.encryption {
+            let encryption_config = EncryptionConfig::CustomerKey {
+                key: encryption_key.clone()
+            };
+            let encrypted = encrypt_data(data, &encryption_config)?;
+            (encrypted, true)
+        } else {
+            (data.to_vec(), false)
+        };
+
         let blob_client = self.container_client.blob_client(key);
         let azure_config = self.config.azure.as_ref().unwrap();
         let block_size = azure_config
@@ -301,10 +324,10 @@ impl AzureAdapter {
             ));
         }
 
-        // Split data into blocks
-        let blocks: Vec<&[u8]> = data.chunks(block_size).collect();
+        // Split encrypted data into blocks
+        let blocks: Vec<&[u8]> = upload_data.chunks(block_size).collect();
         let total_blocks = blocks.len();
-        let total_bytes = data.len();
+        let total_bytes = upload_data.len();
 
         // Create semaphore for concurrent upload limiting
         let max_concurrent = self.config.max_concurrent_uploads;
@@ -431,6 +454,10 @@ impl AzureAdapter {
             .await
             .map_err(|e| self.map_azure_error(e, &full_key))?;
 
+        // Check if blob was encrypted via metadata
+        let metadata = download_response.blob.metadata.clone().unwrap_or_default();
+        let is_encrypted = metadata.contains_key("encryption");
+
         let content_length = download_response.blob.properties.content_length as usize;
         let mut buffer = Vec::with_capacity(content_length);
 
@@ -443,7 +470,23 @@ impl AzureAdapter {
             cb(buffer.len() as u64, Some(content_length as u64));
         }
 
-        Ok(buffer)
+        // Decrypt data if encryption was used
+        let decrypted_data = if is_encrypted {
+            if let Some(encryption_key) = &self.config.encryption {
+                let encryption_config = EncryptionConfig::CustomerKey {
+                    key: encryption_key.clone()
+                };
+                decrypt_data(&buffer, &encryption_config)?
+            } else {
+                return Err(CloudError::Other(
+                    "Blob is encrypted but no encryption key configured".into()
+                ));
+            }
+        } else {
+            buffer
+        };
+
+        Ok(decrypted_data)
     }
 
     /// Placeholder download (without cloud-azure feature).
@@ -811,5 +854,33 @@ mod tests {
                 assert_eq!(adapter.apply_key_prefix("test.db"), "test.db");
             }
         }
+    }
+
+    #[test]
+    fn test_encryption_config_integration() {
+        use crate::cloud::encrypt::generate_encryption_key;
+
+        // Test with encryption key
+        let encryption_key = generate_encryption_key();
+        let azure_config = AzureConfig::new("mystorageaccount", "test-container")
+            .with_access_key("base64key==");
+        let config = CloudStorageConfig::new(CloudStorageProvider::AzureBlob)
+            .with_azure(azure_config)
+            .with_encryption(encryption_key.clone());
+
+        assert!(config.encryption.is_some());
+        assert_eq!(config.encryption.unwrap(), encryption_key);
+    }
+
+    #[test]
+    fn test_encryption_disabled() {
+        let azure_config = AzureConfig::new("mystorageaccount", "test-container")
+            .with_access_key("base64key==");
+
+        let config = CloudStorageConfig::new(CloudStorageProvider::AzureBlob)
+            .with_azure(azure_config)
+            .without_encryption();
+
+        assert!(config.encryption.is_none());
     }
 }

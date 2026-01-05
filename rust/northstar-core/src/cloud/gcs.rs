@@ -5,6 +5,7 @@
 
 use super::adapter::CloudStorageAdapter;
 use super::types::{CloudStorageConfig, CloudError, CloudStorageProvider, GcsConfig};
+use super::encrypt::{EncryptionConfig, encrypt_data, decrypt_data};
 
 /// Threshold for using resumable upload (5 MB).
 const RESUMABLE_UPLOAD_THRESHOLD: usize = 5 * 1024 * 1024;
@@ -122,13 +123,25 @@ impl GcsAdapter {
         data: &[u8],
         progress: Option<UploadProgress>,
     ) -> Result<String, CloudError> {
+        // Encrypt data if encryption is enabled
+        let (upload_data, _encrypted) = if let Some(encryption_key) = &self.config.encryption {
+            let encryption_config = EncryptionConfig::CustomerKey {
+                key: encryption_key.clone()
+            };
+            let encrypted = encrypt_data(data, &encryption_config)?;
+            (encrypted, true)
+        } else {
+            (data.to_vec(), false)
+        };
+
         // Call progress callback if provided
         if let Some(cb) = progress {
-            cb(data.len() as u64, Some(data.len() as u64));
+            cb(upload_data.len() as u64, Some(upload_data.len() as u64));
         }
 
         // Return a placeholder generation ID
         // In a full implementation, this would use the GCS client to upload
+        // and would add metadata to indicate encryption status
         Err(CloudError::Other(
             "GCS upload not yet fully implemented - requires google-cloud-storage client setup".into(),
         ))
@@ -171,6 +184,27 @@ impl GcsAdapter {
         _key: &str,
         _progress: Option<DownloadProgress>,
     ) -> Result<Vec<u8>, CloudError> {
+        // In a full implementation, this would:
+        // 1. Download the object from GCS
+        // 2. Check metadata for encryption status
+        // 3. Decrypt data if it was encrypted
+
+        // Placeholder - would decrypt data if metadata indicates encryption
+        // let decrypted_data = if is_encrypted {
+        //     if let Some(encryption_key) = &self.config.encryption {
+        //         let encryption_config = EncryptionConfig::CustomerKey {
+        //             key: encryption_key.clone()
+        //         };
+        //         decrypt_data(&downloaded_data, &encryption_config)?
+        //     } else {
+        //         return Err(CloudError::Other(
+        //             "Object is encrypted but no encryption key configured".into()
+        //         ));
+        //     }
+        // } else {
+        //     downloaded_data
+        // };
+
         Err(CloudError::Other(
             "GCS download not yet fully implemented - requires google-cloud-storage client setup".into(),
         ))
@@ -412,5 +446,32 @@ mod tests {
                 assert_eq!(adapter.apply_key_prefix("test.db"), "test.db");
             }
         }
+    }
+
+    #[test]
+    fn test_encryption_config_integration() {
+        use crate::cloud::encrypt::generate_encryption_key;
+
+        // Test with encryption key
+        let encryption_key = generate_encryption_key();
+        let gcs_config = GcsConfig::new("test-bucket")
+            .with_credentials_json("{\"type\": \"service_account\"}");
+        let config = CloudStorageConfig::new(CloudStorageProvider::Gcs)
+            .with_gcs(gcs_config)
+            .with_encryption(encryption_key.clone());
+
+        assert!(config.encryption.is_some());
+        assert_eq!(config.encryption.unwrap(), encryption_key);
+    }
+
+    #[test]
+    fn test_encryption_disabled() {
+        let gcs_config = GcsConfig::new("test-bucket")
+            .with_credentials_json("{\"type\": \"service_account\"}");
+        let config = CloudStorageConfig::new(CloudStorageProvider::Gcs)
+            .with_gcs(gcs_config)
+            .without_encryption();
+
+        assert!(config.encryption.is_none());
     }
 }

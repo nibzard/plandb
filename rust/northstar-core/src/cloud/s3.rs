@@ -5,6 +5,7 @@
 
 use super::adapter::CloudStorageAdapter;
 use super::types::{CloudStorageConfig, CloudError, CloudStorageProvider, S3Config};
+use super::encrypt::{EncryptionConfig, encrypt_data, decrypt_data};
 
 #[cfg(feature = "cloud-s3")]
 use aws_config::Region;
@@ -233,15 +234,33 @@ impl S3Adapter {
         data: &[u8],
         progress: Option<UploadProgress>,
     ) -> Result<String, CloudError> {
-        let byte_stream = ByteStream::from(data.to_vec());
+        // Encrypt data if encryption is enabled
+        let (upload_data, encrypted) = if let Some(encryption_key) = &self.config.encryption {
+            let encryption_config = EncryptionConfig::CustomerKey {
+                key: encryption_key.clone()
+            };
+            let encrypted = encrypt_data(data, &encryption_config)?;
+            (encrypted, true)
+        } else {
+            (data.to_vec(), false)
+        };
 
-        let response = self
+        let byte_stream = ByteStream::from(upload_data.clone());
+
+        let mut request = self
             .client
             .put_object()
             .bucket(&self.bucket)
             .key(key)
-            .content_length(data.len() as i64)
-            .body(byte_stream)
+            .content_length(upload_data.len() as i64)
+            .body(byte_stream);
+
+        // Add metadata to indicate encryption status
+        if encrypted {
+            request = request.metadata("x-amz-meta-encryption", "aes256-gcm");
+        }
+
+        let response = request
             .send()
             .await
             .map_err(|e| self.map_s3_error(e, key))?;
@@ -264,6 +283,17 @@ impl S3Adapter {
         data: &[u8],
         progress: Option<UploadProgress>,
     ) -> Result<String, CloudError> {
+        // Encrypt data if encryption is enabled
+        let (upload_data, encrypted) = if let Some(encryption_key) = &self.config.encryption {
+            let encryption_config = EncryptionConfig::CustomerKey {
+                key: encryption_key.clone()
+            };
+            let encrypted = encrypt_data(data, &encryption_config)?;
+            (encrypted, true)
+        } else {
+            (data.to_vec(), false)
+        };
+
         let s3_config = self.config.s3.as_ref().unwrap();
         let part_size = s3_config
             .part_size
@@ -278,11 +308,19 @@ impl S3Adapter {
         }
 
         // Initiate multipart upload with retry
+        let mut create_request = self
+            .client
+            .create_multipart_upload()
+            .bucket(&self.bucket)
+            .key(key);
+
+        // Add metadata to indicate encryption status
+        if encrypted {
+            create_request = create_request.metadata("x-amz-meta-encryption", "aes256-gcm");
+        }
+
         let create_response = super::retry::with_retry(|| async {
-            self.client
-                .create_multipart_upload()
-                .bucket(&self.bucket)
-                .key(key)
+            create_request
                 .send()
                 .await
                 .map_err(|e| self.map_s3_error(e, key))
@@ -292,10 +330,10 @@ impl S3Adapter {
             .upload_id
             .ok_or_else(|| CloudError::Other("Missing upload ID".into()))?;
 
-        // Split data into parts
-        let parts: Vec<&[u8]> = data.chunks(part_size).collect();
+        // Split encrypted data into parts
+        let parts: Vec<&[u8]> = upload_data.chunks(part_size).collect();
         let total_parts = parts.len();
-        let total_bytes = data.len();
+        let total_bytes = upload_data.len();
 
         // Create semaphore for concurrent upload limiting
         let max_concurrent = self.config.max_concurrent_uploads;
@@ -462,6 +500,10 @@ impl S3Adapter {
             .await
             .map_err(|e| self.map_s3_error(e, &full_key))?;
 
+        // Check if object was encrypted
+        let metadata = response.metadata().unwrap_or(&std::collections::HashMap::new());
+        let is_encrypted = metadata.contains_key(&String::from("x-amz-meta-encryption"));
+
         let content_length = response.content_length as usize;
         let mut buffer = Vec::with_capacity(content_length);
         let mut stream = response.body;
@@ -480,7 +522,23 @@ impl S3Adapter {
             }
         }
 
-        Ok(buffer)
+        // Decrypt data if encryption was used
+        let decrypted_data = if is_encrypted {
+            if let Some(encryption_key) = &self.config.encryption {
+                let encryption_config = EncryptionConfig::CustomerKey {
+                    key: encryption_key.clone()
+                };
+                decrypt_data(&buffer, &encryption_config)?
+            } else {
+                return Err(CloudError::Other(
+                    "Object is encrypted but no encryption key configured".into()
+                ));
+            }
+        } else {
+            buffer
+        };
+
+        Ok(decrypted_data)
     }
 
     /// Placeholder download (without cloud-s3 feature).
@@ -835,5 +893,30 @@ mod tests {
                 assert_eq!(adapter.apply_key_prefix("test.db"), "test.db");
             }
         }
+    }
+
+    #[test]
+    fn test_encryption_config_integration() {
+        use crate::cloud::encrypt::generate_encryption_key;
+
+        // Test with encryption key
+        let encryption_key = generate_encryption_key();
+        let s3_config = S3Config::new("us-east-1", "test-bucket");
+        let config = CloudStorageConfig::new(CloudStorageProvider::AwsS3)
+            .with_s3(s3_config)
+            .with_encryption(encryption_key.clone());
+
+        assert!(config.encryption.is_some());
+        assert_eq!(config.encryption.unwrap(), encryption_key);
+    }
+
+    #[test]
+    fn test_encryption_disabled() {
+        let s3_config = S3Config::new("us-east-1", "test-bucket");
+        let config = CloudStorageConfig::new(CloudStorageProvider::AwsS3)
+            .with_s3(s3_config)
+            .without_encryption();
+
+        assert!(config.encryption.is_none());
     }
 }
