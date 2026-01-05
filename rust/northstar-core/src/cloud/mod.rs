@@ -86,18 +86,47 @@
 //! use northstar_core::cloud::adapter::CloudStorageAdapter;
 //! use northstar_core::cloud::backup::CloudBackupManager;
 //!
-//! // Configure S3 storage
+//! // Configure S3 storage with encryption
 //! let s3_config = S3Config::new("us-east-1", "my-backups")
 //!     .with_access_key("AKIAIOSFODNN7EXAMPLE")
 //!     .with_secret_key("secret");
 //!
+//! let encryption_key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+//!
 //! let config = CloudStorageConfig::new(CloudStorageProvider::AwsS3)
-//!     .with_s3(s3_config);
+//!     .with_s3(s3_config)
+//!     .with_encryption(encryption_key.to_string());
 //!
 //! // Create adapter and upload backup
 //! let adapter = S3Adapter::new(config)?;
 //! let data = std::fs::read("backup.nbk")?;
 //! adapter.upload("backups/2026-01-04/backup.nbk", data, None).await?;
+//! ```
+//!
+//! # Encryption at Rest
+//!
+//! Backup data can be encrypted with AES-256-GCM before uploading to cloud storage:
+//!
+//! - **Customer-provided key**: 256-bit key (64 hex chars) provided in config
+//! - **Authenticated encryption**: GCM mode ensures integrity verification
+//! - **Format**: [nonce: 12 bytes][tag: 16 bytes][encrypted data]
+//! - **Key management**: Keys never logged or persisted by database
+//!
+//! Example with encryption:
+//! ```ignore
+//! use northstar_core::cloud::encrypt::{EncryptionConfig, encrypt_data};
+//!
+//! // Generate encryption key (save this securely!)
+//! let key = northstar_core::cloud::encrypt::generate_encryption_key();
+//! println!("Encryption key: {}", key);
+//!
+//! let config = EncryptionConfig::CustomerKey { key };
+//!
+//! // Encrypt backup data
+//! let encrypted = encrypt_data(&backup_data, &config)?;
+//!
+//! // Upload encrypted data
+//! adapter.upload("backup.enc", encrypted, None).await?;
 //! ```
 
 pub mod adapter;
@@ -107,6 +136,7 @@ pub mod azure;
 pub mod backup;
 pub mod types;
 pub mod retry;
+pub mod encrypt;
 
 // Re-export commonly used types
 pub use types::{
@@ -121,3 +151,4 @@ pub use gcs::GcsAdapter;
 pub use azure::AzureAdapter;
 pub use backup::{CloudBackupManager, SyncReport};
 pub use retry::{RetryPolicy, with_retry};
+pub use encrypt::{EncryptionConfig, encrypt_data, decrypt_data, encrypt_stream, decrypt_stream, generate_encryption_key};

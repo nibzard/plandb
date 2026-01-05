@@ -55,6 +55,8 @@ pub enum CloudError {
     UploadCancelled,
     /// Provider-specific error.
     Other(String),
+    /// Feature or operation not supported.
+    Unsupported(String),
 }
 
 impl fmt::Display for CloudError {
@@ -73,6 +75,7 @@ impl fmt::Display for CloudError {
             }
             Self::UploadCancelled => write!(f, "Upload cancelled"),
             Self::Other(msg) => write!(f, "Cloud error: {}", msg),
+            Self::Unsupported(msg) => write!(f, "Unsupported: {}", msg),
         }
     }
 }
@@ -129,6 +132,7 @@ impl CloudError {
             CloudError::InvalidRequest(_) => false,
             CloudError::ChecksumMismatch { .. } => false,
             CloudError::UploadCancelled => false,
+            CloudError::Unsupported(_) => false,
         }
     }
 }
@@ -448,6 +452,9 @@ pub struct CloudStorageConfig {
     /// Download buffer size in MB (default: 16).
     #[serde(default = "default_part_size")]
     pub download_part_size_mb: usize,
+    /// Encryption configuration (default: None).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encryption: Option<String>,
 }
 
 fn default_part_size() -> usize { 16 }
@@ -464,6 +471,7 @@ impl CloudStorageConfig {
             upload_part_size_mb: 16,
             max_concurrent_uploads: 4,
             download_part_size_mb: 16,
+            encryption: None,
         }
     }
 
@@ -488,6 +496,18 @@ impl CloudStorageConfig {
     /// Set upload concurrency.
     pub fn with_concurrency(mut self, max_concurrent: usize) -> Self {
         self.max_concurrent_uploads = max_concurrent.max(1).min(32);
+        self
+    }
+
+    /// Enable customer-provided key encryption.
+    pub fn with_encryption(mut self, key: String) -> Self {
+        self.encryption = Some(key);
+        self
+    }
+
+    /// Disable encryption.
+    pub fn without_encryption(mut self) -> Self {
+        self.encryption = None;
         self
     }
 
