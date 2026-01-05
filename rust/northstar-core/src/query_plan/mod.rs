@@ -24,6 +24,7 @@
 //! std::fs::write("plan.html", html).unwrap();
 //! ```
 
+mod cache;
 mod compare;
 mod error;
 mod types;
@@ -32,6 +33,9 @@ mod visualize;
 pub mod hot_path;
 pub mod index_stats;
 
+pub use cache::{
+    CachedPlan, InvalidationStrategy, PlanCache, PlanCacheConfig, PlanCacheError, PlanCacheStats,
+};
 pub use compare::{
     calculate_plan_depth, compare_plans, find_most_expensive_node,
 };
