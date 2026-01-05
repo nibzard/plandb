@@ -11,6 +11,9 @@ pub mod aggregate;
 pub mod query;
 pub mod calendar;
 pub mod visualization;
+pub mod usage;
+pub mod pattern;
+pub mod recommendation;
 
 // Re-exports for convenience
 pub use error::{TimeSeriesError, TimeSeriesResult};
@@ -55,3 +58,14 @@ pub use visualization::{
     // Theme and formatting
     ChartTheme, ThemeColors, TimestampFormat,
 };
+
+// Usage analytics re-exports
+pub use usage::{
+    UsageAnalytics, QueryPattern, KeyAccessStats, HotKeyReport, ColdDataReport,
+    PerformanceAnomaly, Recommendation, ImpactEstimate, Evidence,
+    QueryFingerprint, QueryType, HotKeyClassification, ColdDataClassification,
+    AnomalyType, AnomalySeverity, RecommendationType, RecommendationTarget,
+    EffortLevel, RecommendationPriority, UsageAnalyticsResult, UsageAnalyticsError,
+};
+pub use pattern::{PatternAnalyzer, PatternCluster};
+pub use recommendation::{RecommendationEngine, RecommendationConfig};
