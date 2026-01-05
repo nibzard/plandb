@@ -61,6 +61,7 @@ rand = "0.8"
 
 [features]
 default = []
+cloud = ["cloud-s3"]
 cloud-s3 = ["aws-sdk-s3", "aws-config", "aws-credential-types", "aws-smithy-runtime", "async-stream", "futures"]
 cloud-gcs = ["google-cloud-storage", "google-cloud-token", "async-stream", "futures"]
 cloud-azure = ["azure_storage", "azure_storage_blobs", "azure_identity", "async-stream", "futures", "base64"]

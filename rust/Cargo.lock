@@ -2566,13 +2566,16 @@ name = "northstar-test"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "futures",
  "northstar-core",
  "rand 0.8.5",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror 2.0.17",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

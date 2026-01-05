@@ -1,15 +1,17 @@
-//! Integration tests for NorthstarDB.
-//!
-//! This module provides comprehensive integration tests that validate
-//! interactions between multiple phases and components of the system.
-
-pub mod caching_replication;
 pub mod analytics_query;
+pub mod caching_replication;
 pub mod disaster_recovery;
-pub mod stress_tests;
 pub mod end_to_end;
-
-// Common test utilities
+pub mod stress_tests;
 pub mod common;
 
-pub use common::*;
+// Cloud integration tests
+#[cfg(feature = "cloud-tests")]
+pub mod cloud_common;
+#[cfg(feature = "cloud-tests")]
+pub mod cloud_aws;
+// TODO: Add cloud_gcs and cloud_azure when implemented
+// #[cfg(feature = "cloud-tests")]
+// pub mod cloud_gcs;
+// #[cfg(feature = "cloud-tests")]
+// pub mod cloud_azure;
