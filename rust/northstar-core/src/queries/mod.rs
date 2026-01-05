@@ -10,6 +10,9 @@ pub mod planner;
 pub mod entity_linker;
 pub mod optimizer;
 pub mod cache;
+pub mod adaptive_cost;
+pub mod plan_learning;
+pub mod stats_optimizer;
 
 // Re-exports for convenience
 pub use types::{
@@ -24,4 +27,15 @@ pub use cache::{
     QueryCacheIntegration, QueryCacheConfig, QueryPlanKey, CachedPlan,
     QueryFrequency, CachePriority, CommitInvalidation, QueryCacheIntegrationStats,
     QueryFrequencySummary,
+};
+pub use adaptive_cost::{
+    AdaptiveCostModel, ExecutionStats, LearnedParameters, CostModelStats,
+};
+pub use plan_learning::{
+    PlanLearningEngine, PlanExecutionMetrics, PlanPerformanceHistory,
+    PlanComparison, PlanLearningStats,
+};
+pub use stats_optimizer::{
+    StatisticsOptimizer, ColumnStatistics, HistogramBucket,
+    CorrelationStatistics,
 };

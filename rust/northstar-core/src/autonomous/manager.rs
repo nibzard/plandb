@@ -4,7 +4,7 @@
 
 use crate::analytics::usage::{
     UsageAnalytics, QueryPattern, HotKeyReport, ColdDataReport,
-    Recommendation as UsageRecommendation,
+    Recommendation as UsageRecommendation, ImpactEstimate,
 };
 use crate::autonomous::{
     PolicyEngine, IndexManager, CacheOptimizer, MaintenanceScheduler,
@@ -455,12 +455,11 @@ mod tests {
                     keys: vec![],
                     cache_level: 1,
                 },
-                estimated_benefit: crate::autonomous::ImpactEstimate {
+                estimated_benefit: ImpactEstimate {
                     latency_reduction_percent: 90.0,
                     throughput_increase_percent: 20.0,
                     cost_reduction_percent: None,
                     storage_overhead_bytes: None,
-                    estimated_execution_time: Duration::from_secs(60),
                 },
                 effort_level: crate::analytics::usage::EffortLevel::Trivial,
                 risk_level: 0.05,
@@ -474,12 +473,11 @@ mod tests {
                     table: "users".to_string(),
                     columns: vec!["id".to_string()],
                 },
-                estimated_benefit: crate::autonomous::ImpactEstimate {
+                estimated_benefit: ImpactEstimate {
                     latency_reduction_percent: 80.0,
                     throughput_increase_percent: 50.0,
                     cost_reduction_percent: None,
                     storage_overhead_bytes: Some(1024),
-                    estimated_execution_time: Duration::from_secs(300),
                 },
                 effort_level: crate::analytics::usage::EffortLevel::Easy,
                 risk_level: 0.2,
@@ -497,9 +495,13 @@ mod tests {
 
     fn create_test_manager() -> AutonomousManager {
         use crate::analytics::UsageAnalytics;
+        use crate::monitoring::{MetricRegistry, MonitoringConfig};
+
+        let registry = Arc::new(MetricRegistry::new(MonitoringConfig::default()));
+        let usage_analytics = Arc::new(UsageAnalytics::new(registry));
 
         AutonomousManager::new(
-            Arc::new(UsageAnalytics::default()),
+            usage_analytics,
             PolicyEngine::default_config(),
             AutonomousConfig::default(),
         )
