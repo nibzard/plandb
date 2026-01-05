@@ -29,6 +29,7 @@ pub mod recovery;
 pub mod cloud;
 pub mod plugins;
 pub mod cartridges;
+pub mod autonomous;
 
 // AI Intelligence Layer (feature-gated)
 #[cfg(any(feature = "llm-openai", feature = "llm-anthropic", feature = "llm-local"))]
