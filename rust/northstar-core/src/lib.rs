@@ -27,6 +27,7 @@ pub mod monitoring;
 pub mod degradation;
 pub mod recovery;
 pub mod cloud;
+pub mod plugins;
 
 // Re-exports for convenience
 pub use error::{DbError, Error, Result};

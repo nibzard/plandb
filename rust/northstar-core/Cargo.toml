@@ -28,6 +28,8 @@ regex = { workspace = true }
 uuid = { workspace = true }
 rand = { workspace = true }
 sqlparser = "0.50"
+async-trait = "0.1"
+tracing = "0.1"
 
 # AWS SDK for S3 (feature-gated)
 aws-sdk-s3 = { version = "1.0", optional = true }
