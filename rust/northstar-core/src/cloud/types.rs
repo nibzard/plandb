@@ -79,6 +79,60 @@ impl fmt::Display for CloudError {
 
 impl std::error::Error for CloudError {}
 
+impl CloudError {
+    /// Determine if this error is retryable.
+    ///
+    /// Retryable errors are transient failures that may succeed on retry:
+    /// - Network errors (connection refused, timeout, DNS failure)
+    /// - HTTP 5xx responses (internal server errors)
+    /// - Rate limiting (429, SlowDown)
+    /// - Timeouts
+    ///
+    /// Non-retryable errors are permanent failures:
+    /// - Authentication failures (401, 403)
+    /// - Not found (404)
+    /// - Invalid request (400)
+    /// - Checksum mismatch
+    /// - Upload cancelled
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            // Network issues are retryable
+            CloudError::NetworkError(_) => true,
+
+            // Timeouts are retryable
+            CloudError::Timeout(_) => true,
+
+            // Quota exceeded is retryable only if it's rate limiting
+            CloudError::QuotaExceeded(msg) => {
+                let msg_lower = msg.to_lowercase();
+                msg_lower.contains("rate limit")
+                    || msg_lower.contains("throttl")
+                    || msg_lower.contains("429")
+                    || msg_lower.contains("slowdown")
+            }
+
+            // Generic errors may be retryable if they indicate transient issues
+            CloudError::Other(msg) => {
+                let msg_lower = msg.to_lowercase();
+                msg_lower.contains("rate limit")
+                    || msg_lower.contains("throttling")
+                    || msg_lower.contains("5")
+                    || msg_lower.contains("timeout")
+                    || msg_lower.contains("connection")
+            }
+
+            // All other errors are not retryable
+            CloudError::AuthenticationFailed(_) => false,
+            CloudError::BucketNotFound(_) => false,
+            CloudError::ObjectNotFound(_) => false,
+            CloudError::PermissionDenied(_) => false,
+            CloudError::InvalidRequest(_) => false,
+            CloudError::ChecksumMismatch { .. } => false,
+            CloudError::UploadCancelled => false,
+        }
+    }
+}
+
 /// Configuration for AWS S3 or S3-compatible storage.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct S3Config {
@@ -651,5 +705,65 @@ mod tests {
         let mut progress = CloudUploadProgress::new(Some(1000));
         progress.bytes_uploaded = 500;
         assert_eq!(progress.percent(), 50.0);
+    }
+
+    #[test]
+    fn test_retryable_errors() {
+        // Network errors are retryable
+        assert!(CloudError::NetworkError("connection refused".into()).is_retryable());
+
+        // Timeouts are retryable
+        assert!(CloudError::Timeout("operation timed out".into()).is_retryable());
+
+        // Rate limit errors are retryable
+        assert!(CloudError::QuotaExceeded("rate limit exceeded".into()).is_retryable());
+        assert!(CloudError::QuotaExceeded("SlowDown request".into()).is_retryable());
+        assert!(CloudError::QuotaExceeded("429 Too Many Requests".into()).is_retryable());
+
+        // Generic errors with transient keywords are retryable
+        assert!(CloudError::Other("rate limit hit".into()).is_retryable());
+        assert!(CloudError::Other("throttling request".into()).is_retryable());
+        assert!(CloudError::Other("500 Internal Server Error".into()).is_retryable());
+        assert!(CloudError::Other("connection reset".into()).is_retryable());
+    }
+
+    #[test]
+    fn test_non_retryable_errors() {
+        // Authentication failures are not retryable
+        assert!(!CloudError::AuthenticationFailed("invalid credentials".into()).is_retryable());
+
+        // Not found errors are not retryable
+        assert!(!CloudError::ObjectNotFound("key not found".into()).is_retryable());
+
+        // Permission denied is not retryable
+        assert!(!CloudError::PermissionDenied("access denied".into()).is_retryable());
+
+        // Invalid request is not retryable
+        assert!(!CloudError::InvalidRequest("malformed XML".into()).is_retryable());
+
+        // Checksum mismatch is not retryable
+        assert!(!CloudError::ChecksumMismatch {
+            expected: "abc123".into(),
+            actual: "def456".into(),
+        }.is_retryable());
+
+        // Upload cancelled is not retryable
+        assert!(!CloudError::UploadCancelled.is_retryable());
+
+        // Generic errors without transient keywords are not retryable
+        assert!(!CloudError::Other("permanent failure".into()).is_retryable());
+    }
+
+    #[test]
+    fn test_quota_exceeded_retryable_detection() {
+        // Rate limit errors are retryable
+        assert!(CloudError::QuotaExceeded("Rate limit exceeded".into()).is_retryable());
+        assert!(CloudError::QuotaExceeded("Throttling request".into()).is_retryable());
+        assert!(CloudError::QuotaExceeded("429 Too Many Requests".into()).is_retryable());
+        assert!(CloudError::QuotaExceeded("SlowDown error".into()).is_retryable());
+
+        // Hard quota limits are not retryable
+        assert!(!CloudError::QuotaExceeded("Storage quota full".into()).is_retryable());
+        assert!(!CloudError::QuotaExceeded("Bucket size limit reached".into()).is_retryable());
     }
 }

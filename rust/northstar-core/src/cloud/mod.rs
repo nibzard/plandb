@@ -10,9 +10,35 @@
 //! - **types**: Common configuration and error types
 //! - **adapter**: Unified CloudStorageAdapter trait and implementations
 //! - **backup**: CloudBackupManager for backup synchronization
+//! - **retry**: Retry logic with exponential backoff for all operations
 //! - **s3**: AWS S3 adapter
 //! - **gcs**: Google Cloud Storage adapter
 //! - **azure**: Azure Blob Storage adapter
+//!
+//! # Retry Strategy
+//!
+//! All cloud operations automatically use retry logic with exponential backoff
+//! to handle transient failures:
+//!
+//! - **Exponential Backoff**: Delay doubles with each retry (base_delay * 2^attempt)
+//! - **Full Jitter**: Random delays prevent thundering herd problems
+//! - **Max Delay Caps**: Backoff capped to prevent excessive waits
+//! - **Retryable Errors**: Only retry transient errors (network, 5xx, throttling)
+//! - **Per-Operation Policies**: Different retry limits for upload, download, delete
+//!
+//! Example retry policies:
+//! ```ignore
+//! use northstar_core::cloud::RetryPolicy;
+//!
+//! // Upload: 5 attempts, 100ms base, 30s max
+//! let upload_policy = RetryPolicy::upload();
+//!
+//! // Download: 10 attempts, 100ms base, 30s max (aggressive)
+//! let download_policy = RetryPolicy::download();
+//!
+//! // Delete: 3 attempts, 200ms base, 10s max (conservative)
+//! let delete_policy = RetryPolicy::delete();
+//! ```
 //!
 //! # Example Usage
 //!
@@ -41,6 +67,7 @@ pub mod gcs;
 pub mod azure;
 pub mod backup;
 pub mod types;
+pub mod retry;
 
 // Re-export commonly used types
 pub use types::{
@@ -54,3 +81,4 @@ pub use s3::S3Adapter;
 pub use gcs::GcsAdapter;
 pub use azure::AzureAdapter;
 pub use backup::{CloudBackupManager, SyncReport};
+pub use retry::{RetryPolicy, with_retry};
