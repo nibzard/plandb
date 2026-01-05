@@ -279,7 +279,7 @@ impl AzureAdapter {
             .ok_or_else(|| CloudError::Other("Missing ETag in response".into()))?)
     }
 
-    /// Upload using block blob API.
+    /// Upload using block blob API with retry logic.
     #[cfg(feature = "cloud-azure")]
     async fn upload_block_blob(
         &self,
@@ -288,17 +288,30 @@ impl AzureAdapter {
         progress: Option<UploadProgress>,
     ) -> Result<String, CloudError> {
         let blob_client = self.container_client.blob_client(key);
-        let block_size = DEFAULT_BLOCK_SIZE;
+        let azure_config = self.config.azure.as_ref().unwrap();
+        let block_size = azure_config
+            .block_size
+            .unwrap_or(DEFAULT_BLOCK_SIZE);
+
+        // Validate block size
+        if block_size < MIN_BLOCK_SIZE {
+            return Err(CloudError::InvalidRequest(
+                format!("Block size {} below minimum {}MB",
+                        block_size, MIN_BLOCK_SIZE / 1024 / 1024)
+            ));
+        }
 
         // Split data into blocks
         let blocks: Vec<&[u8]> = data.chunks(block_size).collect();
         let total_blocks = blocks.len();
+        let total_bytes = data.len();
 
         // Create semaphore for concurrent upload limiting
         let max_concurrent = self.config.max_concurrent_uploads;
         let semaphore = Arc::new(Semaphore::new(max_concurrent));
+        let uploaded_bytes = Arc::new(std::sync::Mutex::new(0u64));
 
-        // Upload blocks in parallel
+        // Upload blocks in parallel with retry
         let mut upload_tasks = Vec::new();
         for (i, chunk) in blocks.iter().enumerate() {
             let permit = semaphore.clone().acquire_owned().await.map_err(|e| {
@@ -308,16 +321,43 @@ impl AzureAdapter {
             let client = blob_client.clone();
             let chunk_data = chunk.to_vec();
             let block_id = Self::generate_block_id(i);
+            let chunk_size = chunk_data.len();
+            let progress = progress.clone();
+            let uploaded_bytes = uploaded_bytes.clone();
 
             let task = tokio::spawn(async move {
                 let _permit = permit; // Hold permit for duration
 
-                client
-                    .put_block()
-                    .block_id(&block_id)
-                    .body(chunk_data)
-                    .execute()
-                    .await?;
+                // Wrap block upload with retry logic
+                super::retry::with_retry(|| async {
+                    client
+                        .put_block()
+                        .block_id(&block_id)
+                        .body(chunk_data.clone())
+                        .execute()
+                        .await
+                        .map_err(|e| {
+                            let err_msg = e.to_string();
+                            if err_msg.contains("404") || err_msg.contains("ContainerNotFound") {
+                                CloudError::BucketNotFound("Container not found".into())
+                            } else if err_msg.contains("403") || err_msg.contains("Authorization") {
+                                CloudError::PermissionDenied(format!("No permission for blob: {:?}", block_id))
+                            } else if err_msg.contains("400") {
+                                CloudError::InvalidRequest(format!("Invalid request: {}", err_msg))
+                            } else if err_msg.contains("Timeout") || err_msg.contains("timed out") {
+                                CloudError::Timeout(err_msg)
+                            } else {
+                                CloudError::NetworkError(format!("Block upload failed: {}", err_msg))
+                            }
+                        })
+                }, &super::retry::RetryPolicy::upload()).await?;
+
+                // Update progress callback with cumulative bytes
+                if let Some(cb) = &progress {
+                    let mut total = uploaded_bytes.lock().unwrap();
+                    *total += chunk_size as u64;
+                    cb(*total, Some(total_bytes as u64));
+                }
 
                 Ok::<(), CloudError>(block_id)
             });
@@ -335,18 +375,15 @@ impl AzureAdapter {
                 .into_iter()
                 .collect::<Result<Vec<_>, _>>()?;
 
-        // Update progress callback
-        if let Some(cb) = progress {
-            cb(data.len() as u64, Some(data.len() as u64));
-        }
-
-        // Commit block list
-        let commit_response = blob_client
-            .put_block_list()
-            .block_list(block_ids.clone())
-            .execute()
-            .await
-            .map_err(|e| self.map_azure_error(e, key))?;
+        // Commit block list with retry
+        let commit_response = super::retry::with_retry(|| async {
+            blob_client
+                .put_block_list()
+                .block_list(block_ids.clone())
+                .execute()
+                .await
+                .map_err(|e| self.map_azure_error(e, key))
+        }, &super::retry::RetryPolicy::upload()).await?;
 
         Ok(commit_response
             .e_tag

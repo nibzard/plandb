@@ -256,7 +256,7 @@ impl S3Adapter {
             .ok_or_else(|| CloudError::Other("Missing ETag in response".into()))?)
     }
 
-    /// Upload using multipart upload API.
+    /// Upload using multipart upload API with retry logic.
     #[cfg(feature = "cloud-s3")]
     async fn upload_multipart(
         &self,
@@ -266,19 +266,27 @@ impl S3Adapter {
     ) -> Result<String, CloudError> {
         let s3_config = self.config.s3.as_ref().unwrap();
         let part_size = s3_config
-            .use_path_style
-            .then(|| DEFAULT_PART_SIZE)
+            .part_size
             .unwrap_or(DEFAULT_PART_SIZE);
 
-        // Initiate multipart upload
-        let create_response = self
-            .client
-            .create_multipart_upload()
-            .bucket(&self.bucket)
-            .key(key)
-            .send()
-            .await
-            .map_err(|e| self.map_s3_error(e, key))?;
+        // Validate part size
+        if part_size < MIN_PART_SIZE {
+            return Err(CloudError::InvalidRequest(
+                format!("Part size {} below minimum {}MB",
+                        part_size, MIN_PART_SIZE / 1024 / 1024)
+            ));
+        }
+
+        // Initiate multipart upload with retry
+        let create_response = super::retry::with_retry(|| async {
+            self.client
+                .create_multipart_upload()
+                .bucket(&self.bucket)
+                .key(key)
+                .send()
+                .await
+                .map_err(|e| self.map_s3_error(e, key))
+        }, &super::retry::RetryPolicy::upload()).await?;
 
         let upload_id = create_response
             .upload_id
@@ -287,12 +295,14 @@ impl S3Adapter {
         // Split data into parts
         let parts: Vec<&[u8]> = data.chunks(part_size).collect();
         let total_parts = parts.len();
+        let total_bytes = data.len();
 
         // Create semaphore for concurrent upload limiting
         let max_concurrent = self.config.max_concurrent_uploads;
         let semaphore = Arc::new(Semaphore::new(max_concurrent));
+        let uploaded_bytes = Arc::new(std::sync::Mutex::new(0u64));
 
-        // Upload parts in parallel
+        // Upload parts in parallel with retry
         let mut upload_tasks = Vec::new();
         for (i, chunk) in parts.iter().enumerate() {
             let permit = semaphore.clone().acquire_owned().await.map_err(|e| {
@@ -305,23 +315,50 @@ impl S3Adapter {
             let upload_id = upload_id.clone();
             let chunk_data = chunk.to_vec();
             let part_number = (i + 1) as i32;
+            let chunk_size = chunk_data.len();
+            let progress = progress.clone();
+            let uploaded_bytes = uploaded_bytes.clone();
 
             let task = tokio::spawn(async move {
                 let _permit = permit; // Hold permit for duration
 
-                let part_response = client
-                    .upload_part()
-                    .bucket(&bucket)
-                    .key(&key)
-                    .upload_id(&upload_id)
-                    .part_number(part_number)
-                    .body(ByteStream::from(chunk_data))
-                    .send()
-                    .await?;
+                // Wrap part upload with retry logic
+                let part_response = super::retry::with_retry(|| async {
+                    client
+                        .upload_part()
+                        .bucket(&bucket)
+                        .key(&key)
+                        .upload_id(&upload_id)
+                        .part_number(part_number)
+                        .body(ByteStream::from(chunk_data.clone()))
+                        .send()
+                        .await
+                        .map_err(|e| {
+                            let err_msg = e.to_string();
+                            if err_msg.contains("NoSuchBucket") || err_msg.contains("404") {
+                                CloudError::BucketNotFound(bucket.clone())
+                            } else if err_msg.contains("403") || err_msg.contains("AccessDenied") {
+                                CloudError::PermissionDenied(format!("No permission for object: {}", key))
+                            } else if err_msg.contains("400") {
+                                CloudError::InvalidRequest(format!("Invalid request: {}", err_msg))
+                            } else if err_msg.contains("Timeout") || err_msg.contains("timed out") {
+                                CloudError::Timeout(err_msg)
+                            } else {
+                                CloudError::NetworkError(format!("Part upload failed: {}", err_msg))
+                            }
+                        })
+                }, &super::retry::RetryPolicy::upload()).await?;
 
                 let e_tag = part_response
                     .e_tag
                     .ok_or_else(|| CloudError::Other("Missing ETag for part".into()))?;
+
+                // Update progress callback with cumulative bytes
+                if let Some(cb) = &progress {
+                    let mut total = uploaded_bytes.lock().unwrap();
+                    *total += chunk_size as u64;
+                    cb(*total, Some(total_bytes as u64));
+                }
 
                 Ok::<CompletedPart, CloudError>(CompletedPart::builder()
                     .part_number(part_number)
@@ -337,43 +374,53 @@ impl S3Adapter {
             futures::future::try_join_all(upload_tasks)
                 .await
                 .map_err(|e| {
+                    // Abort upload on failure
+                    let _ = self
+                        .client
+                        .abort_multipart_upload()
+                        .bucket(&self.bucket)
+                        .key(key)
+                        .upload_id(&upload_id)
+                        .send()
+                        .await;
+
                     CloudError::NetworkError(format!("Multipart upload failed: {}", e))
                 })?
                 .into_iter()
                 .collect::<Result<Vec<_>, _>>()?;
 
-        // Update progress callback
-        if let Some(cb) = progress {
-            cb(data.len() as u64, Some(data.len() as u64));
-        }
+        // Sort parts by part number
+        let mut sorted_parts = uploaded_parts;
+        sorted_parts.sort_by_key(|p| p.part_number);
 
-        // Complete multipart upload
-        let complete_response = self
-            .client
-            .complete_multipart_upload()
-            .bucket(&self.bucket)
-            .key(key)
-            .upload_id(&upload_id)
-            .multipart_upload(
-                CompletedMultipartUpload::builder()
-                    .set_parts(Some(uploaded_parts))
-                    .build(),
-            )
-            .send()
-            .await
-            .map_err(|e| {
-                // Abort upload on failure
-                let _ = self
-                    .client
-                    .abort_multipart_upload()
-                    .bucket(&self.bucket)
-                    .key(key)
-                    .upload_id(&upload_id)
-                    .send()
-                    .await;
+        // Complete multipart upload with retry
+        let complete_response = super::retry::with_retry(|| async {
+            self.client
+                .complete_multipart_upload()
+                .bucket(&self.bucket)
+                .key(key)
+                .upload_id(&upload_id)
+                .multipart_upload(
+                    CompletedMultipartUpload::builder()
+                        .set_parts(Some(sorted_parts.clone()))
+                        .build(),
+                )
+                .send()
+                .await
+                .map_err(|e| {
+                    // Abort upload on failure
+                    let _ = self
+                        .client
+                        .abort_multipart_upload()
+                        .bucket(&self.bucket)
+                        .key(key)
+                        .upload_id(&upload_id)
+                        .send()
+                        .await;
 
-                self.map_s3_error(e, key)
-            })?;
+                    self.map_s3_error(e, key)
+                })
+        }, &super::retry::RetryPolicy::upload()).await?;
 
         Ok(complete_response
             .e_tag

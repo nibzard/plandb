@@ -162,6 +162,9 @@ pub struct S3Config {
     /// Use path-style addressing (true for MinIO).
     #[serde(default)]
     pub use_path_style: bool,
+    /// Multipart upload part size in bytes (default: 16MB, min: 5MB).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub part_size: Option<usize>,
 }
 
 fn default_max_retries() -> u32 { 3 }
@@ -181,6 +184,7 @@ impl S3Config {
             max_retries: 3,
             timeout_secs: 30,
             use_path_style: false,
+            part_size: None,
         }
     }
 
@@ -214,6 +218,12 @@ impl S3Config {
         self
     }
 
+    /// Set multipart upload part size in bytes (min: 5MB).
+    pub fn with_part_size(mut self, size: usize) -> Self {
+        self.part_size = Some(size);
+        self
+    }
+
     /// Validate the configuration.
     pub fn validate(&self) -> Result<(), CloudError> {
         if self.bucket.is_empty() {
@@ -224,6 +234,11 @@ impl S3Config {
         }
         if self.region.is_empty() {
             return Err(CloudError::InvalidRequest("Region cannot be empty".into()));
+        }
+        if let Some(size) = self.part_size {
+            if size < 5 * 1024 * 1024 {
+                return Err(CloudError::InvalidRequest("Part size must be at least 5MB".into()));
+            }
         }
         Ok(())
     }
@@ -252,6 +267,9 @@ pub struct GcsConfig {
     /// Request timeout in seconds (default: 30).
     #[serde(default = "default_timeout")]
     pub timeout_secs: u64,
+    /// Resumable upload chunk size in bytes (default: 16MB, min: 5MB).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chunk_size: Option<usize>,
 }
 
 impl GcsConfig {
@@ -265,6 +283,7 @@ impl GcsConfig {
             oauth_token: None,
             max_retries: 3,
             timeout_secs: 30,
+            chunk_size: None,
         }
     }
 
@@ -286,6 +305,12 @@ impl GcsConfig {
         self
     }
 
+    /// Set resumable upload chunk size in bytes (min: 5MB).
+    pub fn with_chunk_size(mut self, size: usize) -> Self {
+        self.chunk_size = Some(size);
+        self
+    }
+
     /// Validate the configuration.
     pub fn validate(&self) -> Result<(), CloudError> {
         if self.bucket.is_empty() {
@@ -298,6 +323,11 @@ impl GcsConfig {
             return Err(CloudError::InvalidRequest(
                 "At least one of credentials_path, credentials_json, or oauth_token must be provided".into()
             ));
+        }
+        if let Some(size) = self.chunk_size {
+            if size < 5 * 1024 * 1024 {
+                return Err(CloudError::InvalidRequest("Chunk size must be at least 5MB".into()));
+            }
         }
         Ok(())
     }
@@ -327,6 +357,9 @@ pub struct AzureConfig {
     /// Request timeout in seconds (default: 30).
     #[serde(default = "default_timeout")]
     pub timeout_secs: u64,
+    /// Block blob upload block size in bytes (default: 4MB, min: 4MB).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub block_size: Option<usize>,
 }
 
 impl AzureConfig {
@@ -341,6 +374,7 @@ impl AzureConfig {
             endpoint: None,
             max_retries: 3,
             timeout_secs: 30,
+            block_size: None,
         }
     }
 
@@ -362,6 +396,12 @@ impl AzureConfig {
         self
     }
 
+    /// Set block blob upload block size in bytes (min: 4MB).
+    pub fn with_block_size(mut self, size: usize) -> Self {
+        self.block_size = Some(size);
+        self
+    }
+
     /// Validate the configuration.
     pub fn validate(&self) -> Result<(), CloudError> {
         if self.storage_account.is_empty() || self.storage_account.len() > 24 {
@@ -375,6 +415,11 @@ impl AzureConfig {
             return Err(CloudError::InvalidRequest(
                 "Either access_key or sas_token must be provided".into()
             ));
+        }
+        if let Some(size) = self.block_size {
+            if size < 4 * 1024 * 1024 {
+                return Err(CloudError::InvalidRequest("Block size must be at least 4MB".into()));
+            }
         }
         Ok(())
     }

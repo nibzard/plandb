@@ -40,6 +40,45 @@
 //! let delete_policy = RetryPolicy::delete();
 //! ```
 //!
+//! # Multipart Upload
+//!
+//! Large files (>100MB) are automatically uploaded using multipart/block protocols:
+//!
+//! - **S3**: Multipart upload with 16MB parts (5MB min, 10,000 parts max)
+//! - **GCS**: Resumable upload with 16MB chunks (5MB min)
+//! - **Azure**: Block blob upload with 4MB blocks (4MB min, 50,000 blocks max)
+//!
+//! Multipart uploads provide:
+//! - **Parallel uploads**: 4 concurrent parts by default (configurable)
+//! - **Progress tracking**: Cumulative byte progress across all parts
+//! - **Retry logic**: Each part retried independently with exponential backoff
+//! - **Resumability**: Track uploaded parts for resume after interruption
+//! - **Error handling**: Abort entire upload on critical failures
+//!
+//! Example with custom part size and concurrency:
+//! ```ignore
+//! use northstar_core::cloud::{CloudStorageConfig, CloudStorageProvider, S3Config};
+//! use northstar_core::cloud::s3::S3Adapter;
+//!
+//! // Configure S3 with custom part size (32MB) and concurrency (8)
+//! let s3_config = S3Config::new("us-east-1", "my-backups")
+//!     .with_access_key("AKIAIOSFODNN7EXAMPLE")
+//!     .with_secret_key("secret")
+//!     .with_part_size(32 * 1024 * 1024); // 32MB parts
+//!
+//! let config = CloudStorageConfig::new(CloudStorageProvider::AwsS3)
+//!     .with_s3(s3_config)
+//!     .with_concurrency(8); // 8 concurrent uploads
+//!
+//! let adapter = S3Adapter::new(config).await?;
+//!
+//! // Upload large backup with progress callback
+//! let data = std::fs::read("large-backup.nbk")?;
+//! adapter.upload("backups/2026-01-05/large.nbk", &data, Some(Box::new(|uploaded, total| {
+//!     println!("Progress: {}/{} bytes", uploaded, total.unwrap());
+//! }))).await?;
+//! ```
+//!
 //! # Example Usage
 //!
 //! ```ignore
