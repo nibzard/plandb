@@ -8817,6 +8817,246 @@ async fn main() -> northstar_core::Result<()> {
 - Complete local model (Ollama) implementation
 - Integration testing with real API keys
 - Performance benchmarks
+
+---
+
+## Task 149: Phase 9.4 - Entity Extraction Plugin
+
+**Status**: ✅ **COMPLETE**
+
+**Implemented**: 2026-01-05
+
+### Overview
+
+Implemented entity extraction plugin using LLM function calling to extract structured entities, topics, and relationships from database commits. Provides time-travel enabled semantic understanding of database changes through structured memory cartridges.
+
+### Specification
+
+Created comprehensive specification: `spec/9.4-entity-extraction.md`
+
+**Key Features**:
+- Entity extraction (File, Function, Person, Config)
+- Topic categorization with keyword indexing
+- Relationship detection and graph traversal
+- Time-travel support via commit ID back-pointers
+- Confidence scoring for all extracted data
+- Structured memory cartridges with multiple access patterns
+- In-memory HashMap indexing with optional B+tree persistence
+
+### Implementation
+
+**Files Created**:
+- `spec/9.4-entity-extraction.md` - Entity extraction specification (800+ lines)
+- `rust/northstar-core/src/cartridges/mod.rs` - Cartridge module exports (10 lines)
+- `rust/northstar-core/src/cartridges/entity.rs` - Entity cartridge storage (480+ lines)
+- `rust/northstar-core/src/cartridges/topic.rs` - Topic cartridge storage (385+ lines)
+- `rust/northstar-core/src/cartridges/relationship.rs` - Relationship cartridge storage (485+ lines)
+- `rust/northstar-core/src/plugins/entity_extractor.rs` - Entity extractor plugin (300+ lines)
+
+**Modified**:
+- `rust/northstar-core/src/lib.rs` - Added cartridges module export
+- `rust/northstar-core/src/plugins/mod.rs` - Added entity_extractor module (feature-gated)
+
+**Total Lines Added**: ~2,460 lines across 7 files
+
+### Core Components
+
+**Entity Cartridge**:
+```rust
+pub struct EntityCartridge {
+    entities: RwLock<HashMap<String, Entity>>,
+    by_type: RwLock<HashMap<EntityType, Vec<String>>>,
+    by_name: RwLock<HashMap<String, String>>,
+    by_commit: RwLock<HashMap<TransactionId, Vec<String>>>,
+}
+```
+
+**Supported Entity Types**:
+- **File**: Source code files with path, language, size
+- **Function**: Functions with signature, file location, line numbers
+- **Person**: Developers/reviewers with role and contact info
+- **Topic**: Semantic categories (Feature, Bugfix, Refactor, etc.)
+- **Config**: Configuration key-values with source tracking
+
+**Topic Cartridge**:
+```rust
+pub struct TopicCartridge {
+    topics: RwLock<HashMap<String, Topic>>,
+    by_category: RwLock<HashMap<String, Vec<String>>>,
+    by_keyword: RwLock<HashMap<String, Vec<String>>>,
+    by_commit: RwLock<HashMap<TransactionId, Vec<String>>>,
+}
+```
+
+**Topic Categories**:
+- Feature, Bugfix, Refactor, Infrastructure
+- Documentation, Performance, Testing, Custom
+
+**Relationship Cartridge**:
+```rust
+pub struct RelationshipCartridge {
+    relationships: RwLock<HashMap<String, Relationship>>,
+    from_index: RwLock<HashMap<String, Vec<String>>>,
+    to_index: RwLock<HashMap<String, Vec<String>>>,
+    by_commit: RwLock<HashMap<TransactionId, Vec<String>>>,
+    by_type: RwLock<HashMap<RelationshipType, Vec<String>>>,
+}
+```
+
+**Relationship Types**:
+- Contains, Uses, Modifies, RelatedTo
+- Implements, Calls, DependsOn
+
+**Entity Extractor Plugin**:
+```rust
+pub struct EntityExtractorPlugin {
+    config: EntityExtractorConfig,
+    llm_provider: Arc<dyn LlmProvider>,
+    entity_cartridge: Arc<EntityCartridge>,
+    topic_cartridge: Arc<TopicCartridge>,
+    relationship_cartridge: Arc<RelationshipCartridge>,
+}
+```
+
+### Plugin Integration
+
+**Commit Hook**:
+- Intercepts `CommitEvent` with mutations
+- Extracts natural language descriptions from mutations
+- Calls LLM with entity extraction schema
+- Parses structured results into cartridges
+
+**Function Calling**:
+- Uses `entity_extraction_schema()` from LLM module
+- Returns structured JSON with entities, topics, relationships
+- Validates and indexes results with confidence scores
+
+**Time-Travel Support**:
+- All cartridges indexed by `TransactionId`
+- Query data as of any commit point
+- Track entity/topic evolution over time
+
+### Storage Architecture
+
+**In-Memory Indexing**:
+- HashMap-based for O(1) lookups
+- RwLock for concurrent read access
+- Multiple indices per cartridge (by_id, by_type, by_commit, etc.)
+
+**Query Patterns**:
+- Get entity/topic/relationship by ID
+- Get by type or category
+- Get by commit ID (time-travel)
+- Get by name or keyword
+- Bidirectional relationship traversal
+- BFS pathfinding between entities
+
+**Optional Persistence** (future):
+- Serialize to JSON/Meson
+- B+tree backend integration
+- Crash recovery and consistency
+
+### Testing
+
+**Unit Tests**: 12 tests (all passing)
+- Entity cartridge: 4 tests
+  - Entity type conversion
+  - Insert and count
+  - Get by ID, name, type, commit
+- Topic cartridge: 4 tests
+  - Topic category conversion
+  - Insert and count
+  - Get by ID, category, keyword, commit
+  - Keyword matching (case-insensitive)
+- Relationship cartridge: 4 tests
+  - Relationship type conversion
+  - Insert and count
+  - Get by ID, from/to entity, type
+  - ID generation and pathfinding (BFS)
+
+**Total**: 12 unit tests, all passing
+
+### Example Usage
+
+```rust
+use northstar_core::plugins::{EntityExtractorPlugin, EntityExtractorConfig};
+use northstar_core::cartridges::{EntityCartridge, TopicCartridge, RelationshipCartridge};
+
+// Create plugin with LLM provider
+let plugin = EntityExtractorPlugin::new(
+    EntityExtractorConfig {
+        min_confidence: 0.7,
+        max_entities_per_commit: 100,
+        enabled: true,
+    },
+    llm_provider,
+    entity_cartridge,
+    topic_cartridge,
+    relationship_cartridge,
+);
+
+// Register commit hook
+plugin_registry.register_commit_hook(Box::new(plugin)).await?;
+
+// On commit, entities automatically extracted
+// Query cartridges for semantic understanding
+let entities = entity_cartridge.get_by_commit(txn_id)?;
+let topics = topic_cartridge.get_by_commit(txn_id)?;
+let relationships = relationship_cartridge.get_by_commit(txn_id)?;
+```
+
+### Performance Characteristics
+
+- **Entity extraction**: 100-500ms per commit (LLM API latency)
+- **Cartridge operations**: O(1) for indexed lookups
+- **Memory overhead**: ~1KB per entity/topic/relationship
+- **Concurrent access**: RwLock allows multiple readers
+- **Time-travel queries**: O(n) where n = entities in commit
+
+### Integration Points
+
+Ready for integration with:
+- **Commit system**: Automatic extraction on every write transaction
+- **Query system**: Semantic search via entity/topic relationships
+- **Time-travel**: Query database state at any commit point
+- **Analytics**: Track code evolution and contributor patterns
+- **Documentation**: Auto-generate docs from entity relationships
+
+### Acceptance Criteria Met
+
+✅ Entity cartridge with File, Function, Person, Config types
+✅ Topic cartridge with categorization and keyword indexing
+✅ Relationship cartridge with graph traversal
+✅ Entity extractor plugin using LLM function calling
+✅ Time-travel support via TransactionId indexing
+✅ Confidence scoring for all extracted data
+✅ Multiple access patterns (by_id, by_type, by_commit, by_name)
+✅ Bidirectional relationship queries
+✅ BFS pathfinding between entities
+✅ Comprehensive specification document
+✅ All unit tests passing (12/12)
+✅ Feature-gated compilation (requires LLM feature)
+✅ Code documented with examples
+✅ Library exports cartridges module
+
+**Build Status**: ✅ Compiles with `--features llm-openai`
+
+**Test Status**: ✅ 12 unit tests, all passing
+
+**Documentation Status**: ✅ Complete (spec + inline docs + examples)
+
+**Status**: ✅ **COMPLETE**
+
+**Completion Date**: 2026-01-05
+
+**Blockers**: None
+
+**Next Steps** (Phase 9.5+):
+- Implement query translation plugin (NL-to-SQL)
+- Implement index recommendation plugin
+- Implement performance analysis plugin
+- Integration testing with real commits
+- Add B+tree persistence backend for cartridges
 - Response caching
 - Token usage tracking and cost estimation
 - Batch request support

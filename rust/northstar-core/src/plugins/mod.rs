@@ -9,6 +9,10 @@ pub mod hook;
 pub mod registry;
 pub mod manager;
 
+// Entity extraction plugin requires LLM support
+#[cfg(any(feature = "llm-openai", feature = "llm-anthropic", feature = "llm-local"))]
+pub mod entity_extractor;
+
 // Re-exports for convenience
 pub use types::{
     Plugin,
@@ -43,3 +47,6 @@ pub use types::{
 pub use manager::PluginManager;
 pub use registry::PluginRegistry;
 pub use hook::HookSystem;
+
+#[cfg(any(feature = "llm-openai", feature = "llm-anthropic", feature = "llm-local"))]
+pub use entity_extractor::{EntityExtractorPlugin, EntityExtractorConfig};
