@@ -29,6 +29,10 @@ pub mod recovery;
 pub mod cloud;
 pub mod plugins;
 
+// AI Intelligence Layer (feature-gated)
+#[cfg(any(feature = "llm-openai", feature = "llm-anthropic", feature = "llm-local"))]
+pub mod llm;
+
 // Re-exports for convenience
 pub use error::{DbError, Error, Result};
 pub use page::{Page, PageHeader, PageType};

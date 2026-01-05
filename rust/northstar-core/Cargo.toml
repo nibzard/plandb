@@ -51,6 +51,9 @@ async-stream = { version = "0.3", optional = true }
 futures = { version = "0.3", optional = true }
 base64 = { version = "0.22", optional = true }
 
+# LLM provider support (feature-gated)
+reqwest = { version = "0.12", features = ["json"], optional = true }
+
 [dev-dependencies]
 proptest = { workspace = true }
 tempfile = { workspace = true }
@@ -61,6 +64,11 @@ default = []
 cloud-s3 = ["aws-sdk-s3", "aws-config", "aws-credential-types", "aws-smithy-runtime", "async-stream", "futures"]
 cloud-gcs = ["google-cloud-storage", "google-cloud-token", "async-stream", "futures"]
 cloud-azure = ["azure_storage", "azure_storage_blobs", "azure_identity", "async-stream", "futures", "base64"]
+
+# LLM provider features
+llm-openai = ["reqwest", "futures"]
+llm-anthropic = ["reqwest", "futures"]
+llm-local = ["reqwest", "futures"]
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
