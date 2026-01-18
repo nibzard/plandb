@@ -82,7 +82,7 @@ jobs:
         ./scripts/manage_baselines.sh gate bench/baselines/ci hardening || true  # Don't fail CI for hardening yet
 
     - name: Upload benchmark results
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v6
       if: always()
       with:
         name: benchmark-results-${{ github.run_number }}
