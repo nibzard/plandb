@@ -1,0 +1,207 @@
+{
+  "schema_version": 1,
+  "project": {
+    "name": "NorthstarDB",
+    "root": "."
+  },
+  "source_files": [
+    "README.md",
+    "README-EXTENDED.md",
+    "PLAN-LIVING-DB.md",
+    "spec/plan.md",
+    "spec/benchmarks_v0.md",
+    "spec/hardening_v0.md",
+    "spec/file_format_v0.md",
+    "spec/semantics_v0.md",
+    "spec/correctness_contracts_v0.md",
+    "spec/commit_record_v0.md",
+    "TODO.md"
+  ],
+  "tasks": [
+    {
+      "id": "T001",
+      "title": "Implement page header and meta page encode/decode with checksums and recovery selection",
+      "priority": 1,
+      "status": "done",
+      "updated_at": "2026-01-20T17:57:56Z",
+      "files": [
+        "src/pager.zig",
+        "spec/file_format_v0.md"
+      ]
+    },
+    {
+      "id": "T002",
+      "title": "Implement pager IO, page cache, allocation and free list policy with fsync ordering",
+      "priority": 1,
+      "status": "todo"
+    },
+    {
+      "id": "T003",
+      "title": "Implement B+tree leaf and internal nodes with insert/delete/split/merge and validator",
+      "priority": 1,
+      "status": "todo"
+    },
+    {
+      "id": "T004",
+      "title": "Implement MVCC transactions with snapshot isolation and single writer enforcement",
+      "priority": 1,
+      "status": "todo"
+    },
+    {
+      "id": "T005",
+      "title": "Implement commit log record encoding/decoding and durable append with checksums",
+      "priority": 1,
+      "status": "todo"
+    },
+    {
+      "id": "T006",
+      "title": "Implement replay engine and time travel snapshot open by TxnId",
+      "priority": 1,
+      "status": "todo"
+    },
+    {
+      "id": "T007",
+      "title": "Implement reference model and property tests for correctness contracts",
+      "priority": 1,
+      "status": "todo"
+    },
+    {
+      "id": "T008",
+      "title": "Implement crash and fault hardening tests for torn writes, fuzzing, and golden files",
+      "priority": 1,
+      "status": "todo"
+    },
+    {
+      "id": "T009",
+      "title": "Implement benchmark runner with JSON output, profiles, stability detection, and baseline compare",
+      "priority": 1,
+      "status": "todo"
+    },
+    {
+      "id": "T010",
+      "title": "Implement pager microbenchmark suite per spec",
+      "priority": 1,
+      "status": "todo"
+    },
+    {
+      "id": "T011",
+      "title": "Implement B+tree microbenchmark suite per spec",
+      "priority": 1,
+      "status": "todo"
+    },
+    {
+      "id": "T012",
+      "title": "Implement MVCC and commit log microbenchmark suites per spec",
+      "priority": 1,
+      "status": "todo"
+    },
+    {
+      "id": "T013",
+      "title": "Implement macrobench suites for task queue, code graph, time travel, and cartridge template",
+      "priority": 2,
+      "status": "todo"
+    },
+    {
+      "id": "T014",
+      "title": "Implement cartridge framework with versioning, offline build pipeline, mmap load, and invalidation",
+      "priority": 2,
+      "status": "todo"
+    },
+    {
+      "id": "T015",
+      "title": "Implement pending_tasks_by_type cartridge and benchmark hot queries",
+      "priority": 2,
+      "status": "todo"
+    },
+    {
+      "id": "T016",
+      "title": "Implement replay and debug tooling CLI for commit log and snapshot inspection",
+      "priority": 2,
+      "status": "todo"
+    },
+    {
+      "id": "T017",
+      "title": "Implement provider agnostic LLM client and function calling schema system",
+      "priority": 3,
+      "status": "todo"
+    },
+    {
+      "id": "T018",
+      "title": "Implement plugin lifecycle hooks and async execution boundaries",
+      "priority": 3,
+      "status": "todo"
+    },
+    {
+      "id": "T019",
+      "title": "Implement entity extraction plugin and entity cartridge persistence",
+      "priority": 3,
+      "status": "todo"
+    },
+    {
+      "id": "T020",
+      "title": "Implement structured memory cartridges for entities, topics, and relationships with inverted index",
+      "priority": 3,
+      "status": "todo"
+    },
+    {
+      "id": "T021",
+      "title": "Implement natural language query analysis and planner/router to cartridges",
+      "priority": 3,
+      "status": "todo"
+    },
+    {
+      "id": "T022",
+      "title": "Implement relationship graph traversal and inference operators",
+      "priority": 3,
+      "status": "todo"
+    },
+    {
+      "id": "T023",
+      "title": "Implement query cache and prefetch plus result summarization and ranking",
+      "priority": 3,
+      "status": "todo"
+    },
+    {
+      "id": "T024",
+      "title": "Implement autonomous maintenance for usage analytics, self optimizing cartridges, and archival",
+      "priority": 4,
+      "status": "todo"
+    },
+    {
+      "id": "T025",
+      "title": "Implement advanced AI plugins and multi model orchestration",
+      "priority": 4,
+      "status": "todo"
+    },
+    {
+      "id": "T026",
+      "title": "Implement AI observability with tracing, audit logs, metrics, and dashboards",
+      "priority": 4,
+      "status": "todo"
+    },
+    {
+      "id": "T027",
+      "title": "Implement distributed durability seam with replicated log and replica apply",
+      "priority": 5,
+      "status": "todo"
+    },
+    {
+      "id": "T028",
+      "title": "Implement consensus and failover integration tests for distributed durability",
+      "priority": 5,
+      "status": "todo"
+    },
+    {
+      "id": "T029",
+      "title": "Add chaos engineering scenarios and throughput optimization for distributed durability",
+      "priority": 5,
+      "status": "todo"
+    },
+    {
+      "id": "T030",
+      "title": "Finalize documentation and example projects for kernel, cartridges, AI, and distributed phases",
+      "priority": 5,
+      "status": "todo"
+    }
+  ]
+}

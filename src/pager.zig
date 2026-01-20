@@ -4338,6 +4338,7 @@ test "Pager.open_recovery_detects_and_rolls_back_torn_meta_writes" {
 
     var buffer_a: [DEFAULT_PAGE_SIZE]u8 = undefined;
     var buffer_b: [DEFAULT_PAGE_SIZE]u8 = undefined;
+    var buffer_dummy: [DEFAULT_PAGE_SIZE]u8 = undefined; // Third page to enable torn write detection
 
     const meta_a = MetaPayload{
         .committed_txn_id = 100,
@@ -4357,6 +4358,7 @@ test "Pager.open_recovery_detects_and_rolls_back_torn_meta_writes" {
 
     _ = try file.pwriteAll(&buffer_a, 0);
     _ = try file.pwriteAll(&buffer_b, DEFAULT_PAGE_SIZE);
+    _ = try file.pwriteAll(&buffer_dummy, DEFAULT_PAGE_SIZE * 2); // Third page to enable torn write detection
 
     // Should detect torn write and rollback to meta A
     var pager = try Pager.open(test_filename, arena.allocator());
