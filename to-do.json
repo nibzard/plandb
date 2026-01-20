@@ -33,7 +33,12 @@
       "id": "T002",
       "title": "Implement pager IO, page cache, allocation and free list policy with fsync ordering",
       "priority": 1,
-      "status": "todo"
+      "status": "done",
+      "updated_at": "2026-01-20T18:05:00Z",
+      "files": [
+        "src/pager.zig",
+        "src/page_cache.zig"
+      ]
     },
     {
       "id": "T003",

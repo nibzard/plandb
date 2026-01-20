@@ -1840,6 +1840,11 @@ pub const Pager = struct {
     page_allocator: ?PageAllocator,
     cache: ?*page_cache.PageCache,
 
+    // Dirty page tracking for fsync ordering during commit
+    // Using std.array_list.Managed to avoid alignment issues with slices
+    dirty_pages: std.AutoHashMap(u64, void),
+    dirty_page_list: std.array_list.Managed(u64),
+
     const Self = @This();
 
     // Create a new empty database file or in-memory database
@@ -1890,7 +1895,13 @@ pub const Pager = struct {
             .allocator = allocator,
             .page_allocator = null,
             .cache = null,
+            .dirty_pages = undefined,
+            .dirty_page_list = undefined,
         };
+
+        // Initialize collections that need runtime initialization
+        pager.dirty_pages = std.AutoHashMap(u64, void).init(allocator);
+        pager.dirty_page_list = std.array_list.Managed(u64).init(allocator);
 
         // Initialize page allocator
         pager.page_allocator = try PageAllocator.init(&pager, allocator);
@@ -1962,7 +1973,13 @@ pub const Pager = struct {
             .allocator = allocator,
             .page_allocator = null,
             .cache = null,
+            .dirty_pages = undefined,
+            .dirty_page_list = undefined,
         };
+
+        // Initialize collections that need runtime initialization
+        pager.dirty_pages = std.AutoHashMap(u64, void).init(allocator);
+        pager.dirty_page_list = std.array_list.Managed(u64).init(allocator);
 
         // Initialize page allocator with rebuild-on-open policy
         pager.page_allocator = try PageAllocator.init(&pager, allocator);
@@ -1984,6 +2001,8 @@ pub const Pager = struct {
             cache.deinit();
             self.allocator.destroy(cache);
         }
+        self.dirty_pages.deinit();
+        self.dirty_page_list.deinit();
         self.storage.close(self.allocator);
     }
 
@@ -2157,17 +2176,61 @@ pub const Pager = struct {
         }
     }
 
+    // Begin a transaction: mark that we're tracking dirty pages for commit
+    pub fn beginTxn(self: *Self) !void {
+        // Clear any previous dirty page state
+        self.dirty_pages.clearRetainingCapacity();
+        self.dirty_page_list.clearRetainingCapacity();
+    }
+
+    // Mark a page as dirty (modified) during a transaction
+    // The page data should be in the page cache and will be written during commit
+    pub fn markPageDirty(self: *Self, page_id: u64) !void {
+        // Only add if not already tracked
+        if (!self.dirty_pages.contains(page_id)) {
+            try self.dirty_pages.put(page_id, {});
+            try self.dirty_page_list.append(page_id);
+        }
+    }
+
+    // Write all dirty pages to storage (step 1 of commit protocol)
+    // Must be called before syncMeta for proper fsync ordering
+    // This function writes all dirty pages from cache to storage
+    pub fn writeDirtyPages(self: *Self) !void {
+        if (self.cache == null) return;
+
+        // Write all dirty pages to storage
+        for (self.dirty_page_list.items) |page_id| {
+            // Try to get page from cache - if present, write it to storage
+            if (self.cache.?.getUnpinned(page_id)) |page_data| {
+                try self.writePage(page_id, page_data);
+                self.cache.?.unpin(page_id);
+            }
+        }
+    }
+
+    // Clean up dirty page tracking after successful commit
+    pub fn clearPendingWrites(self: *Self) void {
+        self.dirty_page_list.clearRetainingCapacity();
+        self.dirty_pages.clearRetainingCapacity();
+    }
+
+    // Rollback: discard dirty page tracking without persisting
+    pub fn rollback(self: *Self) void {
+        self.dirty_page_list.clearRetainingCapacity();
+        self.dirty_pages.clearRetainingCapacity();
+    }
+
     // Fsync ordering for two-phase commit: ensure WAL is synced before DB
+    // Call sequence: beginTxn() -> markPageDirty() -> writeDirtyPages() -> [wal.sync()] -> commitSync() -> clearPendingWrites()
     pub fn commitSync(self: *Self, wal: anytype) !void {
-        _ = wal; // Mark parameter as used for documentation purposes
-        // Critical ordering:
-        // 1. All data pages must be written
-        // 2. WAL must be synced (ensures commit record is durable)
-        // 3. Meta page must be written and synced
+        _ = wal;
+        // Critical ordering per spec/semantics_v0.md:
+        // 1. All data pages must be written (caller should call writeDirtyPages first)
+        // 2. WAL must be synced (caller should call wal.sync() before this)
+        // 3. Meta page must be written and synced (this function)
 
-        // The caller should ensure steps 1-2 happen before calling this
-        // This function handles the meta page sync
-
+        // Sync the database file to ensure meta page and all written pages are durable
         try self.sync();
     }
 
