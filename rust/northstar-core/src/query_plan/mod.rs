@@ -1,7 +1,8 @@
 //! Query Plan Visualization Module
 //!
 //! This module provides comprehensive query plan visualization capabilities
-//! for NorthstarDB, including multiple output formats and plan comparison.
+//! for NorthstarDB, including multiple output formats, plan comparison,
+//! and parallel query execution.
 //!
 //! # Features
 //!
@@ -9,6 +10,7 @@
 //! - **Plan comparison**: Compare plans before and after optimization
 //! - **Cost analysis**: Find expensive nodes by various metrics
 //! - **Interactive HTML**: Self-contained HTML with collapsible nodes
+//! - **Parallel execution**: Cost-based parallel query execution with Rayon
 //!
 //! # Example
 //!
@@ -32,6 +34,7 @@ mod visualize;
 
 pub mod hot_path;
 pub mod index_stats;
+pub mod parallel;
 
 pub use cache::{
     CachedPlan, InvalidationStrategy, PlanCache, PlanCacheConfig, PlanCacheError, PlanCacheStats,

@@ -11585,3 +11585,366 @@ Warnings: 622 (existing, no new warnings added)
 **Next Phases** (Opportunities):
 - Phase 21: Parallel Query Execution
 - Phase 22: Distributed Query Optimization
+
+---
+
+## Phase 21: Parallel Query Execution
+
+**Status**: [ ] IN PROGRESS
+
+**Task**: Implement Parallel Query Execution for NorthstarDB
+
+**Description**: Add parallel query execution capabilities to NorthstarDB query engine, enabling concurrent execution of query plan sub-tasks across multiple CPU cores for improved query performance on large datasets.
+
+### Motivation
+
+Modern multi-core systems can significantly benefit from parallel query execution. For large table scans, complex joins, and aggregations, dividing work across multiple threads can reduce query latency by 2-8x depending on the operation and data size.
+
+### Architecture Overview
+
+```
+Query Plan
+    │
+    ▼
+Parallel Planner (identifies parallelizable ops)
+    │
+    ├─► Parallel Scan (table/index partitioned)
+    ├─► Parallel Join (partitioned hash join)
+    ├─► Parallel Aggregate (partial aggregates + merge)
+    └─► Parallel Sort (sample + partition + merge)
+    │
+    ▼
+Work Scheduler (Rayon-based work-stealing)
+    │
+    ├─► Thread Pool (num_workers = num_cores)
+    ├─► Task Queue (work-stealing deque)
+    └─► Result Collector (concurrent aggregation)
+    │
+    ▼
+Coordinator (merge partial results)
+```
+
+### Modules to Implement
+
+#### 1. Parallel Execution Infrastructure (`src/query_plan/parallel/`)
+
+**Files**:
+- `mod.rs` - Module exports and public API
+- `executor.rs` - Parallel query executor coordinator
+- `scheduler.rs` - Work scheduling and task distribution
+- `task.rs` - Parallel task definition and execution
+- `context.rs` - Execution context with thread-safe state
+- `metrics.rs` - Parallel execution metrics collection
+
+**Core Types**:
+```rust
+pub struct ParallelExecutor {
+    thread_pool: Arc<rayon::ThreadPool>,
+    scheduler: WorkScheduler,
+    metrics: Arc<RwLock<ParallelMetrics>>,
+}
+
+pub struct WorkScheduler {
+    task_queue: SegQueue<ParallelTask>,
+    workers: usize,
+    work_stealing: bool,
+}
+
+pub enum ParallelTask {
+    Scan(TableScanTask),
+    Join(JoinTask),
+    Aggregate(AggregateTask),
+    Sort(SortTask),
+}
+
+pub struct ParallelContext {
+    thread_id: usize,
+    batch_size: usize,
+    local_state: HashMap<String, Vec<u8>>,
+}
+```
+
+#### 2. Parallel Scan Operations (`src/query_plan/parallel/scan.rs`)
+
+**Features**:
+- **Range partitioning**: Divide table into page ranges
+- **Dynamic scheduling**: Assign ranges to workers on-demand
+- **Adaptive batching**: Adjust batch size based on execution time
+- **Index-aware**: Use index for partitioning when available
+
+**Core Types**:
+```rust
+pub struct ParallelScan {
+    table_id: TableId,
+    partitions: Vec<PageRange>,
+    predicate: Option<Expression>,
+    batch_size: usize,
+}
+
+pub struct TableScanTask {
+    partition_id: usize,
+    page_range: PageRange,
+    predicate: Option<Expression>,
+}
+```
+
+**Algorithm**:
+1. Determine total pages in table
+2. Create N partitions (N = num_workers * 2)
+3. Each worker processes batches from partition queue
+4. Results streamed to concurrent collector
+
+#### 3. Parallel Join Algorithms (`src/query_plan/parallel/join.rs`)
+
+**Features**:
+- **Parallel hash join**: Build hash table in parallel, probe in parallel
+- **Partitioned join**: Range/hash partition both sides, join partitions
+- **Broadcast join**: Small table broadcast to all workers
+- **Hybrid strategy**: Choose algorithm based on table sizes
+
+**Core Types**:
+```rust
+pub enum ParallelJoinStrategy {
+    HashJoin { build_partitions: usize },
+    PartitionedJoin { partitions: usize },
+    BroadcastJoin,
+    NestedLoopJoin, // Fallback
+}
+
+pub struct ParallelJoin {
+    left: Arc<QueryPlan>,
+    right: Arc<QueryPlan>,
+    strategy: ParallelJoinStrategy,
+    condition: JoinCondition,
+}
+```
+
+**Parallel Hash Join Algorithm**:
+1. **Build Phase** (parallel):
+   - Partition build table across workers
+   - Each worker builds local hash partition
+   - Combine partitions into global hash table
+2. **Probe Phase** (parallel):
+   - Partition probe table across workers
+   - Each worker probes against global hash table
+   - Results collected concurrently
+
+#### 4. Parallel Aggregation (`src/query_plan/parallel/aggregate.rs`)
+
+**Features**:
+- **Partial aggregates**: Each worker computes local aggregates
+- **Merge phase**: Combine partial aggregates in parallel tree
+- **Commutative functions**: SUM, COUNT, MIN, MAX, AVG
+- **Distinct handling**: HyperLogLog or set-based distinct counting
+
+**Core Types**:
+```rust
+pub struct ParallelAggregate {
+    input: Arc<QueryPlan>,
+    group_by: Vec<Expression>,
+    aggregates: Vec<AggregateFunction>,
+    partitions: usize,
+}
+
+pub enum PartialAggregate {
+    Sum(i64),
+    Count(usize),
+    Min(i64),
+    Max(i64),
+    Avg { sum: i64, count: usize },
+}
+```
+
+**Algorithm**:
+1. Partition input data across workers
+2. Each worker computes partial aggregates per group
+3. Merge partial aggregates in parallel tree reduction
+4. Final aggregation at coordinator
+
+#### 5. Cost-Based Parallelization Decision (`src/query_plan/parallel/optimizer.rs`)
+
+**Features**:
+- **Cost model**: Estimate parallel vs serial cost
+- **Minimum threshold**: Don't parallelize small tables (<10K rows)
+- **Overhead estimation**: Account for scheduling, coordination cost
+- **Resource awareness**: Adjust parallelism based on available cores
+
+**Core Types**:
+```rust
+pub struct ParallelOptimizer {
+    min_rows_threshold: usize,
+    max_parallelism: usize,
+    overhead_factor: f64,
+}
+
+pub struct ParallelizationDecision {
+    should_parallelize: bool,
+    num_workers: usize,
+    strategy: ParallelStrategy,
+    estimated_speedup: f64,
+}
+```
+
+**Heuristics**:
+- Parallelize if table_size > 100K rows
+- Workers = min(num_cores, table_size / 50K)
+- Avoid parallelization for <10K rows (overhead too high)
+- Prefer parallel for full table scans, large joins, aggregations
+
+### Dependencies
+
+**New Dependencies** (add to Cargo.toml):
+```toml
+[dependencies]
+rayon = "1.8"  # Parallel data-parallelism library
+```
+
+**Rationale for Rayon**:
+- Work-stealing scheduler prevents idle threads
+- Zero-cost abstractions (compile-time optimized)
+- Familiar API (similar to Rust iterators)
+- Excellent documentation and community support
+
+### Integration with Query Planner
+
+**Files Modified**:
+- `src/query_plan/planner.rs` - Add parallelization pass after optimization
+- `src/query_plan/executor.rs` - Detect parallel nodes, delegate to ParallelExecutor
+- `src/query_plan/mod.rs` - Export parallel module
+
+**Integration Points**:
+```rust
+impl QueryPlanner {
+    fn plan(&self, query: &Query) -> Arc<QueryPlan> {
+        let mut plan = self.create_plan(query)?;
+        
+        // Apply optimization passes
+        plan = self.optimize(plan)?;
+        
+        // Apply parallelization pass
+        if self.config.enable_parallel {
+            plan = self.parallelize(plan)?;
+        }
+        
+        Ok(plan)
+    }
+}
+```
+
+### Testing Strategy
+
+**Unit Tests** (each module):
+1. Task partitioning correctness
+2. Work scheduling fairness
+3. Partial aggregate computation
+4. Hash join correctness
+5. Parallel scan result consistency
+
+**Integration Tests**:
+1. Large table scan parallel execution
+2. Multi-way join parallelization
+3. Complex query with multiple parallel ops
+4. Memory pressure under parallelism
+5. Single-threaded fallback
+
+**Benchmark Tests**:
+1. Speedup vs thread count (1, 2, 4, 8 threads)
+2. Overhead measurement for small tables
+3. Comparison with serial execution
+4. Scalability analysis
+
+### Acceptance Criteria
+
+- [ ] Parallel executor with configurable thread pool
+- [ ] Parallel table scan with range partitioning
+- [ ] Parallel hash join with build/probe phases
+- [ ] Parallel aggregation with partial merges
+- [ ] Cost-based parallelization decision
+- [ ] Integration with query planner
+- [ ] Unit tests for all modules (20+ tests)
+- [ ] Integration tests for complex queries
+- [ ] Benchmarks showing 2-4x speedup on large tables
+- [ ] No data races (verified by Miri or LoDgeDB)
+- [ ] Memory usage bounded (no unbounded growth)
+- [ ] Graceful fallback to serial for small queries
+
+### Performance Targets
+
+**Baseline**: Serial execution on large table (1M rows)
+- Full table scan: ~100ms
+- Hash join: ~500ms
+- Group by aggregation: ~300ms
+
+**Targets** (8-core system):
+- Scan: 20-30ms (3-5x speedup)
+- Join: 100-150ms (3-5x speedup)
+- Aggregate: 60-100ms (3-5x speedup)
+
+### Implementation Order
+
+1. **Infrastructure** (Day 1):
+   - Set up Rayon dependency
+   - Implement ParallelExecutor skeleton
+   - Create WorkScheduler with task queue
+   - Add parallel execution context
+
+2. **Parallel Scan** (Day 1-2):
+   - Implement range partitioning
+   - Add scan task execution
+   - Implement concurrent result collector
+   - Add scan tests
+
+3. **Parallel Join** (Day 2-3):
+   - Implement parallel hash join
+   - Add build/probe coordination
+   - Implement partitioned join
+   - Add join tests
+
+4. **Parallel Aggregate** (Day 3-4):
+   - Implement partial aggregation
+   - Add parallel merge tree
+   - Support all aggregate types
+   - Add aggregate tests
+
+5. **Integration** (Day 4-5):
+   - Wire up with query planner
+   - Add cost-based decision
+   - Implement configuration
+   - Add integration tests
+
+6. **Benchmarks** (Day 5):
+   - Create large test datasets
+   - Measure speedup factors
+   - Profile memory usage
+   - Document performance characteristics
+
+### Risks and Mitigations
+
+**Risk**: Memory overhead from parallel processing
+**Mitigation**: Bounded memory per worker, backpressure on result collection
+
+**Risk**: Contention on shared data structures
+**Mitigation**: Use thread-local collections, minimize synchronization
+
+**Risk**: Non-deterministic results
+**Mitigation**: Ensure deterministic ordering in final merge, test with random seeds
+
+**Risk**: Complexity of debugging parallel code
+**Mitigation**: Extensive logging, sequential mode for debugging
+
+### Success Metrics
+
+- 3-5x speedup on analytical queries (1M+ rows)
+- <10% overhead on small queries (<10K rows)
+- Zero data races (Miri-checked)
+- Memory usage <2x serial execution
+- All existing tests still pass
+
+**Estimated Implementation Time**: 5 days
+**Estimated Lines of Code**: ~3,500 lines
+**Estimated Test Count**: 25+ unit/integration tests
+
+**Blockers**: None
+
+**Next Steps**: Start with infrastructure implementation
+
